@@ -19,8 +19,12 @@ type DesignResult struct {
 	// supplied.
 	ImprovementMetrics map[string]float64 `json:"improvement_metrics,omitempty"`
 	// Notes explains how the future state's numbers were produced.
-	Notes      []string  `json:"notes,omitempty"`
-	DesignedAt time.Time `json:"designed_at"`
+	Notes []string `json:"notes,omitempty"`
+	// ConsistencyIssues lists stored values in the current state that
+	// disagree with the values computed from their parts (see
+	// CheckConsistency). The future and ideal states use the computed values.
+	ConsistencyIssues []ConsistencyIssue `json:"consistency_issues,omitempty"`
+	DesignedAt        time.Time          `json:"designed_at"`
 }
 
 // ImprovementPotential represents a potential improvement in the value stream
@@ -98,8 +102,12 @@ func (d *Designer) DesignFutureStateWithTargets(current *ValueStream, analysis *
 	}
 
 	result := &DesignResult{
-		ValueStreamID: current.ID,
-		DesignedAt:    time.Now(),
+		ValueStreamID:     current.ID,
+		DesignedAt:        time.Now(),
+		ConsistencyIssues: CheckConsistency(current),
+	}
+	if n := len(result.ConsistencyIssues); n > 0 {
+		result.Notes = append(result.Notes, fmt.Sprintf(consistencyNoteFormat, n))
 	}
 
 	// Identify improvement potentials
@@ -275,16 +283,7 @@ func (d *Designer) CreateIdealState(current *ValueStream) (*ValueStream, error) 
 		idealProcess.Name = process.Name + " (Ideal)"
 
 		// In ideal state: only value-adding time remains
-		idealProcess.Parameters.ProcessTime = process.Parameters.ValueAddingTime
-		idealProcess.Parameters.IdleTime = 0
-		idealProcess.Parameters.WaitingTime = 0
-		idealProcess.Parameters.TransportTime = 0
-		idealProcess.Parameters.StorageTime = 0
-		idealProcess.Parameters.NonValueAddingTime = 0
-		idealProcess.Parameters.NecessaryNonValueAddingTime = 0
-		idealProcess.Parameters.ScrapRate = 0
-		idealProcess.Parameters.ReworkRate = 0
-		idealProcess.Parameters.YieldFactor = 1.0
+		idealProcess.Parameters = d.calculator.idealParameters(process.Parameters)
 
 		idealProcesses = append(idealProcesses, idealProcess)
 	}
@@ -298,6 +297,31 @@ func (d *Designer) CreateIdealState(current *ValueStream) (*ValueStream, error) 
 	ideal.KPIs = d.calculator.CalculateKPIs(ideal)
 
 	return ideal, nil
+}
+
+// idealParameters returns params reduced to value-adding time only, kept
+// consistent (see ResolveParameters): process time = processing time = lead
+// time = value adding time; setup, handling, waiting, ancillary, idle, stock,
+// NVAT, NNVAT, scrap and rework are 0; yield is 1. When processing time is
+// computed from cycle time × order quantity ÷ resources (A.5), the cycle
+// time is set so that it gives the value adding time.
+func (c *Calculator) idealParameters(params ProcessParameters) ProcessParameters {
+	r := c.ResolveParameters(params)
+	vat := r.ValueAddingTime
+	p := r
+	p.ProcessTime, p.ProcessingTime, p.LeadTime = vat, vat, vat
+	p.ValueAddingTime, p.ValueAddingTimeProcess = vat, vat
+	p.SetupTime, p.HandlingTime, p.WaitingTimeProcess, p.AncillaryTime = 0, 0, 0, 0
+	p.RepetitionTime, p.RepetitionCount = 0, 0
+	p.IdleTime, p.WaitingTime, p.TransportTime, p.StorageTime = 0, 0, 0, 0
+	p.TransportRepetitionTime, p.TransportRepetitionCount = 0, 0
+	p.StockQuantity, p.RangeOfInventory = 0, 0
+	p.NonValueAddingTime, p.NecessaryNonValueAddingTime = 0, 0
+	p.ScrapRate, p.ReworkRate, p.YieldFactor = 0, 0, 1
+	if p.CycleTime > 0 && p.OrderQuantity > 0 && p.ResourceCount > 0 {
+		p.CycleTime = vat * float64(p.ResourceCount) / p.OrderQuantity
+	}
+	return c.trimDerived(params, p)
 }
 
 // DesignFutureStateFromIdeal creates a future state with no projected
@@ -524,9 +548,9 @@ func (d *Designer) checkContinuousFlowPrinciple(vs *ValueStream) bool {
 
 	unit := d.calculator.ReferenceTimeUnit(vs.Processes)
 	for _, process := range vs.Processes {
-		params := d.calculator.normalizeTimes(process.Parameters, unit)
-		totalIdle += d.calculator.effectiveIdleTime(params)
-		totalProcess += d.calculator.effectiveProcessTime(params)
+		params := d.calculator.resolvedIn(process.Parameters, unit)
+		totalIdle += params.IdleTime
+		totalProcess += params.ProcessTime
 	}
 
 	if totalProcess > 0 {

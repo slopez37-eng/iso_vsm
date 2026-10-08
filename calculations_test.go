@@ -191,23 +191,24 @@ func TestReferenceTimeUnitAndNormalize(t *testing.T) {
 	}
 }
 
-func TestAggregatesUseStoredOrComponents(t *testing.T) {
+func TestAggregatesUseComponentsOverStoredTotals(t *testing.T) {
 	c := NewCalculator()
 	procs := []Process{
-		// Stored PT and IT are used; components ignored (no double counting).
+		// Stored PT 10 with only setup 4 given: handling time is the rest
+		// (A.8), so PT 10 stands. Stored IT 5 contradicts WT 100: the parts
+		// win (IT 100).
 		{Parameters: ProcessParameters{ProcessTime: 10, SetupTime: 4, IdleTime: 5, WaitingTime: 100,
 			ValueAddingTime: 6}},
-		// No stored PT/IT: fall back to A.2 components and TT + WT + ST_T.
+		// No stored PT/IT: A.2 components and TT + WT + ST_T.
 		{Parameters: ProcessParameters{ProcessingTime: 3, SetupTime: 1, TransportTime: 2, WaitingTime: 3,
-			StorageTime: 1, ValueAddingTimeProcess: 2, ValueAddingTime: 50}},
+			StorageTime: 1, ValueAddingTimeProcess: 2}},
 	}
 	if got := c.CalculateTotalProcessTime(procs); !approx(got, 14) {
 		t.Errorf("total process time = %v, want 14", got)
 	}
-	if got := c.CalculateOverallLeadTime(procs); !approx(got, 10+5+4+6) {
-		t.Errorf("overall lead time = %v, want 25", got)
+	if got := c.CalculateOverallLeadTime(procs); !approx(got, 10+100+4+6) {
+		t.Errorf("overall lead time = %v, want 120", got)
 	}
-	// VATp preferred over VAT when set: 6 + 2
 	if got := c.CalculateValueAddingTime(procs); !approx(got, 8) {
 		t.Errorf("value adding time = %v, want 8", got)
 	}
@@ -239,7 +240,7 @@ func mixedUnitStream() *ValueStream {
 		Name: "Mixed units",
 		Customer: &Customer{
 			ID: "c1", Name: "Customer", Demand: 960, AvailableTime: 480, // 480 min / 960 units
-			TaktTime: 99, // ignored when AvailableTime and Demand are set
+			TaktTime: 0.5, // = AvailableTime ÷ Demand (a different value is a consistency issue)
 		},
 		Processes: []Process{
 			{ID: "p1", Name: "Cut", Parameters: ProcessParameters{

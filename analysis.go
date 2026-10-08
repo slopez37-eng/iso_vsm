@@ -17,8 +17,12 @@ type AnalysisResult struct {
 	KPIs             map[string]float64 `json:"kpis"`
 	Recommendations  []string           `json:"recommendations"`
 	// Notes explains analysis steps that were skipped for missing inputs.
-	Notes      []string  `json:"notes,omitempty"`
-	AnalyzedAt time.Time `json:"analyzed_at"`
+	Notes []string `json:"notes,omitempty"`
+	// ConsistencyIssues lists stored values that disagree with the values
+	// computed from their parts (see CheckConsistency). The analysis uses
+	// the computed values.
+	ConsistencyIssues []ConsistencyIssue `json:"consistency_issues,omitempty"`
+	AnalyzedAt        time.Time          `json:"analyzed_at"`
 }
 
 // BottleneckInfo contains information about a bottleneck process
@@ -139,6 +143,11 @@ func (a *Analyzer) AnalyzeCurrentState(vs *ValueStream) (*AnalysisResult, error)
 		result.Notes = append(result.Notes, missingLoadInputsNote)
 	}
 
+	result.ConsistencyIssues = CheckConsistency(vs)
+	if n := len(result.ConsistencyIssues); n > 0 {
+		result.Notes = append(result.Notes, fmt.Sprintf(consistencyNoteFormat, n))
+	}
+
 	return result, nil
 }
 
@@ -191,6 +200,10 @@ const missingLoadInputsNote = "Process capacity and utilization not computed: se
 	"demand_period and available_time (available time per demand period, in the reference time unit), " +
 	"and each process's cycle_time"
 
+// consistencyNoteFormat is reported when the input contradicts itself.
+const consistencyNoteFormat = "%d stored value(s) disagree with the values computed from their parts; " +
+	"calculations use the computed values (see consistency_issues)"
+
 // hasLoadInputs reports whether the customer data needed for utilization is set.
 func (a *Analyzer) hasLoadInputs(vs *ValueStream) bool {
 	c := vs.Customer
@@ -216,7 +229,7 @@ func (a *Analyzer) CalculateProcessLoad(process Process, vs *ValueStream) (capac
 		return 0, 0, false
 	}
 	unit := a.calculator.ReferenceTimeUnit(vs.Processes)
-	cycleTime := a.calculator.normalizeTimes(process.Parameters, unit).CycleTime
+	cycleTime := a.calculator.resolvedIn(process.Parameters, unit).CycleTime
 	if cycleTime <= 0 {
 		return 0, 0, false
 	}
@@ -236,16 +249,13 @@ func (a *Analyzer) AnalyzeIdleTimes(vs *ValueStream) (*IdleTimeAnalysis, error) 
 	breakdown := IdleTimeBreakdown{}
 
 	// Express every process in one time unit before summing (see
-	// Calculator.ReferenceTimeUnit), and use the same process/idle time
-	// definitions as CalculateOverallLeadTime.
+	// Calculator.ReferenceTimeUnit), with totals resolved from their parts
+	// (see Calculator.ResolveParameters).
 	unit := a.calculator.ReferenceTimeUnit(vs.Processes)
 	for _, process := range vs.Processes {
-		params := a.calculator.normalizeTimes(process.Parameters, unit)
-
-		// Idle time for this process: stored IdleTime, else TT + WT + ST_T
-		idleTime := a.calculator.effectiveIdleTime(params)
-
-		processTime := a.calculator.effectiveProcessTime(params)
+		params := a.calculator.resolvedIn(process.Parameters, unit)
+		idleTime := params.IdleTime
+		processTime := params.ProcessTime
 
 		analysis.IdleTimeByProcess[process.ID] = idleTime
 		totalIdleTime += idleTime
@@ -279,8 +289,10 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 	// 7 Types of Waste according to Lean:
 	// 1. Transportation, 2. Inventory, 3. Motion, 4. Waiting, 5. Over-processing, 6. Over-production, 7. Defects
 
+	// Resolved values in the reference time unit (see Calculator.ResolveParameters).
+	unit := a.calculator.ReferenceTimeUnit(vs.Processes)
 	for _, process := range vs.Processes {
-		params := process.Parameters
+		params := a.calculator.resolvedIn(process.Parameters, unit)
 
 		// Transportation waste
 		transportWaste := params.TransportTime
@@ -345,9 +357,16 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 	pushIndicators := 0
 	pullIndicators := 0
 
-	for _, process := range vs.Processes {
+	// Resolved values in the reference time unit (see Calculator.ResolveParameters).
+	unit := a.calculator.ReferenceTimeUnit(vs.Processes)
+	resolved := make([]ProcessParameters, len(vs.Processes))
+	for i, process := range vs.Processes {
+		resolved[i] = a.calculator.resolvedIn(process.Parameters, unit)
+	}
+
+	for _, params := range resolved {
 		// Look for supermarket indicators (pull system)
-		if process.Parameters.WaitingTime < process.Parameters.ProcessTime*0.1 {
+		if params.WaitingTime < params.ProcessTime*0.1 {
 			pullIndicators++
 		} else {
 			pushIndicators++
@@ -370,7 +389,7 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 
 	// Identify flow interruptions
 	for i, process := range vs.Processes {
-		params := process.Parameters
+		params := resolved[i]
 
 		// Check for quality issues (high scrap/rework rates)
 		if params.ScrapRate > 0.05 || params.ReworkRate > 0.1 {
@@ -386,12 +405,13 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 		// Check for capacity bottlenecks
 		if i < len(vs.Processes)-1 {
 			nextProcess := vs.Processes[i+1]
-			if params.ProcessTime > nextProcess.Parameters.ProcessTime*1.5 {
+			next := resolved[i+1]
+			if params.ProcessTime > next.ProcessTime*1.5 {
 				analysis.FlowInterruptions = append(analysis.FlowInterruptions, FlowInterruption{
 					Type:        "capacity",
 					Location:    fmt.Sprintf("%s → %s", process.Name, nextProcess.Name),
 					Frequency:   1.0, // Continuous
-					Impact:      params.ProcessTime - nextProcess.Parameters.ProcessTime,
+					Impact:      params.ProcessTime - next.ProcessTime,
 					Description: "Capacity mismatch causing bottlenecks",
 				})
 			}

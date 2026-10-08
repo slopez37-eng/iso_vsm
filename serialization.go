@@ -34,19 +34,31 @@ func (s *Serializer) SerializeValueStream(vs *ValueStream) ([]byte, error) {
 	return json.MarshalIndent(vs, "", "  ")
 }
 
-// DeserializeValueStream deserializes a value stream from JSON
+// DeserializeValueStream deserializes a value stream from JSON. Stored values
+// that disagree with the values computed from their parts are listed in the
+// result's ConsistencyIssues (see CheckConsistency); they do not fail the
+// load.
 func (s *Serializer) DeserializeValueStream(data []byte) (*ValueStream, error) {
+	vs, _, err := s.DeserializeValueStreamWithIssues(data)
+	return vs, err
+}
+
+// DeserializeValueStreamWithIssues is DeserializeValueStream that also
+// returns the consistency issues (the same list as the result's
+// ConsistencyIssues).
+func (s *Serializer) DeserializeValueStreamWithIssues(data []byte) (*ValueStream, []ConsistencyIssue, error) {
 	var vs ValueStream
 	if err := json.Unmarshal(data, &vs); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal value stream: %w", err)
+		return nil, nil, fmt.Errorf("failed to unmarshal value stream: %w", err)
 	}
 
 	// Validate after deserialization
 	if err := s.validator.ValidateValueStream(&vs); err != nil {
-		return nil, fmt.Errorf("validation failed: %w", err)
+		return nil, nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	return &vs, nil
+	vs.ConsistencyIssues = CheckConsistency(&vs)
+	return &vs, vs.ConsistencyIssues, nil
 }
 
 // SerializeVSMProject serializes a VSM project to JSON
@@ -160,7 +172,9 @@ func (s *Serializer) SaveToFile(data interface{}, filename string) error {
 	return nil
 }
 
-// LoadFromFile loads any serializable object from a JSON file
+// LoadFromFile loads any serializable object from a JSON file. When target
+// is a *ValueStream or *VSMProject, the ConsistencyIssues of each value
+// stream are filled in (see CheckConsistency).
 func (s *Serializer) LoadFromFile(filename string, target interface{}) error {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -171,7 +185,27 @@ func (s *Serializer) LoadFromFile(filename string, target interface{}) error {
 		return fmt.Errorf("failed to unmarshal data: %w", err)
 	}
 
+	switch t := target.(type) {
+	case *ValueStream:
+		t.ConsistencyIssues = CheckConsistency(t)
+	case *VSMProject:
+		for _, vs := range []*ValueStream{&t.CurrentState, t.FutureState, t.IdealState} {
+			if vs != nil {
+				vs.ConsistencyIssues = CheckConsistency(vs)
+			}
+		}
+	}
 	return nil
+}
+
+// LoadValueStreamFromFile loads a value stream from a JSON file and returns
+// it with its consistency issues (also in its ConsistencyIssues).
+func (s *Serializer) LoadValueStreamFromFile(filename string) (*ValueStream, []ConsistencyIssue, error) {
+	var vs ValueStream
+	if err := s.LoadFromFile(filename, &vs); err != nil {
+		return nil, nil, err
+	}
+	return &vs, vs.ConsistencyIssues, nil
 }
 
 // ExportValueStreamMap exports a value stream as a text-based map representation
@@ -218,10 +252,12 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 	// Processes
 	mapStr += "Processes:\n"
 	for i, process := range vs.Processes {
+		// Resolved values: totals computed from their parts (see ResolveParameters).
+		params := NewCalculator().ResolveParameters(process.Parameters)
 		mapStr += fmt.Sprintf("  %d. %s (%s)\n", i+1, process.Name, process.Type)
-		mapStr += fmt.Sprintf("     Process Time: %.2f %s\n", process.Parameters.ProcessTime, process.Parameters.TimeUnit)
-		mapStr += fmt.Sprintf("     Cycle Time: %.2f %s\n", process.Parameters.CycleTime, process.Parameters.TimeUnit)
-		mapStr += fmt.Sprintf("     Yield Factor: %.2f%%\n", process.Parameters.YieldFactor*100)
+		mapStr += fmt.Sprintf("     Process Time: %.2f %s\n", params.ProcessTime, params.TimeUnit)
+		mapStr += fmt.Sprintf("     Cycle Time: %.2f %s\n", params.CycleTime, params.TimeUnit)
+		mapStr += fmt.Sprintf("     Yield Factor: %.2f%%\n", params.YieldFactor*100)
 
 		if process.Parameters.ScrapRate > 0 {
 			mapStr += fmt.Sprintf("     Scrap Rate: %.2f%%\n", process.Parameters.ScrapRate*100)

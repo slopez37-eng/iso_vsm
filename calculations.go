@@ -66,8 +66,8 @@ func (c *Calculator) CalculateAvailability(tbf, ttr []float64) (float64, error) 
 // PT = PRT + ST + HT + WTp + AT
 //
 // This is the component sum only; the stored ProcessParameters.ProcessTime
-// field is not read. Aggregating methods use effectiveProcessTime, which
-// prefers the stored ProcessTime and falls back to this sum.
+// field is not read. ResolveParameters decides between this sum and a stored
+// ProcessTime (see there).
 func (c *Calculator) CalculateProcessTime(params ProcessParameters) float64 {
 	return params.ProcessingTime + params.SetupTime + params.HandlingTime +
 		params.WaitingTimeProcess + params.AncillaryTime
@@ -77,9 +77,10 @@ func (c *Calculator) CalculateProcessTime(params ProcessParameters) float64 {
 // classification (A.3).
 // LT = VAT + NVAT + NNVAT
 //
-// This is an alternative breakdown of the same time, by value category.
-// CalculateKPIs does not add it to CalculateOverallLeadTime (that would
-// count the same time twice).
+// This is a second breakdown of the same lead time, by value category: it
+// must equal process time + idle time (CheckConsistency reports it when it
+// does not). It is used as the lead time only when process and idle time are
+// not given (see ResolveParameters).
 func (c *Calculator) CalculateLeadTime(params ProcessParameters) float64 {
 	return params.ValueAddingTime + params.NonValueAddingTime + params.NecessaryNonValueAddingTime
 }
@@ -87,13 +88,13 @@ func (c *Calculator) CalculateLeadTime(params ProcessParameters) float64 {
 // CalculateTotalProcessTime calculates total process time over all processes (A.4).
 // PT_total = Σ(PT_i) for i = 1 to n
 //
-// PT_i is the stored ProcessTime when it is set (> 0), otherwise the A.2
-// component sum. Each process is converted to ReferenceTimeUnit(processes).
+// PT_i is the resolved process time (see ResolveParameters). Each process is
+// converted to ReferenceTimeUnit(processes).
 func (c *Calculator) CalculateTotalProcessTime(processes []Process) float64 {
 	unit := c.ReferenceTimeUnit(processes)
 	var total float64
 	for _, process := range processes {
-		total += c.effectiveProcessTime(c.normalizeTimes(process.Parameters, unit))
+		total += c.resolvedIn(process.Parameters, unit).ProcessTime
 	}
 	return total
 }
@@ -136,12 +137,13 @@ func (c *Calculator) CalculateHandlingTime(params ProcessParameters) float64 {
 // VAT = Σ(VATp_i) for i = 1 to n
 //
 // VATp_i is ValueAddingTimeProcess when set (> 0), otherwise the process's
-// ValueAddingTime. Each process is converted to ReferenceTimeUnit(processes).
+// ValueAddingTime (see ResolveParameters). Each process is converted to
+// ReferenceTimeUnit(processes).
 func (c *Calculator) CalculateValueAddingTime(processes []Process) float64 {
 	unit := c.ReferenceTimeUnit(processes)
 	var total float64
 	for _, process := range processes {
-		total += c.effectiveValueAddingTime(c.normalizeTimes(process.Parameters, unit))
+		total += c.resolvedIn(process.Parameters, unit).ValueAddingTime
 	}
 	return total
 }
@@ -267,18 +269,18 @@ func (c *Calculator) CalculateProcessLeadTime(processTime, idleTime float64) flo
 }
 
 // CalculateOverallLeadTime calculates overall value stream lead time.
-// LT = Σ(PT_i + IT_i) for i = 1 to n
+// LT = Σ LT_i for i = 1 to n, with LT_i = PT_i + IT_i
 //
-// PT_i is the stored ProcessTime when set (> 0), otherwise the A.2 component
-// sum. IT_i is the stored IdleTime when set (> 0), otherwise
-// TransportTime + WaitingTime + StorageTime. Each process is converted to
-// ReferenceTimeUnit(processes).
+// LT_i is the resolved lead time (see ResolveParameters): process time + idle
+// time, each computed from its parts when they are given. Only when a process
+// has neither does LT_i fall back to its value classification
+// VAT + NVAT + NNVAT (A.3), and then to a stored lead_time. Each process is
+// converted to ReferenceTimeUnit(processes).
 func (c *Calculator) CalculateOverallLeadTime(processes []Process) float64 {
 	unit := c.ReferenceTimeUnit(processes)
 	var total float64
 	for _, process := range processes {
-		params := c.normalizeTimes(process.Parameters, unit)
-		total += c.CalculateProcessLeadTime(c.effectiveProcessTime(params), c.effectiveIdleTime(params))
+		total += c.resolvedIn(process.Parameters, unit).LeadTime
 	}
 	return total
 }
@@ -379,34 +381,6 @@ func (c *Calculator) normalizeTimes(params ProcessParameters, to TimeUnit) Proce
 	return p
 }
 
-// effectiveProcessTime is the stored ProcessTime when set (> 0), otherwise
-// the A.2 component sum. Using one or the other, never both, avoids double
-// counting.
-func (c *Calculator) effectiveProcessTime(params ProcessParameters) float64 {
-	if params.ProcessTime > 0 {
-		return params.ProcessTime
-	}
-	return c.CalculateProcessTime(params)
-}
-
-// effectiveIdleTime is the stored IdleTime when set (> 0), otherwise
-// TransportTime + WaitingTime + StorageTime.
-func (c *Calculator) effectiveIdleTime(params ProcessParameters) float64 {
-	if params.IdleTime > 0 {
-		return params.IdleTime
-	}
-	return c.CalculateTotalIdleTime(params.TransportTime, params.WaitingTime, params.StorageTime)
-}
-
-// effectiveValueAddingTime is ValueAddingTimeProcess when set (> 0),
-// otherwise ValueAddingTime.
-func (c *Calculator) effectiveValueAddingTime(params ProcessParameters) float64 {
-	if params.ValueAddingTimeProcess > 0 {
-		return params.ValueAddingTimeProcess
-	}
-	return params.ValueAddingTime
-}
-
 // ValidateProcessParameters validates that process parameters are consistent
 func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error {
 	var errs []error
@@ -422,8 +396,8 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 		errs = append(errs, errors.New("customer demand cannot be negative"))
 	}
 
-	// Logical validations
-	if params.ValueAddingTime > params.ProcessTime {
+	// Logical validations (on the resolved process time, see ResolveParameters)
+	if resolved := c.ResolveParameters(params); params.ValueAddingTime > resolved.ProcessTime {
 		errs = append(errs, errors.New("value adding time cannot exceed process time"))
 	}
 
@@ -460,8 +434,13 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 //   - inventory_turns = Customer.Demand ÷ total inventory quantity (turns
 //     per Customer.DemandPeriod): omitted when there is no customer, demand
 //     is 0, or inventory is 0.
-//   - average_yield_factor: mean of the processes' YieldFactor values that
-//     are set (> 0); omitted when none are set.
+//   - average_yield_factor: mean of the processes' yield factors (1 − scrap −
+//     rework when those are given, else the stored YieldFactor) that are
+//     known (> 0); omitted when none are.
+//
+// All process values are resolved first (see ResolveParameters), so stored
+// totals that disagree with their parts do not change the KPIs; see
+// CheckConsistency for those disagreements.
 func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 	kpis := make(map[string]float64)
 
@@ -470,13 +449,8 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 	}
 
 	// Customer takt = available operating time ÷ customer demand.
-	if vs.Customer != nil {
-		switch {
-		case vs.Customer.AvailableTime > 0 && vs.Customer.Demand > 0:
-			kpis["customer_takt"] = c.CalculateCustomerTakt(vs.Customer.AvailableTime, vs.Customer.Demand)
-		case vs.Customer.TaktTime > 0:
-			kpis["customer_takt"] = vs.Customer.TaktTime
-		}
+	if takt, ok := c.customerTakt(vs.Customer); ok {
+		kpis["customer_takt"] = takt
 	}
 
 	if len(vs.Processes) > 0 {
@@ -506,8 +480,8 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 	var totalYield float64
 	processCount := 0
 	for _, process := range vs.Processes {
-		if process.Parameters.YieldFactor > 0 {
-			totalYield += process.Parameters.YieldFactor
+		if yf := c.ResolveParameters(process.Parameters).YieldFactor; yf > 0 {
+			totalYield += yf
 			processCount++
 		}
 	}

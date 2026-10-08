@@ -203,6 +203,12 @@ type ValueStream struct {
 	// Analysis results
 	KPIs map[string]float64 `json:"kpis,omitempty"` // Key Performance Indicators
 
+	// ConsistencyIssues lists stored values that disagree with the values
+	// computed from their parts (see CheckConsistency). It is output only:
+	// DeserializeValueStream and LoadFromFile fill it in on every load, and
+	// calculations ignore it.
+	ConsistencyIssues []ConsistencyIssue `json:"consistency_issues,omitempty"`
+
 	// Metadata
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

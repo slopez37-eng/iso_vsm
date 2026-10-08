@@ -18,6 +18,10 @@ type AssessmentResult struct {
 	ActionItems       []ActionItem          `json:"action_items"`
 	PDCAStatus        PDCAStatus            `json:"pdca_status"`
 	Recommendations   []string              `json:"recommendations"`
+	// ConsistencyIssues lists stored values that disagree with the values
+	// computed from their parts (see CheckConsistency). The KPIs use the
+	// computed values.
+	ConsistencyIssues []ConsistencyIssue `json:"consistency_issues,omitempty"`
 }
 
 // KPIMeasure represents a measured KPI value with metadata
@@ -107,9 +111,10 @@ func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64
 	}
 
 	result := &AssessmentResult{
-		ValueStreamID:  vs.ID,
-		AssessmentDate: time.Now(),
-		KPIs:           make(map[string]KPIMeasure),
+		ValueStreamID:     vs.ID,
+		AssessmentDate:    time.Now(),
+		KPIs:              make(map[string]KPIMeasure),
+		ConsistencyIssues: CheckConsistency(vs),
 	}
 
 	// Calculate current KPIs

@@ -46,16 +46,31 @@ func (t *Target) apply(current float64) (float64, error) {
 }
 
 // ProcessTargets holds optional targets for one process's parameters. A nil
-// field means "keep the current value".
+// field means "keep the current value". Targets apply to the current values
+// as resolved by Calculator.ResolveParameters, and the future state is kept
+// consistent by construction (CheckConsistency finds nothing new in it):
 //
-// Totals and their parts stay consistent: process_time is a total that
-// includes setup_time, and idle_time is a total of transport_time,
-// waiting_time and storage_time (it is the stored value or, when not stored,
-// that sum). If a part gets a target but its total does not, a stored total
-// moves by the same amount. A total targeted to 0 sets its parts to 0. If
-// scrap_rate or rework_rate changes and yield_factor has no target, the
-// stored yield factor moves by the opposite of the change in scrap + rework
-// (A.17: YF = 1 − (SR + RR)).
+//   - Changing a part moves its total: setup_time is part of process_time;
+//     transport_time, waiting_time and storage_time are the parts of
+//     idle_time; scrap_rate and rework_rate set yield_factor (A.17).
+//   - Values computed from other inputs follow them: a cycle_time target
+//     changes waiting_time (stock_quantity × cycle_time, A.11) and
+//     processing_time (cycle_time × order_quantity ÷ resource_count, A.5)
+//     where those formulas apply.
+//   - A total target (process_time, idle_time, yield_factor) is met by
+//     scaling, in proportion, the parts that have no target of their own and
+//     are not computed from other inputs (for process_time this includes the
+//     handling time implied by A.8). A total of 0 zeroes its parts. Where
+//     waiting_time is stock_quantity × cycle_time, it is scaled through
+//     stock_quantity, and a waiting_time target sets stock_quantity.
+//   - The value classification follows the lead time: when lead time
+//     (process + idle time) changes, the change is taken from
+//     non_value_adding_time, then necessary_non_value_adding_time, unless
+//     they have their own targets; value_adding_time never changes. Targets
+//     that leave VAT + NVAT + NNVAT different from the lead time are an error.
+//
+// Targets that cannot be met consistently return an error naming the
+// conflict, rather than producing a map that contradicts itself.
 type ProcessTargets struct {
 	ProcessTime                 *Target `json:"process_time,omitempty"`
 	CycleTime                   *Target `json:"cycle_time,omitempty"`
@@ -99,9 +114,10 @@ type processField struct {
 	isRate bool // fraction between 0 and 1
 }
 
-// Component fields (everything except the process_time and idle_time
-// totals and yield_factor, which are handled separately in applyProcessTargets).
-var componentFields = []processField{
+// directFields are the targets applied to one stored value each. The
+// process_time, idle_time and yield_factor totals are handled separately in
+// applyProcessTargets.
+var directFields = []processField{
 	{"cycle_time", func(t *ProcessTargets) *Target { return t.CycleTime }, func(p *ProcessParameters) *float64 { return &p.CycleTime }, false},
 	{"setup_time", func(t *ProcessTargets) *Target { return t.SetupTime }, func(p *ProcessParameters) *float64 { return &p.SetupTime }, false},
 	{"waiting_time", func(t *ProcessTargets) *Target { return t.WaitingTime }, func(p *ProcessParameters) *float64 { return &p.WaitingTime }, false},
@@ -139,68 +155,307 @@ func applyField(name string, t *Target, current float64, isRate bool) (float64, 
 	return v, nil
 }
 
+// share is one part of a total that a total target may scale.
+type share struct {
+	value *float64
+	fixed bool // has its own target, or is computed from other inputs
+}
+
+// scaleShares scales the non-fixed shares in proportion so that all shares
+// add up to total. It reports false when that is impossible (the fixed
+// shares exceed total, or nothing is free to scale).
+func scaleShares(total float64, shares []share) bool {
+	var fixed, free float64
+	for _, s := range shares {
+		if s.fixed {
+			fixed += *s.value
+		} else {
+			free += *s.value
+		}
+	}
+	need := total - fixed
+	if consistent(total, fixed) {
+		need = 0
+	}
+	if need < 0 || (free == 0 && need != 0) {
+		return false
+	}
+	k := 1.0
+	if free > 0 {
+		k = need / free
+	}
+	for _, s := range shares {
+		if !s.fixed {
+			*s.value *= k
+		}
+	}
+	return true
+}
+
+// hasIssue reports whether issues contain one for field.
+func hasIssue(issues []ConsistencyIssue, field string) bool {
+	for _, issue := range issues {
+		if issue.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
 // applyProcessTargets returns params with the targets applied (own overrides
-// def field by field). See ProcessTargets for how totals and parts are kept
+// def field by field). See ProcessTargets for how the result is kept
 // consistent.
 func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *ProcessTargets) (ProcessParameters, error) {
-	p := params
+	cur, curIssues := c.resolveParameters(params)
+	p := cur
+	targeted := map[string]bool{}
+	get := func(f func(*ProcessTargets) *Target) *Target { return pick(own, def, f) }
 
-	for _, f := range componentFields {
-		if t := pick(own, def, f.target); t != nil {
-			v, err := applyField(f.name, t, *f.value(&params), f.isRate)
-			if err != nil {
-				return p, err
+	for _, f := range directFields {
+		t := get(f.target)
+		if t == nil {
+			continue
+		}
+		v, err := applyField(f.name, t, *f.value(&cur), f.isRate)
+		if err != nil {
+			return params, err
+		}
+		*f.value(&p) = v
+		targeted[f.name] = true
+	}
+
+	// Values computed from other inputs follow those inputs.
+	if targeted["transport_time"] && cur.TransportRepetitionTime > 0 && cur.TransportRepetitionCount > 0 {
+		return params, fmt.Errorf("transport_time: for this process it is transport_repetition_time × " +
+			"transport_repetition_count (A.10); change those in the current state instead")
+	}
+	wasStock := cur.StockQuantity > 0 && cur.CycleTime > 0
+	if targeted["waiting_time"] && (wasStock || targeted["stock_quantity"]) {
+		if targeted["stock_quantity"] {
+			return params, fmt.Errorf("waiting_time and stock_quantity: set one, not both; " +
+				"waiting_time = stock_quantity × cycle_time (A.11)")
+		}
+		if p.CycleTime <= 0 {
+			return params, fmt.Errorf("waiting_time: it is stock_quantity × cycle_time (A.11), " +
+				"and the targeted cycle_time is 0")
+		}
+		p.StockQuantity = p.WaitingTime / p.CycleTime
+	}
+	updateStock := func() {
+		if p.StockQuantity > 0 && p.CycleTime > 0 {
+			p.WaitingTime = p.StockQuantity * p.CycleTime
+			p.RangeOfInventory = p.WaitingTime
+		} else if wasStock {
+			p.WaitingTime, p.RangeOfInventory = 0, 0
+		}
+	}
+	updateStock()
+	wasProcessing := cur.CycleTime > 0 && cur.OrderQuantity > 0 && cur.ResourceCount > 0
+	isProcessing := p.CycleTime > 0 && p.OrderQuantity > 0 && p.ResourceCount > 0
+	if isProcessing {
+		p.ProcessingTime = p.CycleTime * p.OrderQuantity / float64(p.ResourceCount)
+	} else if wasProcessing {
+		p.ProcessingTime = 0
+	}
+
+	// Process time: the parts plus the handling time implied by A.8.
+	implied := math.Max(0, cur.ProcessTime-c.CalculateProcessTime(cur))
+	if t := get(func(t *ProcessTargets) *Target { return t.ProcessTime }); t != nil {
+		v, err := applyField("process_time", t, cur.ProcessTime, false)
+		if err != nil {
+			return params, err
+		}
+		if cur.RepetitionTime > 0 && cur.RepetitionCount > 0 {
+			return params, fmt.Errorf("process_time: for this process it is setup_time + repetition_time × " +
+				"repetition_count (A.6); target setup_time, or change the repetition data in the current state")
+		}
+		ok := scaleShares(v, []share{
+			{&p.ProcessingTime, isProcessing},
+			{&p.SetupTime, targeted["setup_time"]},
+			{&p.HandlingTime, false},
+			{&p.WaitingTimeProcess, false},
+			{&p.AncillaryTime, false},
+			{&implied, false},
+		})
+		if !ok {
+			return params, fmt.Errorf("process_time: target %g cannot be met; the parts that are fixed "+
+				"(targeted setup_time, or processing_time computed from cycle_time, A.5) add up to %g",
+				v, c.CalculateProcessTime(p))
+		}
+	}
+	p.ProcessTime = c.CalculateProcessTime(p) + implied
+
+	// Idle time: transport + waiting + storage time.
+	idleParts := func(q *ProcessParameters) float64 {
+		return c.CalculateTotalIdleTime(q.TransportTime, q.WaitingTime, q.StorageTime)
+	}
+	hasIdleParts := idleParts(&cur) > 0 || idleParts(&p) > 0
+	if t := get(func(t *ProcessTargets) *Target { return t.IdleTime }); t != nil {
+		v, err := applyField("idle_time", t, cur.IdleTime, false)
+		if err != nil {
+			return params, err
+		}
+		if !hasIdleParts {
+			p.IdleTime = v
+		} else {
+			stockDriven := p.StockQuantity > 0 && p.CycleTime > 0
+			waiting := p.WaitingTime
+			// Transport from repetitions (A.10) is fixed, except that an idle
+			// time of 0 removes the transports too.
+			repeated := cur.TransportRepetitionTime > 0 && cur.TransportRepetitionCount > 0
+			ok := scaleShares(v, []share{
+				{&p.TransportTime, targeted["transport_time"] || (repeated && v != 0)},
+				{&waiting, targeted["waiting_time"] || (stockDriven && targeted["stock_quantity"])},
+				{&p.StorageTime, targeted["storage_time"]},
+			})
+			if !ok {
+				return params, fmt.Errorf("idle_time: target %g cannot be met; the parts that are fixed "+
+					"(their own targets, or computed from other inputs) add up to more, or nothing is left to scale", v)
 			}
-			*f.value(&p) = v
+			if repeated && p.TransportTime == 0 {
+				p.TransportRepetitionTime, p.TransportRepetitionCount = 0, 0
+			}
+			if stockDriven && p.WaitingTime > 0 {
+				p.StockQuantity *= waiting / p.WaitingTime
+				updateStock()
+			} else {
+				p.WaitingTime = waiting
+			}
+			p.IdleTime = idleParts(&p)
 		}
+	} else if hasIdleParts {
+		if idleParts(&cur) == 0 && cur.IdleTime > 0 {
+			return params, fmt.Errorf("idle_time is given only as a total for this process, so a target that " +
+				"sets transport, waiting or storage time (or stock_quantity) would replace it; target idle_time " +
+				"instead, or add the breakdown to the current state")
+		}
+		p.IdleTime = idleParts(&p)
 	}
 
-	// Process time total (stored ProcessTime, else the A.2 component sum).
-	if t := pick(own, def, func(t *ProcessTargets) *Target { return t.ProcessTime }); t != nil {
-		v, err := applyField("process_time", t, c.effectiveProcessTime(params), false)
-		if err != nil {
-			return p, err
-		}
-		p.ProcessTime = v
-		if v == 0 {
-			p.ProcessingTime, p.SetupTime, p.HandlingTime, p.WaitingTimeProcess, p.AncillaryTime = 0, 0, 0, 0, 0
-		}
-	} else if params.ProcessTime > 0 {
-		p.ProcessTime = math.Max(0, params.ProcessTime-(params.SetupTime-p.SetupTime))
-	}
-
-	// Idle time total (stored IdleTime, else TT + WT + ST_T).
-	if t := pick(own, def, func(t *ProcessTargets) *Target { return t.IdleTime }); t != nil {
-		v, err := applyField("idle_time", t, c.effectiveIdleTime(params), false)
-		if err != nil {
-			return p, err
-		}
-		p.IdleTime = v
-		if v == 0 {
-			p.TransportTime, p.WaitingTime, p.StorageTime = 0, 0, 0
-		}
-	} else if params.IdleTime > 0 {
-		cut := (params.TransportTime - p.TransportTime) + (params.WaitingTime - p.WaitingTime) +
-			(params.StorageTime - p.StorageTime)
-		p.IdleTime = math.Max(0, params.IdleTime-cut)
-	}
-
-	// Yield factor: absolute target only; else follow scrap + rework.
-	if t := pick(own, def, func(t *ProcessTargets) *Target { return t.YieldFactor }); t != nil {
+	// Yield: 1 − (scrap + rework) (A.17).
+	hasDefects := cur.ScrapRate > 0 || cur.ReworkRate > 0 || p.ScrapRate > 0 || p.ReworkRate > 0
+	if t := get(func(t *ProcessTargets) *Target { return t.YieldFactor }); t != nil {
 		if t.ReductionPercent != nil {
-			return p, fmt.Errorf("yield_factor: use an absolute value, not reduction_percent")
+			return params, fmt.Errorf("yield_factor: use an absolute value, not reduction_percent")
 		}
-		v, err := applyField("yield_factor", t, params.YieldFactor, true)
+		v, err := applyField("yield_factor", t, cur.YieldFactor, true)
 		if err != nil {
-			return p, err
+			return params, err
+		}
+		if hasDefects && !scaleShares(1-v, []share{
+			{&p.ScrapRate, targeted["scrap_rate"]},
+			{&p.ReworkRate, targeted["rework_rate"]},
+		}) {
+			return params, fmt.Errorf("yield_factor: target %g conflicts with the scrap_rate/rework_rate "+
+				"targets; yield_factor = 1 − (scrap_rate + rework_rate) (A.17)", v)
 		}
 		p.YieldFactor = v
-	} else if params.YieldFactor > 0 {
-		delta := (params.ScrapRate + params.ReworkRate) - (p.ScrapRate + p.ReworkRate)
-		p.YieldFactor = math.Min(1, math.Max(0, params.YieldFactor+delta))
+	}
+	if hasDefects {
+		if p.ScrapRate+p.ReworkRate > 1 {
+			return params, fmt.Errorf("scrap_rate + rework_rate = %g is above 1", p.ScrapRate+p.ReworkRate)
+		}
+		p.YieldFactor = c.CalculateYieldFactor(p.ScrapRate, p.ReworkRate)
 	}
 
-	return p, nil
+	// Lead time and its value classification.
+	flow := p.ProcessTime + p.IdleTime
+	if flow > 0 && p.ProcessTime > 0 && p.ValueAddingTime > p.ProcessTime &&
+		!consistent(p.ValueAddingTime, p.ProcessTime) && !hasIssue(curIssues, "value_adding_time") {
+		return params, fmt.Errorf("process_time: the targets give %g, below value_adding_time %g",
+			p.ProcessTime, p.ValueAddingTime)
+	}
+	classified := cur.NonValueAddingTime > 0 || cur.NecessaryNonValueAddingTime > 0 ||
+		p.NonValueAddingTime > 0 || p.NecessaryNonValueAddingTime > 0
+	switch {
+	case flow > 0 && classified:
+		// The lead-time change not already explained by NVAT/NNVAT targets
+		// is taken from the untargeted categories. Targets that explain
+		// more than the change, or the opposite, are left for the check
+		// below to reject.
+		change := flow - cur.LeadTime
+		explained := (p.NonValueAddingTime - cur.NonValueAddingTime) +
+			(p.NecessaryNonValueAddingTime - cur.NecessaryNonValueAddingTime)
+		delta := change - explained
+		if delta*change < 0 || math.Abs(delta) > math.Abs(change) {
+			delta = 0
+		}
+		absorb := func(field *float64) {
+			*field += delta
+			delta = 0
+			if *field < 0 {
+				delta, *field = *field, 0
+			}
+		}
+		if !targeted["non_value_adding_time"] {
+			absorb(&p.NonValueAddingTime)
+		}
+		if delta != 0 && !targeted["necessary_non_value_adding_time"] {
+			absorb(&p.NecessaryNonValueAddingTime)
+		}
+		if class := c.CalculateLeadTime(p); !consistent(class, flow) && !hasIssue(curIssues, fieldClassSum) {
+			return params, fmt.Errorf("the targets give lead time (process + idle time) %g, but value adding + "+
+				"non-value adding + necessary non-value adding time = %g; these are two breakdowns of the same "+
+				"time (A.3), so adjust the process/idle time targets or the NVAT/NNVAT targets to agree "+
+				"(untargeted NVAT/NNVAT follow lead time automatically)", flow, class)
+		}
+		p.LeadTime = flow
+	case flow > 0:
+		p.LeadTime = flow
+	case classified || p.ValueAddingTime > 0:
+		p.LeadTime = c.CalculateLeadTime(p)
+	}
+
+	out := c.trimDerived(params, p)
+	_, outIssues := c.resolveParameters(out)
+	for _, issue := range outIssues {
+		if !hasIssue(curIssues, issue.Field) {
+			return params, fmt.Errorf("these targets would make the process inconsistent: %s", issue.Message)
+		}
+	}
+	return out, nil
+}
+
+// derivedFields are the stored values ResolveParameters can compute from
+// other values.
+var derivedFields = []func(*ProcessParameters) *float64{
+	func(p *ProcessParameters) *float64 { return &p.ProcessTime },
+	func(p *ProcessParameters) *float64 { return &p.IdleTime },
+	func(p *ProcessParameters) *float64 { return &p.LeadTime },
+	func(p *ProcessParameters) *float64 { return &p.ProcessingTime },
+	func(p *ProcessParameters) *float64 { return &p.TransportTime },
+	func(p *ProcessParameters) *float64 { return &p.WaitingTime },
+	func(p *ProcessParameters) *float64 { return &p.RangeOfInventory },
+	func(p *ProcessParameters) *float64 { return &p.ValueAddingTime },
+	func(p *ProcessParameters) *float64 { return &p.ValueAddingTimeProcess },
+	func(p *ProcessParameters) *float64 { return &p.YieldFactor },
+}
+
+// trimDerived returns out with derived values that input did not store
+// cleared again, wherever ResolveParameters computes the same values without
+// them. A designed state then stores what the current state stored (with
+// new numbers), instead of every derived value.
+func (c *Calculator) trimDerived(input, out ProcessParameters) ProcessParameters {
+	want := c.ResolveParameters(out)
+	for _, field := range derivedFields {
+		if *field(&input) != 0 || *field(&out) == 0 {
+			continue
+		}
+		trial := out
+		*field(&trial) = 0
+		got := c.ResolveParameters(trial)
+		same := true
+		for _, f := range derivedFields {
+			if !consistent(*f(&got), *f(&want)) {
+				same = false
+				break
+			}
+		}
+		if same {
+			out = trial
+		}
+	}
+	return out
 }
 
 // applyInventoryTargets returns inv with targets applied (own overrides def).
