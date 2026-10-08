@@ -106,9 +106,7 @@ func (d *Designer) DesignFutureStateWithTargets(current *ValueStream, analysis *
 		DesignedAt:        time.Now(),
 		ConsistencyIssues: CheckConsistency(current),
 	}
-	if n := len(result.ConsistencyIssues); n > 0 {
-		result.Notes = append(result.Notes, fmt.Sprintf(consistencyNoteFormat, n))
-	}
+	result.Notes = append(result.Notes, issueNotes(result.ConsistencyIssues)...)
 
 	// Identify improvement potentials
 	potentials, err := d.IdentifyImprovementPotentials(current, analysis)
@@ -572,11 +570,14 @@ func (d *Designer) checkTaktTimePrinciple(vs *ValueStream) bool {
 	if !ok || takt <= 0 {
 		return false
 	}
-	unit := d.calculator.ReferenceTimeUnit(vs.Processes)
+	ctx := d.calculator.contextOf(vs)
 	// Check if any process has cycle time close to customer takt
 	for _, process := range vs.Processes {
-		ct := d.calculator.normalizeTimes(process.Parameters, unit).CycleTime
-		if positive(ct) {
+		params, ok := d.calculator.resolvedIn(process.Parameters, ctx)
+		if !ok {
+			continue // unsupported time unit: cannot be compared with takt
+		}
+		if ct := params.CycleTime; positive(ct) {
 			ratio := *ct / takt
 			if ratio >= 0.9 && ratio <= 1.1 { // Within 10% of takt time
 				return true
@@ -601,27 +602,16 @@ func (d *Designer) checkSupermarketPrinciple(vs *ValueStream) bool {
 	return false
 }
 
-// checkContinuousFlowPrinciple checks if continuous flow principle is applied
+// checkContinuousFlowPrinciple checks if continuous flow principle is
+// applied: the stream's idle time (processes and inventory points, the
+// stream figures CalculateKPIs uses) is less than half its process time.
+// Not applied when either total is unknown.
 func (d *Designer) checkContinuousFlowPrinciple(vs *ValueStream) bool {
-	// Check for low idle times and waiting times
-	totalIdle := 0.0
-	totalProcess := 0.0
-
-	ctx := d.calculator.contextOf(vs)
-	for _, process := range vs.Processes {
-		params := d.calculator.resolvedIn(process.Parameters, ctx)
-		totalIdle += num(params.IdleTime)
-		totalProcess += num(params.ProcessTime)
+	f := d.calculator.figures(vs)
+	if f.idleTime == nil || f.processTime == nil || *f.processTime <= 0 {
+		return false
 	}
-
-	_, inventory := d.calculator.inventoryTimes(vs)
-	totalIdle += inventory
-
-	if totalProcess > 0 {
-		idleRatio := totalIdle / totalProcess
-		return idleRatio < 0.5 // Less than 50% idle time indicates good flow
-	}
-	return false
+	return *f.idleTime / *f.processTime < 0.5 // Less than 50% idle time indicates good flow
 }
 
 // checkPullSystemPrinciple checks if pull system principle is applied
@@ -673,13 +663,13 @@ func (d *Designer) IdentifyContinuousImprovements(vs *ValueStream, analysis *Ana
 		})
 	}
 
-	// Generate improvements based on waste
-	if analysis.WasteAnalysis.TotalWaste > 0 {
+	// Generate improvements based on waste (only when the waste is known)
+	if w := analysis.WasteAnalysis; w.TotalWaste != nil && *w.TotalWaste > 0 && w.WasteReductionPotential != nil {
 		improvements = append(improvements, ContinuousImprovement{
 			ID:        "ci_waste_reduction",
 			ProcessID: "", // System-wide
 			Description: fmt.Sprintf("Implement 5S and standard work to reduce waste by %.1f%%",
-				analysis.WasteAnalysis.WasteReductionPotential/analysis.WasteAnalysis.TotalWaste*100),
+				*w.WasteReductionPotential / *w.TotalWaste * 100),
 			Type:      "major_change",
 			Priority:  2,
 			Status:    "identified",

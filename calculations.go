@@ -2,6 +2,7 @@ package vsm
 
 import (
 	"errors"
+	"fmt"
 )
 
 // Calculator provides calculation methods for VSM parameters according to ISO 22468:2020.
@@ -15,7 +16,15 @@ import (
 // one unit. Methods that aggregate over []Process (CalculateTotalProcessTime,
 // CalculateOverallLeadTime, CalculateValueAddingTime, CalculateKPIs) first
 // convert every process's times into the reference unit returned by
-// ReferenceTimeUnit.
+// ReferenceTimeUnit. A process with an unsupported time unit (anything but
+// seconds, minutes, hours, days, weeks, or empty for the reference unit)
+// cannot be converted: its times are unknown in every total, never added
+// unconverted.
+//
+// Unknown parts: a stream total is known only when every element on the map
+// gives its part (see Calculator.figures in totals.go). CalculateKPIs omits
+// a KPI whose total is unknown; the float64-only aggregate methods return
+// NaN (test with math.IsNaN). CheckConsistency names the missing values.
 type Calculator struct{}
 
 // NewCalculator creates a new VSM calculator
@@ -91,26 +100,10 @@ func (c *Calculator) CalculateLeadTime(params ProcessParameters) float64 {
 // PT_total = Σ(PT_i) for i = 1 to n
 //
 // PT_i is the resolved process time (see ResolveParameters). Each process is
-// converted to ReferenceTimeUnit(processes).
+// converted to ReferenceTimeUnit(processes). NaN when a process's time is
+// unknown (see the Calculator doc).
 func (c *Calculator) CalculateTotalProcessTime(processes []Process) float64 {
-	pt, _, _ := c.streamTotals(&ValueStream{Processes: processes})
-	return pt
-}
-
-// streamTotals returns vs's total process time, lead time and value adding
-// time in its reference unit, each process resolved in the stream (see
-// ResolveParametersInStream). The lead time also includes the time of every
-// inventory point counted on its own (see inventoryTimes).
-func (c *Calculator) streamTotals(vs *ValueStream) (processTime, leadTime, valueAdding float64) {
-	ctx := c.contextOf(vs)
-	for _, process := range vs.Processes {
-		p := c.resolvedIn(process.Parameters, ctx)
-		processTime += num(p.ProcessTime)
-		leadTime += num(p.LeadTime)
-		valueAdding += num(p.ValueAddingTime)
-	}
-	_, inventory := c.inventoryTimes(vs)
-	return processTime, leadTime + inventory, valueAdding
+	return unknownTotal(c.figures(&ValueStream{Processes: processes}).processTime)
 }
 
 // CalculateProcessingTime calculates processing time according to formula (A.5)
@@ -160,10 +153,10 @@ func (c *Calculator) CalculateHandlingTime(params ProcessParameters) float64 {
 //
 // VATp_i is ValueAddingTimeProcess when entered, otherwise the process's
 // ValueAddingTime (see ResolveParameters). Each process is converted to
-// ReferenceTimeUnit(processes).
+// ReferenceTimeUnit(processes). NaN when a process's value adding time is
+// not entered (see the Calculator doc).
 func (c *Calculator) CalculateValueAddingTime(processes []Process) float64 {
-	_, _, vat := c.streamTotals(&ValueStream{Processes: processes})
-	return vat
+	return unknownTotal(c.figures(&ValueStream{Processes: processes}).valueAdding)
 }
 
 // CalculateTransportRepetitionTime calculates transport repetition time according to formula (A.10)
@@ -404,19 +397,22 @@ func (c *Calculator) CalculateProcessLeadTime(processTime, idleTime float64) flo
 // (see ResolveParameters), so stored waiting times are used. CalculateKPIs
 // resolves in the stream and does derive it, and also adds the inventory
 // points of ValueStream.Inventory, which this process-only sum does not
-// see.
+// see. NaN when a process's lead time is unknown, including stock whose
+// waiting time is unknown (see the Calculator doc).
 func (c *Calculator) CalculateOverallLeadTime(processes []Process) float64 {
-	_, lt, _ := c.streamTotals(&ValueStream{Processes: processes})
-	return lt
+	return unknownTotal(c.figures(&ValueStream{Processes: processes}).leadTime)
 }
 
 // ReferenceTimeUnit returns the unit that aggregated times and CalculateKPIs
-// time KPIs are expressed in: the TimeUnit of the first process that declares
-// one. Processes with an empty TimeUnit are assumed to already be in this
-// unit. Returns "" when no process declares a unit (no conversion happens).
+// time KPIs are expressed in: the TimeUnit of the first process that
+// declares a supported one (see isKnownTimeUnit). Processes with an empty
+// TimeUnit are assumed to already be in this unit; processes with an
+// unsupported unit cannot be converted to it (their times are unknown in
+// the totals). Returns "" when no process declares a supported unit (no
+// conversion happens).
 func (c *Calculator) ReferenceTimeUnit(processes []Process) TimeUnit {
 	for _, process := range processes {
-		if process.Parameters.TimeUnit != "" {
+		if isKnownTimeUnit(process.Parameters.TimeUnit) {
 			return process.Parameters.TimeUnit
 		}
 	}
@@ -531,6 +527,10 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 	if negative(params.CustomerDemand) {
 		errs = append(errs, errors.New("customer demand cannot be negative"))
 	}
+	if !unitSupported(params.TimeUnit) {
+		errs = append(errs, fmt.Errorf("time unit %q is not supported (use seconds, minutes, hours, days or "+
+			"weeks, or leave it empty for the stream's reference unit)", params.TimeUnit))
+	}
 
 	// Logical validations (on the resolved process time, see ResolveParameters)
 	if vatImpossible(c.ResolveParameters(params)) {
@@ -559,13 +559,20 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 // CalculateKPIs calculates the key performance indicators for a value stream.
 //
 // Time KPIs are in ReferenceTimeUnit(vs.Processes). A KPI is left out of the
-// map, rather than reported as 0, when it cannot be computed honestly:
+// map, rather than reported as 0, when it cannot be computed honestly; in
+// particular a total is left out when any element on the map cannot give
+// its part (a process whose lead time, process time or value adding time is
+// unknown, stock waiting for an unknown time, an inventory whose time or
+// stock is unknown, a process with an unsupported time unit), and so is
+// every KPI built on it. CheckConsistency names each missing value (Kind
+// IssueMissingData). All numbers come from the stream figures (totals.go),
+// which the analyzer, designer and text export share:
 //   - customer_takt: Customer.AvailableTime ÷ Customer.Demand when both are
 //     entered and demand is above 0 (both are per Customer.DemandPeriod, so
 //     the period cancels and DemandPeriod is not required here); otherwise
 //     Customer.TaktTime when entered; otherwise omitted.
 //   - total_lead_time, total_value_adding_time: omitted when there are no
-//     processes. Lead time = Σ(process time + idle time) over the processes
+//     processes, or a part is unknown. Lead time = Σ(process time + idle time) over the processes
 //     (see CalculateOverallLeadTime) + the time of each inventory point in
 //     vs.Inventory: quantity ÷ customer demand rate (see
 //     CalculateCustomerInventoryTime), or its stored range when the rate is
@@ -579,17 +586,19 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 //   - value_added_ratio (flow efficiency) = value adding time ÷ lead time,
 //     and process_efficiency = process time ÷ lead time (share of lead time
 //     spent in processes, including non-value-adding process time):
-//     omitted when lead time is 0. value_added_ratio is also omitted when a
-//     process's value adding time exceeds its process time or lead time
-//     (impossible; CheckConsistency reports it), so it never exceeds 1.
+//     omitted when lead time is 0 or either total is unknown.
+//     value_added_ratio is also omitted when a process's value adding time
+//     exceeds its process time or lead time (impossible; CheckConsistency
+//     reports it), so it never exceeds 1.
 //   - inventory_turns = Customer.Demand ÷ total stock (turns per
 //     Customer.DemandPeriod). Total stock is the stock the lead time
 //     counts, each once: every process's stock_quantity, plus each
 //     inventory not linked to a process with stock (its quantity, or range
 //     × demand rate when given by range alone). Omitted when there is no
 //     customer, demand is not entered or 0, stock is 0, or an inventory's
-//     stock cannot be known (range alone, no demand rate). A stock entered
-//     as 0 counts as 0; one not entered adds nothing.
+//     stock cannot be known (nothing entered, or range alone and no demand
+//     rate). A stock entered as 0 counts as 0; a process stock_quantity not
+//     entered adds nothing (the process holds no stock).
 //   - average_yield_factor: mean of the processes' yield factors (1 − scrap −
 //     rework when those are given, else the stored YieldFactor) over the
 //     processes whose yield is known: yield_factor, scrap_rate or
@@ -616,33 +625,25 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 		kpis["customer_takt"] = takt
 	}
 
+	f := c.figures(vs)
 	if len(vs.Processes) > 0 {
-		totalProcessTime, totalLeadTime, totalVAT := c.streamTotals(vs)
-
-		kpis["total_lead_time"] = totalLeadTime
-		kpis["total_value_adding_time"] = totalVAT
-
-		if totalLeadTime > 0 {
-			// A process whose value adding time exceeds its process or lead
-			// time (impossible; CheckConsistency reports it) makes the
-			// stream's flow efficiency unknown.
-			vatKnown := !exceeds(totalVAT, totalLeadTime)
-			ctx := c.contextOf(vs)
-			for _, process := range vs.Processes {
-				if vatImpossible(c.resolvedIn(process.Parameters, ctx)) {
-					vatKnown = false
-				}
-			}
-			if vatKnown {
-				kpis["value_added_ratio"] = c.CalculateValueAddedRatio(totalVAT, totalLeadTime)
-			}
-			kpis["process_efficiency"] = totalProcessTime / totalLeadTime
+		if f.leadTime != nil {
+			kpis["total_lead_time"] = *f.leadTime
+		}
+		if f.valueAdding != nil {
+			kpis["total_value_adding_time"] = *f.valueAdding
+		}
+		if ratio, ok := f.flowEfficiency(); ok {
+			kpis["value_added_ratio"] = ratio
+		}
+		if ratio, ok := f.processEfficiency(); ok {
+			kpis["process_efficiency"] = ratio
 		}
 	}
 
 	// Inventory turns over the same stock the lead time counts.
-	if totalStock, ok := c.streamStock(vs); ok && totalStock > 0 && vs.Customer != nil && positive(vs.Customer.Demand) {
-		kpis["inventory_turns"] = c.CalculateInventoryTurns(*vs.Customer.Demand, totalStock)
+	if f.stock != nil && *f.stock > 0 && vs.Customer != nil && positive(vs.Customer.Demand) {
+		kpis["inventory_turns"] = c.CalculateInventoryTurns(*vs.Customer.Demand, *f.stock)
 	}
 
 	// Average yield factor across processes whose yield is known (a yield

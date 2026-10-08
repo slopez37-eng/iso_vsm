@@ -486,7 +486,9 @@ func (s *Serializer) LoadValueStreamFromFile(filename string) (*ValueStream, []C
 // total or stored KPI, so the text never mixes resolved values with stale
 // ones. Stored KPIs that the library does not compute are listed separately
 // as stored. When stored values disagree with the computed ones, the map
-// ends with the consistency issues (see CheckConsistency).
+// ends with the consistency issues (see CheckConsistency), and when values
+// that stream totals need are missing, with the missing data (the KPIs that
+// need them are not shown).
 func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 	if vs == nil {
 		return "", errors.New("value stream cannot be nil")
@@ -560,18 +562,37 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		mapStr += "\n"
 	}
 
-	// Inventory: range is quantity ÷ customer demand rate when that is known.
+	// Inventory: range is quantity ÷ customer demand rate when that is
+	// known; the time each inventory adds to the lead time is the one the
+	// KPIs count (stream figures, totals.go).
 	if len(vs.Inventory) > 0 {
 		ctx := calc.contextOf(vs)
+		figures := calc.figures(vs)
 		mapStr += "Inventory:\n"
-		for _, inv := range vs.Inventory {
+		for i, inv := range vs.Inventory {
+			inf := figures.inventories[i]
+			r := inv.Range
+			if derived, ok := ctx.inventoryRange(inv); ok {
+				r = &derived
+			}
+			if inf.counted {
+				r = inf.time
+			}
 			rangeText := "range not given"
-			if _, derived := ctx.inventoryRange(inv); derived || inv.Range != nil {
-				rangeText = fmt.Sprintf("%.2f %s range", ctx.inventoryTime(inv), timeUnit)
+			switch {
+			case r != nil:
+				rangeText = fmt.Sprintf("%.2f %s range", *r, timeUnit)
+			case inf.counted:
+				rangeText = "range unknown"
 			}
 			mapStr += fmt.Sprintf("  %s: %s (%s)", inv.Name, optional(inv.Quantity, "%.2f units"), rangeText)
 			if holder, linked := stockHolder(vs, inv); linked {
-				mapStr += fmt.Sprintf(" — stock of process %s, counted in its waiting time", holder.ID)
+				if inf.counted {
+					mapStr += fmt.Sprintf(" — stock of process %s, whose waiting time is not known, so this "+
+						"range is counted", holder.ID)
+				} else {
+					mapStr += fmt.Sprintf(" — stock of process %s, counted in its waiting time", holder.ID)
+				}
 			}
 			mapStr += "\n"
 		}
@@ -613,11 +634,26 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		mapStr += "\n"
 	}
 
-	// Consistency issues
-	if issues := CheckConsistency(vs); len(issues) > 0 {
+	// Consistency issues: contradictions, then missing data.
+	var contradictions, missing []ConsistencyIssue
+	for _, issue := range CheckConsistency(vs) {
+		if issue.Kind == IssueMissingData {
+			missing = append(missing, issue)
+		} else {
+			contradictions = append(contradictions, issue)
+		}
+	}
+	if len(contradictions) > 0 {
 		mapStr += fmt.Sprintf("Consistency issues (%d): stored values that disagree with the computed "+
-			"values shown above\n", len(issues))
-		for _, issue := range issues {
+			"values shown above, or are impossible\n", len(contradictions))
+		for _, issue := range contradictions {
+			mapStr += fmt.Sprintf("  - %s\n", issue.Message)
+		}
+		mapStr += "\n"
+	}
+	if len(missing) > 0 {
+		mapStr += fmt.Sprintf("Missing data (%d): KPIs that need these values are not shown\n", len(missing))
+		for _, issue := range missing {
 			mapStr += fmt.Sprintf("  - %s\n", issue.Message)
 		}
 		mapStr += "\n"
@@ -716,6 +752,11 @@ func (v *Validator) ValidateProcess(process *Process) error {
 
 	if ct := process.Parameters.CycleTime; ct != nil && *ct < 0 {
 		return errors.New("cycle time cannot be negative")
+	}
+
+	if u := process.Parameters.TimeUnit; !unitSupported(u) {
+		return fmt.Errorf("time unit %q is not supported (use seconds, minutes, hours, days or weeks, "+
+			"or leave it empty for the stream's reference unit)", u)
 	}
 
 	return nil

@@ -212,6 +212,21 @@ func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64
 	// Generate recommendations
 	result.Recommendations = a.generateAssessmentRecommendations(result)
 
+	// A targeted KPI the library computes but could not compute here: the
+	// values it needs are missing (CheckConsistency lists them).
+	var uncomputed []string
+	for name := range targets {
+		if _, computed := currentKPIs[name]; !computed && kpiUnit(name) != "unit" {
+			uncomputed = append(uncomputed, name)
+		}
+	}
+	sort.Strings(uncomputed)
+	for _, name := range uncomputed {
+		result.Recommendations = append(result.Recommendations, fmt.Sprintf(
+			"%s has a target but cannot be computed: values it needs are missing or contradictory "+
+				"(see consistency_issues); enter them to rate it.", name))
+	}
+
 	return result, nil
 }
 

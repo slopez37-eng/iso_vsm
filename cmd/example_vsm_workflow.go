@@ -345,8 +345,18 @@ func displaySummary(analysis *vsm.AnalysisResult, design *vsm.DesignResult,
 
 	// Analysis Summary
 	fmt.Printf("Bottlenecks Found: %d\n", len(analysis.Bottlenecks))
-	fmt.Printf("Waste Reduction Potential: %.1f%%\n", analysis.WasteAnalysis.WasteReductionPotential/analysis.WasteAnalysis.TotalWaste*100)
-	fmt.Printf("Flow Efficiency: %.1f%%\n", analysis.FlowAnalysis.FlowEfficiency*100)
+	// Waste and flow efficiency are nil when data they need is missing
+	// (listed in the consistency issues as missing data).
+	if w := analysis.WasteAnalysis; w.TotalWaste != nil && *w.TotalWaste > 0 && w.WasteReductionPotential != nil {
+		fmt.Printf("Waste Reduction Potential: %.1f%%\n", *w.WasteReductionPotential / *w.TotalWaste * 100)
+	} else {
+		fmt.Println("Waste Reduction Potential: unknown")
+	}
+	if e := analysis.FlowAnalysis.FlowEfficiency; e != nil {
+		fmt.Printf("Flow Efficiency: %.1f%%\n", *e*100)
+	} else {
+		fmt.Println("Flow Efficiency: unknown")
+	}
 	fmt.Printf("Consistency Issues (current / future state): %d / %d\n",
 		len(analysis.ConsistencyIssues), len(vsm.CheckConsistency(design.FutureState)))
 

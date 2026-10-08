@@ -154,7 +154,7 @@ func TestCheckConsistencyNamesProcessAndUnit(t *testing.T) {
 		{ID: "ok", Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: F(2), IdleTime: F(3)}},
 		{ID: "bad", Parameters: ProcessParameters{TimeUnit: TimeUnitSeconds, ProcessTime: F(600), ProcessingTime: F(30), SetupTime: F(30), HandlingTime: F(60)}},
 	}}
-	issues := CheckConsistency(vs)
+	issues := contradictions(CheckConsistency(vs))
 	if len(issues) != 1 {
 		t.Fatalf("got %+v, want one issue", issues)
 	}
@@ -178,7 +178,7 @@ func TestCheckConsistencyMixedUnits(t *testing.T) {
 		// 0.25 h process + 0.5 h idle, consistent.
 		{ID: "p2", Parameters: ProcessParameters{TimeUnit: TimeUnitHours, ProcessTime: F(0.25), IdleTime: F(0.5), WaitingTime: F(0.5)}},
 	}}
-	issues := CheckConsistency(vs)
+	issues := contradictions(CheckConsistency(vs))
 	if len(issues) != 1 || issues[0].ID != "p1" || issues[0].Field != "idle_time" || issues[0].ComputedValue != 45 {
 		t.Fatalf("issues = %+v", issues)
 	}
@@ -200,7 +200,7 @@ func TestWholeStreamLeadTimeConsistency(t *testing.T) {
 		{ID: "p2", Parameters: ProcessParameters{TimeUnit: TimeUnitHours,
 			ProcessTime: F(0.5), IdleTime: F(1), ValueAddingTimeProcess: F(0.25), NonValueAddingTime: F(1.25)}},
 	}}
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Fatalf("unexpected issues: %+v", issues)
 	}
 	c := NewCalculator()
@@ -211,7 +211,7 @@ func TestWholeStreamLeadTimeConsistency(t *testing.T) {
 	}
 	var classified float64
 	for _, p := range vs.Processes {
-		r := c.resolvedIn(p.Parameters, c.contextOf(vs))
+		r, _ := c.resolvedIn(p.Parameters, c.contextOf(vs))
 		classified += c.CalculateLeadTime(r)
 	}
 	if !approx(classified, lt) {
@@ -224,7 +224,7 @@ func TestWholeStreamLeadTimeConsistency(t *testing.T) {
 
 	// Break the classification of p2: reported, lead time unchanged.
 	vs.Processes[1].Parameters.NonValueAddingTime = F(2)
-	issues := CheckConsistency(vs)
+	issues := contradictions(CheckConsistency(vs))
 	if len(issues) != 1 || issues[0].ID != "p2" || issues[0].Field != fieldClassSum {
 		t.Fatalf("issues = %+v", issues)
 	}
@@ -239,7 +239,7 @@ func TestCheckConsistencyCustomerAndStoredKPIs(t *testing.T) {
 		Processes: []Process{{ID: "p", Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: F(2), IdleTime: F(8)}}},
 		KPIs:      map[string]float64{"total_lead_time": 12, "made_up_kpi": 1},
 	}
-	issues := CheckConsistency(vs)
+	issues := contradictions(CheckConsistency(vs))
 	if len(issues) != 2 {
 		t.Fatalf("issues = %+v", issues)
 	}
@@ -250,7 +250,7 @@ func TestCheckConsistencyCustomerAndStoredKPIs(t *testing.T) {
 		t.Errorf("kpi issue = %+v", is)
 	}
 	vs.Customer.TaktTime, vs.KPIs = F(2.4), NewCalculator().CalculateKPIs(vs)
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Errorf("consistent stream gave %+v", issues)
 	}
 }
@@ -282,7 +282,7 @@ func TestContradictionsSurfaceInResults(t *testing.T) {
 		t.Errorf("design issues = %+v", design.ConsistencyIssues)
 	}
 	// The future state stores the computed value, so it is consistent.
-	if issues := CheckConsistency(design.FutureState); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(design.FutureState)); len(issues) != 0 {
 		t.Errorf("future state issues = %+v", issues)
 	}
 	assessment, err := NewAssessor().AssessValueStream(vs, nil, nil)
@@ -310,11 +310,12 @@ func TestDeserializeAndLoadReportIssues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(issues) != 1 || issues[0].Field != "idle_time" || len(vs.ConsistencyIssues) != 1 {
+	issues = contradictions(issues)
+	if len(issues) != 1 || issues[0].Field != "idle_time" || len(contradictions(vs.ConsistencyIssues)) != 1 {
 		t.Fatalf("issues = %+v / %+v", issues, vs.ConsistencyIssues)
 	}
 	plain, err := s.DeserializeValueStream(data)
-	if err != nil || len(plain.ConsistencyIssues) != 1 {
+	if err != nil || len(contradictions(plain.ConsistencyIssues)) != 1 {
 		t.Fatalf("DeserializeValueStream: %v, %+v", err, plain)
 	}
 
@@ -326,11 +327,11 @@ func TestDeserializeAndLoadReportIssues(t *testing.T) {
 	if err := s.LoadFromFile(path, &loaded); err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.ConsistencyIssues) != 1 {
+	if len(contradictions(loaded.ConsistencyIssues)) != 1 {
 		t.Errorf("LoadFromFile issues = %+v", loaded.ConsistencyIssues)
 	}
 	_, fileIssues, err := s.LoadValueStreamFromFile(path)
-	if err != nil || len(fileIssues) != 1 {
+	if err != nil || len(contradictions(fileIssues)) != 1 {
 		t.Errorf("LoadValueStreamFromFile: %v, %+v", err, fileIssues)
 	}
 
@@ -344,7 +345,7 @@ func TestDeserializeAndLoadReportIssues(t *testing.T) {
 	if err := s.LoadFromFile(path, &reloaded); err != nil {
 		t.Fatal(err)
 	}
-	if len(reloaded.ConsistencyIssues) != 0 {
+	if len(contradictions(reloaded.ConsistencyIssues)) != 0 {
 		t.Errorf("reloaded issues = %+v", reloaded.ConsistencyIssues)
 	}
 }
@@ -357,14 +358,14 @@ func TestIdealStateIsConsistent(t *testing.T) {
 		StockQuantity: F(5), TransportRepetitionTime: F(3), TransportRepetitionCount: I(2),
 		ValueAddingTime: F(12), NonValueAddingTime: F(91), ScrapRate: F(0.1),
 	}})
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Fatalf("test stream inconsistent: %+v", issues)
 	}
 	ideal, err := NewDesigner().CreateIdealState(vs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if issues := CheckConsistency(ideal); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(ideal)); len(issues) != 0 {
 		t.Errorf("ideal state issues: %+v", issues)
 	}
 	// Lead time = value adding time only: 5 + 4 + 12.
@@ -393,7 +394,7 @@ func TestInventoryTimeIsStockOverDemand(t *testing.T) {
 
 	// A correct stored 2-day waiting time is consistent.
 	vs := stream(twoDays)
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Errorf("correct 2-day waiting time flagged: %+v", issues)
 	}
 	// Not stored: derived as 2 days, and lead time includes it.
@@ -406,14 +407,14 @@ func TestInventoryTimeIsStockOverDemand(t *testing.T) {
 	}
 	// Stock × cycle time (14,400 s) stored as waiting time is a contradiction.
 	vs = stream(240 * 60)
-	issues := CheckConsistency(vs)
+	issues := contradictions(CheckConsistency(vs))
 	if len(issues) != 1 || issues[0].Field != "waiting_time" || !approx(issues[0].ComputedValue, twoDays) {
 		t.Errorf("issues = %+v, want one waiting_time issue computing %v", issues, twoDays)
 	}
 	// A wrong inventory range is reported too.
 	vs = stream(twoDays)
 	vs.Inventory[0].Range = F(240 * 60)
-	issues = CheckConsistency(vs)
+	issues = contradictions(CheckConsistency(vs))
 	if len(issues) != 1 || issues[0].Element != "inventory" || !approx(issues[0].ComputedValue, twoDays) {
 		t.Errorf("inventory issues = %+v", issues)
 	}
@@ -429,13 +430,13 @@ func TestInventoryTimeIsStockOverDemand(t *testing.T) {
 	} {
 		vs = stream(240 * 60)
 		vs.Customer = cust
-		if issues := CheckConsistency(vs); len(issues) != 1 || issues[0].Element != "inventory" ||
+		if issues := contradictions(CheckConsistency(vs)); len(issues) != 1 || issues[0].Element != "inventory" ||
 			issues[0].Field != "range" || !approx(issues[0].ComputedValue, 240*60) {
 			t.Errorf("%s: issues = %+v, want one inventory range issue", name, issues)
 		}
 		vs = stream(twoDays)
 		vs.Customer = cust
-		if issues := CheckConsistency(vs); len(issues) != 0 {
+		if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 			t.Errorf("%s: agreeing range flagged: %+v", name, issues)
 		}
 		vs = stream(0)
@@ -483,7 +484,7 @@ func TestDefectFractionAboveOne(t *testing.T) {
 		{ID: "bad", Parameters: bad},
 		{ID: "good", Parameters: ProcessParameters{ProcessTime: F(10), YieldFactor: F(0.9), TimeUnit: TimeUnitMinutes}},
 	}}
-	issues := CheckConsistency(vs)
+	issues := contradictions(CheckConsistency(vs))
 	if len(issues) != 1 || issues[0].ID != "bad" || issues[0].Field != fieldDefects {
 		t.Fatalf("issues = %+v, want one %q issue for process bad", issues, fieldDefects)
 	}
@@ -557,7 +558,7 @@ func TestWorkingDaysPerWeek(t *testing.T) {
 	// Outside 1–7 is invalid: reported, and nothing is derived from it.
 	bad := *vs
 	bad.Customer = &Customer{ID: "c", Demand: F(100), DemandPeriod: DemandPeriodDay, WorkingDaysPerWeek: F(8)}
-	issues := CheckConsistency(&bad)
+	issues := contradictions(CheckConsistency(&bad))
 	if len(issues) != 1 || issues[0].Field != "working_days_per_week" {
 		t.Errorf("issues = %+v, want one working_days_per_week issue", issues)
 	}
@@ -590,8 +591,8 @@ func TestLeadTimeIncludesInventoryPoints(t *testing.T) {
 		t.Errorf("value_added_ratio = %v, want %v", v, 10.0/2890)
 	}
 	idle, _ := NewAnalyzer().AnalyzeIdleTimes(vs)
-	if !approx(idle.TotalIdleTime, 2880) || !approx(idle.IdleTimeByInventory["i"], 2880) {
-		t.Errorf("idle = %v (by inventory %v), want 2880", idle.TotalIdleTime, idle.IdleTimeByInventory)
+	if !approx(val(idle.TotalIdleTime), 2880) || !approx(idle.IdleTimeByInventory["i"], 2880) {
+		t.Errorf("idle = %v (by inventory %v), want 2880", val(idle.TotalIdleTime), idle.IdleTimeByInventory)
 	}
 	// Rate unknown: the stored range (reference unit) is used.
 	vs.Customer = nil
@@ -621,7 +622,7 @@ func TestLinkedInventoryNotDoubleCounted(t *testing.T) {
 	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 2890) {
 		t.Errorf("linked: total_lead_time = %v, want 2890 (stock counted once)", lt)
 	}
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Errorf("linked and equal: issues %+v", issues)
 	}
 	// Without the link both are counted: they are two different stocks.
@@ -632,7 +633,7 @@ func TestLinkedInventoryNotDoubleCounted(t *testing.T) {
 	// A link that disagrees with the process's stock is reported.
 	vs.Inventory[0].ProcessID = "p"
 	vs.Inventory[0].Quantity = F(150)
-	issues := CheckConsistency(vs)
+	issues := contradictions(CheckConsistency(vs))
 	if len(issues) != 1 || issues[0].Element != "inventory" || issues[0].Field != "quantity" || issues[0].ComputedValue != 200 {
 		t.Errorf("issues = %+v, want one inventory quantity issue (process has 200)", issues)
 	}
@@ -647,7 +648,7 @@ func TestLinkedInventoryNotDoubleCounted(t *testing.T) {
 	if inv := future.Inventory[0]; inv.ProcessID != "p_future" || !approx(num(inv.Quantity), 100) {
 		t.Errorf("future inventory = %+v, want 100 linked to p_future", inv)
 	}
-	if issues := CheckConsistency(future); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(future)); len(issues) != 0 {
 		t.Errorf("future issues: %+v", issues)
 	}
 	if lt := future.KPIs["total_lead_time"]; !approx(lt, 10+1440) {
@@ -715,7 +716,7 @@ func TestLinkedInventoryKeepsOnlyKnownTime(t *testing.T) {
 	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 10+1440) {
 		t.Errorf("total_lead_time = %v, want 1450", lt)
 	}
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Errorf("issues = %+v, want none", issues)
 	}
 	// With the process's waiting time stored, it is counted once, through
@@ -724,7 +725,7 @@ func TestLinkedInventoryKeepsOnlyKnownTime(t *testing.T) {
 	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 10+1440) {
 		t.Errorf("waiting stored: total_lead_time = %v, want 1450", lt)
 	}
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Errorf("waiting stored: issues = %+v, want none", issues)
 	}
 }
@@ -734,14 +735,14 @@ func TestLinkedInventoryKeepsOnlyKnownTime(t *testing.T) {
 func TestExplicitZeroYieldCompared(t *testing.T) {
 	vs := &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
 		ProcessTime: F(10), YieldFactor: F(0), ScrapRate: F(0.1)}}}}
-	issues := CheckConsistency(vs)
+	issues := contradictions(CheckConsistency(vs))
 	if len(issues) != 1 || issues[0].Field != "yield_factor" || issues[0].StoredValue != 0 ||
 		!approx(issues[0].ComputedValue, 0.9) {
 		t.Errorf("issues = %+v, want one yield_factor issue (stored 0, computed 0.9)", issues)
 	}
 	// Not entered: no issue.
 	vs.Processes[0].Parameters.YieldFactor = nil
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Errorf("yield not entered flagged: %+v", issues)
 	}
 }
@@ -751,7 +752,7 @@ func TestExplicitZeroYieldCompared(t *testing.T) {
 func TestDefectsJustAboveOneImpossible(t *testing.T) {
 	vs := &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
 		ProcessTime: F(10), ScrapRate: F(0.6), ReworkRate: F(0.404)}}}}
-	issues := CheckConsistency(vs)
+	issues := contradictions(CheckConsistency(vs))
 	if len(issues) != 1 || issues[0].Field != fieldDefects {
 		t.Errorf("issues = %+v, want one %s issue", issues, fieldDefects)
 	}
@@ -760,7 +761,7 @@ func TestDefectsJustAboveOneImpossible(t *testing.T) {
 	}
 	// Float rounding at exactly 1 is not a contradiction.
 	vs.Processes[0].Parameters.ScrapRate, vs.Processes[0].Parameters.ReworkRate = F(0.7), F(0.3)
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Errorf("scrap 0.7 + rework 0.3 flagged: %+v", issues)
 	}
 	// Targets cannot create it either.
@@ -777,7 +778,7 @@ func TestDefectsJustAboveOneImpossible(t *testing.T) {
 func TestValueAddingTimeAboveLeadTime(t *testing.T) {
 	vs := &ValueStream{ID: "vs", Name: "VAT", Processes: []Process{{ID: "p", Name: "P", Parameters: ProcessParameters{
 		TimeUnit: TimeUnitMinutes, IdleTime: F(10), ValueAddingTime: F(20)}}}}
-	issues := CheckConsistency(vs)
+	issues := contradictions(CheckConsistency(vs))
 	if len(issues) != 1 || issues[0].Field != "value_adding_time" || !approx(issues[0].ComputedValue, 10) {
 		t.Errorf("issues = %+v, want one value_adding_time issue (lead time 10)", issues)
 	}
@@ -793,12 +794,12 @@ func TestValueAddingTimeAboveLeadTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.ConsistencyIssues) != 1 {
+	if len(contradictions(loaded.ConsistencyIssues)) != 1 {
 		t.Errorf("loaded issues = %+v, want one", loaded.ConsistencyIssues)
 	}
 	// Within the lead time it is fine.
 	vs.Processes[0].Parameters.IdleTime = F(40)
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Errorf("VAT 20 within lead time 40 flagged: %+v", issues)
 	}
 	if r := NewCalculator().CalculateKPIs(vs)["value_added_ratio"]; !approx(r, 0.5) {
@@ -948,7 +949,7 @@ func TestInventoryQuantityZeroVersusNotEntered(t *testing.T) {
 	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 10) {
 		t.Errorf("quantity 0: lead time %v, want 10", lt)
 	}
-	if f := field(CheckConsistency(vs)); f != "range" {
+	if f := field(contradictions(CheckConsistency(vs))); f != "range" {
 		t.Errorf("quantity 0, range 1440: issue %v, want range", f)
 	}
 	// Quantity not entered: the range is the measure (1 day of stock).
@@ -956,7 +957,7 @@ func TestInventoryQuantityZeroVersusNotEntered(t *testing.T) {
 	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 1450) {
 		t.Errorf("range only: lead time %v, want 1450", lt)
 	}
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Errorf("range only: issues %+v", issues)
 	}
 	if turns := c.CalculateKPIs(vs)["inventory_turns"]; !approx(turns, 1) {
@@ -965,7 +966,7 @@ func TestInventoryQuantityZeroVersusNotEntered(t *testing.T) {
 	// Linked to a process whose stock is entered as 0: the same empty
 	// stock, consistent.
 	vs = stream(Inventory{ID: "i", Quantity: F(0), ProcessID: "p"}, F(0))
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Errorf("empty linked inventory, stock 0: issues %+v", issues)
 	}
 	if _, ok := c.CalculateKPIs(vs)["inventory_turns"]; ok {
@@ -973,12 +974,12 @@ func TestInventoryQuantityZeroVersusNotEntered(t *testing.T) {
 	}
 	// Linked inventory of 50 to a process whose stock is entered as 0.
 	vs = stream(Inventory{ID: "i", Quantity: F(50), ProcessID: "p"}, F(0))
-	if f := field(CheckConsistency(vs)); f != "quantity" {
+	if f := field(contradictions(CheckConsistency(vs))); f != "quantity" {
 		t.Errorf("quantity 50 vs stock 0: issue %v, want quantity", f)
 	}
 	// Linked inventory to a process whose stock is not entered: not linked.
 	vs = stream(Inventory{ID: "i", Quantity: F(50), ProcessID: "p"}, nil)
-	if f := field(CheckConsistency(vs)); f != "process_id" {
+	if f := field(contradictions(CheckConsistency(vs))); f != "process_id" {
 		t.Errorf("stock not entered: issue %v, want process_id", f)
 	}
 }
@@ -988,14 +989,14 @@ func TestWorkingDaysZeroIsInvalid(t *testing.T) {
 	vs := &ValueStream{ID: "vs", Name: "W", Processes: []Process{{ID: "p", Name: "p",
 		Parameters: ProcessParameters{ProcessTime: F(1)}}},
 		Customer: &Customer{ID: "c", Demand: F(100), DemandPeriod: DemandPeriodDay, WorkingDaysPerWeek: F(0)}}
-	if issues := CheckConsistency(vs); len(issues) != 1 || issues[0].Field != "working_days_per_week" {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 1 || issues[0].Field != "working_days_per_week" {
 		t.Errorf("working days 0: issues %+v", issues)
 	}
 	if err := NewValidator().ValidateValueStream(vs); err == nil {
 		t.Errorf("working days 0 must fail validation")
 	}
 	vs.Customer.WorkingDaysPerWeek = nil
-	if issues := CheckConsistency(vs); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Errorf("working days not entered: issues %+v", issues)
 	}
 }

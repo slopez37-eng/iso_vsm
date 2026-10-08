@@ -222,7 +222,7 @@ func richStream() *ValueStream {
 // TestTargetsOutputIsConsistent: whatever targets are applied, the future
 // state contains no contradictions.
 func TestTargetsOutputIsConsistent(t *testing.T) {
-	if issues := CheckConsistency(richStream()); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(richStream())); len(issues) != 0 {
 		t.Fatalf("richStream inconsistent: %+v", issues)
 	}
 	cases := map[string]*FutureStateTargets{
@@ -251,7 +251,7 @@ func TestTargetsOutputIsConsistent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if issues := CheckConsistency(future); len(issues) != 0 {
+			if issues := contradictions(CheckConsistency(future)); len(issues) != 0 {
 				t.Errorf("future state issues: %+v", issues)
 			}
 		})
@@ -378,7 +378,7 @@ func TestTargetsFromContradictingCurrentState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if issues := CheckConsistency(future); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(future)); len(issues) != 0 {
 		t.Errorf("future issues: %+v", issues)
 	}
 	if it := num(future.Processes[0].Parameters.IdleTime); !approx(it, 20) {
@@ -410,7 +410,7 @@ func TestTargetsStrictProcessTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if issues := CheckConsistency(future); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(future)); len(issues) != 0 {
 		t.Errorf("shortfall future issues: %+v", issues)
 	}
 	if pt := num(NewCalculator().ResolveParameters(future.Processes[0].Parameters).ProcessTime); !approx(pt, 2) {
@@ -426,7 +426,7 @@ func TestTargetsStrictProcessTime(t *testing.T) {
 	if pt := num(future.Processes[0].Parameters.ProcessTime); !approx(pt, 9) {
 		t.Errorf("total-only PT = %v, want 9", pt)
 	}
-	if issues := CheckConsistency(future); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(future)); len(issues) != 0 {
 		t.Errorf("total-only future issues: %+v", issues)
 	}
 	// Total only: a setup target would replace the total with a part.
@@ -442,7 +442,7 @@ func TestTargetsStrictProcessTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if issues := CheckConsistency(future); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(future)); len(issues) != 0 {
 		t.Errorf("repetitive future issues: %+v", issues)
 	}
 	if pt := num(NewCalculator().ResolveParameters(future.Processes[0].Parameters).ProcessTime); !approx(pt, 7) {
@@ -478,14 +478,14 @@ func TestZeroTargetsRecomputeLeadTime(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			current := stream(tt.current)
-			if issues := CheckConsistency(current); len(issues) != 0 {
+			if issues := contradictions(CheckConsistency(current)); len(issues) != 0 {
 				t.Fatalf("current inconsistent: %+v", issues)
 			}
 			future, err := NewDesigner().DesignFutureStateFromTargets(current, &FutureStateTargets{Default: &tt.targets})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if issues := CheckConsistency(future); len(issues) != 0 {
+			if issues := contradictions(CheckConsistency(future)); len(issues) != 0 {
 				t.Errorf("future issues: %+v", issues)
 			}
 			got := c.ResolveParametersInStream(future.Processes[0].Parameters, future)
@@ -551,7 +551,7 @@ func TestZeroYieldTargetKept(t *testing.T) {
 	if got := future.KPIs["average_yield_factor"]; !approx(got, 0.5) {
 		t.Errorf("average_yield_factor = %v, want 0.5", got)
 	}
-	if issues := CheckConsistency(future); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(future)); len(issues) != 0 {
 		t.Errorf("future state issues: %+v", issues)
 	}
 	// The marker survives a JSON round trip.
@@ -589,10 +589,10 @@ func TestInventoryRangeTargetUsesResolvedRange(t *testing.T) {
 		if !approx(num(inv.Quantity), 100) {
 			t.Errorf("%s: quantity = %v, want 100", name, num(inv.Quantity))
 		}
-		if r := NewCalculator().contextOf(future).inventoryTime(inv); !approx(r, 1) {
+		if r := val(NewCalculator().figures(future).inventories[0].time); !approx(r, 1) {
 			t.Errorf("%s: range = %v days, want 1", name, r)
 		}
-		if issues := CheckConsistency(future); len(issues) != 0 {
+		if issues := contradictions(CheckConsistency(future)); len(issues) != 0 {
 			t.Errorf("%s: future issues %+v", name, issues)
 		}
 	}
@@ -648,7 +648,7 @@ func TestZeroStockTargetRemovesLinkedInventory(t *testing.T) {
 	if inv := future.Inventory[0]; num(inv.Quantity) != 0 || num(inv.Range) != 0 {
 		t.Errorf("future inventory = %+v, want empty", inv)
 	}
-	if issues := CheckConsistency(future); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(future)); len(issues) != 0 {
 		t.Errorf("future issues = %+v, want none", issues)
 	}
 	// Range alone without a demand rate: the range moves with the stock.
@@ -677,7 +677,7 @@ func TestTargetsZeroAndNotEntered(t *testing.T) {
 			ScrapRate: F(0.1)}}},
 		Inventory: []Inventory{{ID: "i", Quantity: F(50)}},
 	}
-	if issues := CheckConsistency(current); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(current)); len(issues) != 0 {
 		t.Fatalf("current inconsistent: %+v", issues)
 	}
 	future, err := NewDesigner().DesignFutureStateFromTargets(current, &FutureStateTargets{
@@ -691,7 +691,7 @@ func TestTargetsZeroAndNotEntered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if issues := CheckConsistency(future); len(issues) != 0 {
+	if issues := contradictions(CheckConsistency(future)); len(issues) != 0 {
 		t.Errorf("future issues: %+v", issues)
 	}
 	p := future.Processes[0].Parameters

@@ -268,10 +268,10 @@ type Inventory struct {
 	// When the process has no waiting time to carry the stock's time (no
 	// customer demand rate and no waiting_time stored), the inventory's
 	// range is the only measure of it and is counted instead; the stock is
-	// still counted once (inventory turns). An empty inventory (quantity
-	// and range not entered or 0) linked to a process without stock is
-	// consistent. See
-	// Calculator.CalculateKPIs.
+	// still counted once (inventory turns). An empty inventory (quantity or
+	// range entered as 0) linked to a process without stock is consistent;
+	// one with nothing entered is missing data (its time and stock are
+	// unknown, see CheckConsistency). See Calculator.CalculateKPIs.
 	ProcessID   string `json:"process_id,omitempty"`
 	Description string `json:"description,omitempty"`
 }

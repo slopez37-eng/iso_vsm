@@ -12,11 +12,11 @@ func TestAnalyzeIdleTimesMixedUnits(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Minutes (see mixedUnitStream): idle 10 + 6 + 6 = 22, process 2 + 1 + 3 = 6.
-	if !approx(got.TotalIdleTime, 22) {
-		t.Errorf("total idle = %v, want 22", got.TotalIdleTime)
+	if !approx(val(got.TotalIdleTime), 22) {
+		t.Errorf("total idle = %v, want 22", val(got.TotalIdleTime))
 	}
-	if !approx(got.IdleTimeEfficiency, 6.0/28) {
-		t.Errorf("idle efficiency = %v, want %v", got.IdleTimeEfficiency, 6.0/28)
+	if !approx(val(got.IdleTimeEfficiency), 6.0/28) {
+		t.Errorf("idle efficiency = %v, want %v", val(got.IdleTimeEfficiency), 6.0/28)
 	}
 }
 
@@ -40,8 +40,8 @@ func TestAnalyzeFlowEfficiencyMatchesKPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := NewCalculator().CalculateKPIs(vs)["value_added_ratio"]; !approx(got.FlowEfficiency, want) {
-		t.Errorf("flow efficiency = %v, want value_added_ratio %v", got.FlowEfficiency, want)
+	if want := NewCalculator().CalculateKPIs(vs)["value_added_ratio"]; !approx(val(got.FlowEfficiency), want) {
+		t.Errorf("flow efficiency = %v, want value_added_ratio %v", val(got.FlowEfficiency), want)
 	}
 }
 
@@ -170,7 +170,7 @@ func TestAnalyzeCurrentStateNotesMissingLoadInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Notes) != 1 || len(got.Bottlenecks) != 0 {
+	if len(got.Notes) == 0 || got.Notes[0] != missingLoadInputsNote || len(got.Bottlenecks) != 0 {
 		t.Errorf("notes = %v, bottlenecks = %v", got.Notes, got.Bottlenecks)
 	}
 }

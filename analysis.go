@@ -41,16 +41,32 @@ type BottleneckInfo struct {
 	Description     string  `json:"description"`
 }
 
-// IdleTimeAnalysis contains analysis of idle times across the value stream
+// IdleTimeAnalysis contains analysis of idle times across the value stream.
+//
+// The numbers are the stream figures CalculateKPIs uses (totals.go): a
+// total is nil (omitted in JSON) when an element on the map cannot give its
+// part, and CheckConsistency names the missing value (Kind
+// IssueMissingData).
 type IdleTimeAnalysis struct {
-	TotalIdleTime     float64            `json:"total_idle_time"`
+	// TotalIdleTime is the stream's idle time: each process's idle time
+	// (0 for a process whose lead time is its process time alone) plus the
+	// time of each inventory point counted on its own. nil when unknown.
+	TotalIdleTime *float64 `json:"total_idle_time,omitempty"`
+	// IdleTimeByProcess is each process's idle time, for the processes
+	// whose idle time is known.
 	IdleTimeByProcess map[string]float64 `json:"idle_time_by_process"`
 	// IdleTimeByInventory is the waiting time of each inventory point counted
-	// on its own (see Inventory.ProcessID), keyed by inventory ID. It is part
-	// of TotalIdleTime and of IdleTimeBreakdown.WaitingTime.
+	// on its own (see Inventory.ProcessID), keyed by inventory ID, when
+	// known. It is part of TotalIdleTime and of IdleTimeBreakdown.WaitingTime.
 	IdleTimeByInventory map[string]float64 `json:"idle_time_by_inventory,omitempty"`
-	IdleTimeBreakdown   IdleTimeBreakdown  `json:"idle_time_breakdown"`
-	IdleTimeEfficiency  float64            `json:"idle_time_efficiency"` // Share of productive time, as a fraction (0-1)
+	// IdleTimeBreakdown splits TotalIdleTime into its entered (or
+	// computed) parts; an idle time given only as a total is not split, so
+	// the parts can add up to less. nil when TotalIdleTime is unknown.
+	IdleTimeBreakdown *IdleTimeBreakdown `json:"idle_time_breakdown,omitempty"`
+	// IdleTimeEfficiency is process time ÷ (process time + idle time), the
+	// share of the lead time spent in processes, as a fraction (0-1): the
+	// process_efficiency KPI. nil when unknown.
+	IdleTimeEfficiency *float64 `json:"idle_time_efficiency,omitempty"`
 }
 
 // IdleTimeBreakdown breaks down idle time by category
@@ -60,18 +76,35 @@ type IdleTimeBreakdown struct {
 	StorageTime   float64 `json:"storage_time"`
 }
 
-// WasteAnalysis contains analysis of different types of waste (Muda)
+// WasteAnalysis contains analysis of different types of waste (Muda), in
+// the reference time unit. Waste is estimated from the times the lead time
+// counts (the stream figures, totals.go), so the same stock gives the same
+// waste however it is drawn (process stock, linked or separate inventory).
+// The totals are nil (omitted in JSON) when unknown: when the stream lead
+// time is unknown, or a process with scrap or rework has no known process
+// time (CheckConsistency names the missing value).
 type WasteAnalysis struct {
-	TotalWaste              float64            `json:"total_waste"`
-	WasteByType             map[string]float64 `json:"waste_by_type"` // 7 types of waste
-	WasteByProcess          map[string]float64 `json:"waste_by_process"`
-	WasteReductionPotential float64            `json:"waste_reduction_potential"`
+	TotalWaste *float64 `json:"total_waste,omitempty"`
+	// WasteByType holds the 7 types of waste; empty when TotalWaste is
+	// unknown.
+	WasteByType map[string]float64 `json:"waste_by_type"`
+	// WasteByProcess is each process's waste, for the processes whose
+	// waste is known.
+	WasteByProcess map[string]float64 `json:"waste_by_process"`
+	// WasteByInventory is the waste of each inventory point counted on its
+	// own (its time, split between inventory and waiting waste), when known.
+	WasteByInventory        map[string]float64 `json:"waste_by_inventory,omitempty"`
+	WasteReductionPotential *float64           `json:"waste_reduction_potential,omitempty"`
 }
 
 // FlowAnalysis contains analysis of product and information flow
 type FlowAnalysis struct {
-	FlowType               FlowType           `json:"flow_type"` // Push or Pull
-	FlowEfficiency         float64            `json:"flow_efficiency"`
+	FlowType FlowType `json:"flow_type"` // Push or Pull
+	// FlowEfficiency is value adding time ÷ lead time: the
+	// value_added_ratio KPI, with the same validity. nil (omitted in JSON)
+	// when unknown: a total unknown, lead time 0, or a value adding time
+	// larger than its process or lead time.
+	FlowEfficiency         *float64           `json:"flow_efficiency,omitempty"`
 	FlowInterruptions      []FlowInterruption `json:"flow_interruptions"`
 	InformationFlowQuality float64            `json:"information_flow_quality"`
 }
@@ -148,9 +181,7 @@ func (a *Analyzer) AnalyzeCurrentState(vs *ValueStream) (*AnalysisResult, error)
 	}
 
 	result.ConsistencyIssues = CheckConsistency(vs)
-	if n := len(result.ConsistencyIssues); n > 0 {
-		result.Notes = append(result.Notes, fmt.Sprintf(consistencyNoteFormat, n))
-	}
+	result.Notes = append(result.Notes, issueNotes(result.ConsistencyIssues)...)
 
 	return result, nil
 }
@@ -205,8 +236,33 @@ const missingLoadInputsNote = "Process capacity and utilization not computed: se
 	"and each process's cycle_time"
 
 // consistencyNoteFormat is reported when the input contradicts itself.
-const consistencyNoteFormat = "%d stored value(s) disagree with the values computed from their parts; " +
-	"calculations use the computed values (see consistency_issues)"
+const consistencyNoteFormat = "%d stored value(s) disagree with the values computed from their parts, or are " +
+	"impossible; calculations use the computed values (see consistency_issues, kind \"contradiction\")"
+
+// missingDataNoteFormat is reported when stream totals cannot be computed.
+const missingDataNoteFormat = "%d value(s) needed for stream totals are missing; the totals and KPIs that " +
+	"need them are not computed (see consistency_issues, kind \"missing_data\")"
+
+// issueNotes returns the notes for issues: one counting contradictions,
+// one counting missing data.
+func issueNotes(issues []ConsistencyIssue) []string {
+	var contradictions, missing int
+	for _, issue := range issues {
+		if issue.Kind == IssueMissingData {
+			missing++
+		} else {
+			contradictions++
+		}
+	}
+	var notes []string
+	if contradictions > 0 {
+		notes = append(notes, fmt.Sprintf(consistencyNoteFormat, contradictions))
+	}
+	if missing > 0 {
+		notes = append(notes, fmt.Sprintf(missingDataNoteFormat, missing))
+	}
+	return notes
+}
 
 // hasLoadInputs reports whether the customer data needed for utilization is set.
 func (a *Analyzer) hasLoadInputs(vs *ValueStream) bool {
@@ -232,14 +288,16 @@ func (a *Analyzer) hasLoadInputs(vs *ValueStream) bool {
 //
 // ok is false (and nothing is assumed) when the customer, Demand,
 // DemandPeriod, AvailableTime or the process's CycleTime is not entered, or
-// Demand, AvailableTime or CycleTime is 0.
+// Demand, AvailableTime or CycleTime is 0, or the process's time unit is not
+// supported.
 func (a *Analyzer) CalculateProcessLoad(process Process, vs *ValueStream) (capacity, utilization float64, ok bool) {
 	if vs == nil || !a.hasLoadInputs(vs) {
 		return 0, 0, false
 	}
 	ctx := a.calculator.contextOf(vs)
-	ct := a.calculator.resolvedIn(process.Parameters, ctx).CycleTime
-	if !positive(ct) {
+	params, unitOK := a.calculator.resolvedIn(process.Parameters, ctx)
+	ct := params.CycleTime
+	if !unitOK || !positive(ct) {
 		return 0, 0, false
 	}
 	cycleTime := *ct
@@ -248,58 +306,43 @@ func (a *Analyzer) CalculateProcessLoad(process Process, vs *ValueStream) (capac
 	return available / cycleTime, *vs.Customer.Demand * cycleTime / available, true
 }
 
-// AnalyzeIdleTimes analyzes idle times across all processes
+// AnalyzeIdleTimes analyzes idle times across all processes and inventory
+// points, from the stream figures CalculateKPIs uses (see IdleTimeAnalysis).
 func (a *Analyzer) AnalyzeIdleTimes(vs *ValueStream) (*IdleTimeAnalysis, error) {
+	f := a.calculator.figures(vs)
 	analysis := &IdleTimeAnalysis{
 		IdleTimeByProcess: make(map[string]float64),
+		TotalIdleTime:     f.idleTime,
 	}
-
-	var totalIdleTime float64
-	var totalProcessTime float64
-
-	breakdown := IdleTimeBreakdown{}
-
-	// Express every process in one time unit before summing (see
-	// Calculator.ReferenceTimeUnit), with totals resolved from their parts
-	// (see Calculator.ResolveParameters).
-	ctx := a.calculator.contextOf(vs)
-	for _, process := range vs.Processes {
-		params := a.calculator.resolvedIn(process.Parameters, ctx)
-		idleTime := num(params.IdleTime)
-		processTime := num(params.ProcessTime)
-
-		analysis.IdleTimeByProcess[process.ID] = idleTime
-		totalIdleTime += idleTime
-		totalProcessTime += processTime
-
-		// Accumulate breakdown
-		breakdown.TransportTime += num(params.TransportTime)
-		breakdown.WaitingTime += num(params.WaitingTime)
-		breakdown.StorageTime += num(params.StorageTime)
+	for i, pf := range f.processes {
+		if pf.idle != nil {
+			analysis.IdleTimeByProcess[vs.Processes[i].ID] = *pf.idle
+		}
 	}
-
-	// Inventory points between processes are waiting time too, as in the
-	// lead time (see Calculator.CalculateKPIs).
-	byInventory, inventoryTime := a.calculator.inventoryTimes(vs)
-	if len(byInventory) > 0 {
-		analysis.IdleTimeByInventory = byInventory
+	for i, inf := range f.inventories {
+		if inf.counted && inf.time != nil {
+			if analysis.IdleTimeByInventory == nil {
+				analysis.IdleTimeByInventory = map[string]float64{}
+			}
+			analysis.IdleTimeByInventory[vs.Inventory[i].ID] += *inf.time
+		}
 	}
-	totalIdleTime += inventoryTime
-	breakdown.WaitingTime += inventoryTime
-
-	analysis.TotalIdleTime = totalIdleTime
-	analysis.IdleTimeBreakdown = breakdown
-
-	// Calculate idle time efficiency
-	totalTime := totalIdleTime + totalProcessTime
-	if totalTime > 0 {
-		analysis.IdleTimeEfficiency = totalProcessTime / totalTime
+	if f.idleTime != nil {
+		analysis.IdleTimeBreakdown = &IdleTimeBreakdown{
+			TransportTime: *f.transport, WaitingTime: *f.waiting, StorageTime: *f.storage,
+		}
 	}
-
+	if e, ok := f.processEfficiency(); ok {
+		analysis.IdleTimeEfficiency = F(e)
+	}
 	return analysis, nil
 }
 
+// wasteKinds are the 7 types of waste, in the order they are added.
+var wasteKinds = []string{"transportation", "inventory", "motion", "waiting", "over_processing", "defects", "over_production"}
+
 // AnalyzeWaste analyzes the 7 types of waste (Muda) in the value stream
+// (see WasteAnalysis).
 func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 	analysis := &WasteAnalysis{
 		WasteByType:    make(map[string]float64),
@@ -309,61 +352,72 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 	// 7 Types of Waste according to Lean:
 	// 1. Transportation, 2. Inventory, 3. Motion, 4. Waiting, 5. Over-processing, 6. Over-production, 7. Defects
 
-	// Resolved values in the reference time unit (see Calculator.ResolveParameters).
-	ctx := a.calculator.contextOf(vs)
-	for _, process := range vs.Processes {
-		params := a.calculator.resolvedIn(process.Parameters, ctx)
-
-		// Transportation waste
-		transportWaste := num(params.TransportTime)
-		analysis.WasteByType["transportation"] += transportWaste
-
-		// Inventory waste (waiting time can indicate inventory issues)
-		inventoryWaste := num(params.WaitingTime) * 0.5 // Assume 50% of waiting is inventory-related
-		analysis.WasteByType["inventory"] += inventoryWaste
-
-		// Motion waste (handling time inefficiencies)
-		motionWaste := num(params.HandlingTime) * 0.3 // Assume 30% of handling time is waste
-		analysis.WasteByType["motion"] += motionWaste
-
-		// Waiting waste
-		waitingWaste := num(params.WaitingTime) * 0.5 // Remaining waiting time
-		analysis.WasteByType["waiting"] += waitingWaste
-
-		// Over-processing waste (non-value adding activities)
-		overProcessingWaste := num(params.NonValueAddingTime)
-		analysis.WasteByType["over_processing"] += overProcessingWaste
-
-		// Defects waste (scrap and rework)
-		defectsWaste := num(params.ScrapRate) + num(params.ReworkRate)
-		if params.ProcessTime != nil {
-			defectsWaste *= *params.ProcessTime
+	// The times the lead time counts, in the reference unit (totals.go).
+	f := a.calculator.figures(vs)
+	known := f.leadTime != nil
+	byType := map[string]float64{}
+	var total float64
+	for i, process := range vs.Processes {
+		pf := f.processes[i]
+		params := pf.params
+		defectShare := num(params.ScrapRate) + num(params.ReworkRate)
+		if !pf.unitOK || pf.leadTime == nil || (defectShare > 0 && params.ProcessTime == nil) {
+			known = false
+			continue
 		}
-		analysis.WasteByType["defects"] += defectsWaste
 
+		waste := map[string]float64{
+			"transportation": num(params.TransportTime),
+			// Waiting time: half counted as inventory waste, half as waiting.
+			"inventory": num(params.WaitingTime) * 0.5,
+			"waiting":   num(params.WaitingTime) * 0.5,
+			// Motion waste (handling time inefficiencies)
+			"motion": num(params.HandlingTime) * 0.3, // Assume 30% of handling time is waste
+			// Over-processing waste (non-value adding activities)
+			"over_processing": num(params.NonValueAddingTime),
+			// Defects waste: the defective share of the process time.
+			"defects": defectShare * num(params.ProcessTime),
+		}
 		// Over-production waste (excess capacity utilization); only when
 		// utilization can be computed (see CalculateProcessLoad).
-		_, utilization, loadKnown := a.CalculateProcessLoad(process, vs)
-		underUtilized := loadKnown && utilization < 0.7
-		if underUtilized {
-			overProductionWaste := (1 - utilization) * num(params.OperatingTime)
-			analysis.WasteByType["over_production"] += overProductionWaste
+		if _, utilization, loadKnown := a.CalculateProcessLoad(process, vs); loadKnown && utilization < 0.7 {
+			waste["over_production"] = (1 - utilization) * num(params.OperatingTime)
 		}
 
-		// Total waste for this process
-		processWaste := transportWaste + inventoryWaste + motionWaste + waitingWaste +
-			overProcessingWaste + defectsWaste
-		if underUtilized {
-			processWaste += (1 - utilization) * num(params.OperatingTime)
+		var processWaste float64
+		for _, kind := range wasteKinds {
+			byType[kind] += waste[kind]
+			processWaste += waste[kind]
 		}
-
 		analysis.WasteByProcess[process.ID] = processWaste
-		analysis.TotalWaste += processWaste
+		total += processWaste
 	}
 
-	// Estimate waste reduction potential (typically 20-50% can be eliminated)
-	analysis.WasteReductionPotential = analysis.TotalWaste * 0.35 // 35% potential reduction
+	// Inventory points counted on their own: their time is waiting time,
+	// split like a process's waiting time.
+	for i, inf := range f.inventories {
+		if !inf.counted {
+			continue // the stock of a process, in its waiting time
+		}
+		if inf.time == nil {
+			known = false
+			continue
+		}
+		byType["inventory"] += *inf.time * 0.5
+		byType["waiting"] += *inf.time * 0.5
+		if analysis.WasteByInventory == nil {
+			analysis.WasteByInventory = map[string]float64{}
+		}
+		analysis.WasteByInventory[vs.Inventory[i].ID] += *inf.time
+		total += *inf.time
+	}
 
+	if known {
+		analysis.WasteByType = byType
+		analysis.TotalWaste = F(total)
+		// Estimate waste reduction potential (typically 20-50% can be eliminated)
+		analysis.WasteReductionPotential = F(total * 0.35) // 35% potential reduction
+	}
 	return analysis, nil
 }
 
@@ -377,14 +431,19 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 	pushIndicators := 0
 	pullIndicators := 0
 
-	// Resolved values in the reference time unit (see Calculator.ResolveParameters).
-	ctx := a.calculator.contextOf(vs)
+	// Resolved values in the reference time unit (the stream figures,
+	// totals.go). A process whose time unit is not supported is left out:
+	// its times cannot be compared with the others.
+	f := a.calculator.figures(vs)
 	resolved := make([]ProcessParameters, len(vs.Processes))
-	for i, process := range vs.Processes {
-		resolved[i] = a.calculator.resolvedIn(process.Parameters, ctx)
+	for i, pf := range f.processes {
+		resolved[i] = pf.params
 	}
 
-	for _, params := range resolved {
+	for i, params := range resolved {
+		if !f.processes[i].unitOK {
+			continue
+		}
 		// Look for supermarket indicators (pull system)
 		if num(params.WaitingTime) < num(params.ProcessTime)*0.1 {
 			pullIndicators++
@@ -399,15 +458,17 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 		analysis.FlowType = FlowTypePush
 	}
 
-	// Analyze flow efficiency (ratio of value-adding time to total lead time)
-	_, totalLeadTime, totalVAT := a.calculator.streamTotals(vs)
-
-	if totalLeadTime > 0 {
-		analysis.FlowEfficiency = totalVAT / totalLeadTime
+	// Flow efficiency: value adding time ÷ lead time, known exactly when
+	// the value_added_ratio KPI is.
+	if e, ok := f.flowEfficiency(); ok {
+		analysis.FlowEfficiency = F(e)
 	}
 
 	// Identify flow interruptions
 	for i, process := range vs.Processes {
+		if !f.processes[i].unitOK {
+			continue
+		}
 		params := resolved[i]
 		scrap, rework := num(params.ScrapRate), num(params.ReworkRate)
 		processTime, waiting := num(params.ProcessTime), num(params.WaitingTime)
@@ -424,7 +485,7 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 		}
 
 		// Check for capacity bottlenecks
-		if i < len(vs.Processes)-1 {
+		if i < len(vs.Processes)-1 && f.processes[i+1].unitOK {
 			nextProcess := vs.Processes[i+1]
 			next := num(resolved[i+1].ProcessTime)
 			if processTime > next*1.5 {
@@ -483,14 +544,14 @@ func (a *Analyzer) GenerateRecommendations(result *AnalysisResult) []string {
 		}
 	}
 
-	// Idle time recommendations
-	if result.IdleTimeAnalysis.IdleTimeEfficiency < 0.5 {
+	// Idle time recommendations (only when the efficiency is known)
+	if e := result.IdleTimeAnalysis.IdleTimeEfficiency; e != nil && *e < 0.5 {
 		recommendations = append(recommendations,
 			"High idle time detected. Consider implementing continuous flow or pull systems")
 	}
 
-	// Waste recommendations
-	if result.WasteAnalysis.TotalWaste > 0 {
+	// Waste recommendations (only when the waste is known)
+	if w := result.WasteAnalysis.TotalWaste; w != nil && *w > 0 {
 		if waste, exists := result.WasteAnalysis.WasteByType["inventory"]; exists && waste > 0 {
 			recommendations = append(recommendations,
 				"Reduce inventory waste by implementing just-in-time delivery")
@@ -511,7 +572,7 @@ func (a *Analyzer) GenerateRecommendations(result *AnalysisResult) []string {
 			"Consider transitioning from push to pull system for better flow control")
 	}
 
-	if result.FlowAnalysis.FlowEfficiency < 0.3 {
+	if e := result.FlowAnalysis.FlowEfficiency; e != nil && *e < 0.3 {
 		recommendations = append(recommendations,
 			"Low flow efficiency indicates need for value stream optimization")
 	}

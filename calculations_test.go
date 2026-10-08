@@ -15,6 +15,36 @@ const eps = 1e-9
 
 func approx(a, b float64) bool { return math.Abs(a-b) <= eps*math.Max(1, math.Abs(b)) }
 
+// val returns *p, or NaN (which approx never accepts) when p is nil.
+func val(p *float64) float64 {
+	if p == nil {
+		return math.NaN()
+	}
+	return *p
+}
+
+// contradictions returns the issues of Kind IssueContradiction.
+func contradictions(issues []ConsistencyIssue) []ConsistencyIssue {
+	var out []ConsistencyIssue
+	for _, issue := range issues {
+		if issue.Kind == IssueContradiction {
+			out = append(out, issue)
+		}
+	}
+	return out
+}
+
+// missingData returns the issues of Kind IssueMissingData.
+func missingData(issues []ConsistencyIssue) []ConsistencyIssue {
+	var out []ConsistencyIssue
+	for _, issue := range issues {
+		if issue.Kind == IssueMissingData {
+			out = append(out, issue)
+		}
+	}
+	return out
+}
+
 func TestScalarFormulas(t *testing.T) {
 	c := NewCalculator()
 	tests := []struct {
@@ -251,7 +281,9 @@ func TestValidateProcessParameters(t *testing.T) {
 //	P2: PT 30+30 s = 1,      VATp 0.75, IT 120+240 s = 6 -> PLT 7
 //	P3: PT 0.05 h = 3,       VAT 1.5,   IT 0.1 h = 6     -> PLT 9
 //
-// LT = 28, VAT = 3.25, PT = 6.
+// LT = 28, VAT = 3.25, PT = 6. Stock 200 + 40 (inventory turns 960 ÷ 240
+// = 4) is held at P1 and P3, whose idle time totals include its wait (no
+// demand period, so no demand rate).
 func mixedUnitStream() *ValueStream {
 	return &ValueStream{
 		ID:   "vs1",
@@ -263,6 +295,7 @@ func mixedUnitStream() *ValueStream {
 		Processes: []Process{
 			{ID: "p1", Name: "Cut", Parameters: ProcessParameters{
 				TimeUnit: TimeUnitMinutes, ProcessTime: F(2), ValueAddingTime: F(1), IdleTime: F(10), YieldFactor: F(0.9),
+				StockQuantity: F(200),
 			}},
 			{ID: "p2", Name: "Weld", Parameters: ProcessParameters{
 				TimeUnit: TimeUnitSeconds, ProcessingTime: F(30), SetupTime: F(30), ValueAddingTimeProcess: F(45),
@@ -270,11 +303,8 @@ func mixedUnitStream() *ValueStream {
 			}},
 			{ID: "p3", Name: "Paint", Parameters: ProcessParameters{
 				TimeUnit: TimeUnitHours, ProcessTime: F(0.05), ValueAddingTime: F(0.025), IdleTime: F(0.1), YieldFactor: F(0.8),
+				StockQuantity: F(40),
 			}},
-		},
-		Inventory: []Inventory{
-			{ID: "i1", Name: "Raw", Quantity: F(200)},
-			{ID: "i2", Name: "WIP", Quantity: F(40)},
 		},
 	}
 }
@@ -343,10 +373,16 @@ func TestCalculateKPIsOmitsUndefined(t *testing.T) {
 			absent: []string{"total_lead_time", "total_value_adding_time", "value_added_ratio", "process_efficiency"},
 		},
 		{
-			name:    "zero lead time omits ratios",
-			vs:      &ValueStream{Processes: []Process{{Parameters: ProcessParameters{}}}},
+			name: "zero lead time omits ratios",
+			vs: &ValueStream{Processes: []Process{{Parameters: ProcessParameters{
+				ProcessTime: F(0), ValueAddingTime: F(0)}}}},
 			present: map[string]float64{"total_lead_time": 0, "total_value_adding_time": 0},
 			absent:  []string{"value_added_ratio", "process_efficiency"},
+		},
+		{
+			name:   "a process with nothing entered makes the totals unknown, not 0",
+			vs:     &ValueStream{Processes: []Process{{Parameters: ProcessParameters{}}}},
+			absent: []string{"total_lead_time", "total_value_adding_time", "value_added_ratio", "process_efficiency"},
 		},
 		{
 			name: "zero demand omits inventory turns",

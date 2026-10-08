@@ -117,14 +117,14 @@ func TestDeserializeVSMProjectRefreshesIssues(t *testing.T) {
 		t.Fatal(err)
 	}
 	check := func(name string, vs *ValueStream, wantStored float64) {
+		issues := contradictions(vs.ConsistencyIssues)
 		if wantStored == 0 {
-			if len(vs.ConsistencyIssues) != 0 {
+			if len(issues) != 0 {
 				t.Errorf("%s: issues = %+v, want none", name, vs.ConsistencyIssues)
 			}
 			return
 		}
-		if len(vs.ConsistencyIssues) != 1 || vs.ConsistencyIssues[0].Field != "process_time" ||
-			vs.ConsistencyIssues[0].StoredValue != wantStored {
+		if len(issues) != 1 || issues[0].Field != "process_time" || issues[0].StoredValue != wantStored {
 			t.Errorf("%s: issues = %+v, want one process_time issue (stored %v)", name, vs.ConsistencyIssues, wantStored)
 		}
 	}
@@ -149,7 +149,7 @@ func TestProjectAndDesignFileLoadsRefreshIssues(t *testing.T) {
 	if err := s.LoadFromFile(path, &project); err != nil {
 		t.Fatal(err)
 	}
-	if is := project.CurrentState.ConsistencyIssues; len(is) != 1 || is[0].Field != "process_time" {
+	if is := contradictions(project.CurrentState.ConsistencyIssues); len(is) != 1 || is[0].Field != "process_time" {
 		t.Errorf("project file issues = %+v", is)
 	}
 
@@ -159,7 +159,7 @@ func TestProjectAndDesignFileLoadsRefreshIssues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if is := design.FutureState.ConsistencyIssues; len(is) != 1 || is[0].Field != "process_time" {
+	if is := contradictions(design.FutureState.ConsistencyIssues); len(is) != 1 || is[0].Field != "process_time" {
 		t.Errorf("design result issues = %+v", is)
 	}
 }
@@ -220,7 +220,7 @@ func TestLegacyFileZerosBecomeNotEntered(t *testing.T) {
 	if num(p1.ProcessTime) != 30 || num(p1.ScrapRate) != 0.02 || num(vs.Inventory[0].Range) != 2880 {
 		t.Errorf("non-zero values changed: %+v", p1)
 	}
-	if len(vs.ConsistencyIssues) != 0 {
+	if len(contradictions(vs.ConsistencyIssues)) != 0 {
 		t.Errorf("legacy stream issues: %+v", vs.ConsistencyIssues)
 	}
 	// Same results as before the format change: lead time 30 + 20 + 10 +
@@ -275,7 +275,7 @@ func TestFormat2ZeroVersusAbsent(t *testing.T) {
 	}
 	// The entered 0 setup is a part: process a's time is its parts (0),
 	// and the stored 30 is reported; b keeps its total.
-	if len(vs.ConsistencyIssues) != 1 || vs.ConsistencyIssues[0].ID != "a" {
+	if is := contradictions(vs.ConsistencyIssues); len(is) != 1 || is[0].ID != "a" {
 		t.Errorf("issues = %+v, want one on process a", vs.ConsistencyIssues)
 	}
 	c := NewCalculator()

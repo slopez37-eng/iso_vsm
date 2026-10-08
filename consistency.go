@@ -12,19 +12,28 @@ import (
 const ConsistencyTolerance = 0.005
 
 // ConsistencyIssue reports a stored value that disagrees with the value the
-// model computes from other stored values. Calculations always use the
-// computed value; the issue only makes the disagreement visible.
+// model computes from other stored values, or a value that a stream total
+// needs and that is missing (see Kind). Calculations always use the
+// computed value, or omit what cannot be computed; the issue makes it
+// visible.
 type ConsistencyIssue struct {
+	// Kind is IssueContradiction (stored values disagree, or a value is
+	// impossible or unusable) or IssueMissingData (a value a stream total
+	// needs is unknown; the total and the KPIs built on it are omitted).
+	// Results written before Kind existed have none: they are
+	// contradictions.
+	Kind string `json:"kind,omitempty"`
 	// Element is "process", "inventory", "customer" or "value_stream".
 	Element string `json:"element"`
 	// ID is the process, inventory or customer ID (empty for the value stream).
 	ID string `json:"id,omitempty"`
 	// Field is the JSON name of the stored value (or the sum that was checked).
 	Field string `json:"field"`
-	// StoredValue is the value as entered.
+	// StoredValue is the value as entered (0 for missing data).
 	StoredValue float64 `json:"stored_value"`
 	// ComputedValue is the value computed from the other inputs (the value
-	// calculations use), or the limit that StoredValue exceeds.
+	// calculations use), or the limit that StoredValue exceeds (0 for
+	// missing data).
 	ComputedValue float64 `json:"computed_value"`
 	// Unit is the time unit of both values, when they are times.
 	Unit string `json:"unit,omitempty"`
@@ -55,6 +64,7 @@ const (
 	ruleTakt          = "takt_time = available_time ÷ demand (A.12)"
 	ruleWorkingDays   = "working_days_per_week is between 1 and 7 (not entered means 7)"
 	ruleInvLink       = "an inventory with process_id is that process's stock_quantity (counted once, through the process)"
+	ruleTimeUnit      = "time_unit is seconds, minutes, hours, days or weeks (or empty: the reference unit)"
 	ruleStoredKPI     = "stored KPI = KPI computed from the processes (CalculateKPIs)"
 	fieldClassSum     = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time"
 	fieldProcessParts = "processing_time + setup_time + handling_time + waiting_time_process + ancillary_time"
@@ -185,10 +195,22 @@ func (s streamContext) demandRate(u TimeUnit) (float64, bool) {
 }
 
 // resolvedIn resolves params in the stream context and converts the result
-// to the reference unit.
-func (c *Calculator) resolvedIn(params ProcessParameters, ctx streamContext) ProcessParameters {
-	p, _ := c.resolveParameters(params, ctx)
-	return c.normalizeTimes(p, ctx.unit)
+// to the reference unit. ok is false when params' time unit is not
+// supported (see isKnownTimeUnit): its times cannot be converted, and are
+// returned unconverted, so they must not be added to or compared with
+// other processes' times. An empty unit is the reference unit.
+func (c *Calculator) resolvedIn(params ProcessParameters, ctx streamContext) (p ProcessParameters, ok bool) {
+	p, _ = c.resolveParameters(params, ctx)
+	if !unitSupported(params.TimeUnit) {
+		return p, false
+	}
+	return c.normalizeTimes(p, ctx.unit), true
+}
+
+// unitSupported reports whether u is a time unit the model can convert, or
+// empty (taken to be the reference unit).
+func unitSupported(u TimeUnit) bool {
+	return u == "" || isKnownTimeUnit(u)
 }
 
 // resolveParameters implements ResolveParameters and also returns the
@@ -217,6 +239,14 @@ func (c *Calculator) resolveParameters(in ProcessParameters, ctx streamContext) 
 		*field = F(computed)
 	}
 
+	if !unitSupported(in.TimeUnit) {
+		issues = append(issues, ConsistencyIssue{
+			Field: "time_unit", Unit: unit, Rule: ruleTimeUnit,
+			Message: fmt.Sprintf("time_unit %q is not supported (use seconds, minutes, hours, days or weeks); "+
+				"this process's times cannot be converted, so the stream totals and KPIs that need them are "+
+				"not computed", unit),
+		})
+	}
 	if p.TransportRepetitionTime != nil && p.TransportRepetitionCount != nil {
 		derive("transport_time", &p.TransportTime,
 			*p.TransportRepetitionTime*float64(*p.TransportRepetitionCount), ruleTransport)
@@ -359,17 +389,6 @@ func (s streamContext) inventoryRange(inv Inventory) (float64, bool) {
 	return *inv.Quantity / rate, true
 }
 
-// inventoryTime returns the time inv adds to the lead time, in the
-// reference unit: quantity ÷ customer demand rate when both are known,
-// otherwise the stored range (0 when neither is known: an inventory
-// without data adds nothing).
-func (s streamContext) inventoryTime(inv Inventory) float64 {
-	if r, ok := s.inventoryRange(inv); ok {
-		return r
-	}
-	return num(inv.Range)
-}
-
 // stockHolder returns the process whose stock_quantity inv is, when inv
 // names one with process_id and that process has stock_quantity entered
 // (0 included). inv is then counted through the process, not on its own.
@@ -393,60 +412,11 @@ func stockHolder(vs *ValueStream, inv Inventory) (*Process, bool) {
 // rate and no waiting_time, the process does not account for the time, and
 // the inventory's own time (its range) is the only measure of it: it is
 // then counted on its own. Its stock is still counted once, through the
-// process (see streamStock).
+// process (see Calculator.figures).
 func (c *Calculator) timeThroughProcess(holder *Process, ctx streamContext) bool {
 	p, _ := c.resolveParameters(holder.Parameters, ctx)
 	idleTotalOnly := !idlePartsGiven(p) && p.IdleTime != nil
 	return p.WaitingTime != nil || idleTotalOnly
-}
-
-// inventoryTimes returns, for each inventory of vs counted on its own (not
-// through a linked process, see Inventory.ProcessID and timeThroughProcess),
-// the time it adds to the lead time in the reference unit, keyed by
-// inventory ID, and their sum.
-func (c *Calculator) inventoryTimes(vs *ValueStream) (map[string]float64, float64) {
-	ctx := c.contextOf(vs)
-	times := map[string]float64{}
-	var total float64
-	for _, inv := range vs.Inventory {
-		if holder, linked := stockHolder(vs, inv); linked && c.timeThroughProcess(holder, ctx) {
-			continue
-		}
-		t := ctx.inventoryTime(inv)
-		times[inv.ID] += t
-		total += t
-	}
-	return times, total
-}
-
-// streamStock returns the total stock of vs, each stock counted once: every
-// process's stock_quantity; an inventory linked to a process with stock
-// (see Inventory.ProcessID) is that stock and adds nothing; every other
-// inventory adds its quantity, or, given by its range alone, range ×
-// customer demand rate. ok is false when an inventory's stock cannot be
-// known (a range above 0 alone and no demand rate). Every KPI that sums
-// stock uses it, so it is the same stock the lead time counts.
-func (c *Calculator) streamStock(vs *ValueStream) (total float64, ok bool) {
-	ctx := c.contextOf(vs)
-	for _, process := range vs.Processes {
-		total += num(process.Parameters.StockQuantity)
-	}
-	for _, inv := range vs.Inventory {
-		if _, linked := stockHolder(vs, inv); linked {
-			continue
-		}
-		switch {
-		case inv.Quantity != nil:
-			total += *inv.Quantity
-		case positive(inv.Range):
-			rate, known := ctx.demandRate(ctx.unit)
-			if !known {
-				return 0, false
-			}
-			total += *inv.Range * rate
-		}
-	}
-	return total, true
 }
 
 // processPartsGiven lists the A.2 process time parts that are entered (or
@@ -492,7 +462,16 @@ func (c *Calculator) customerTakt(cust *Customer) (float64, bool) {
 // quantity ÷ customer demand rate, the customer's takt versus available time
 // ÷ demand, and stored KPIs versus CalculateKPIs. Times are compared in each
 // process's own unit. Calculations use the computed values regardless; this
-// makes the disagreements visible.
+// makes the disagreements visible. These issues have Kind
+// IssueContradiction, as do impossible or unusable values (scrap + rework
+// above 1, working_days_per_week outside 1–7, an unsupported time_unit).
+//
+// After them come the issues of Kind IssueMissingData: every element on the
+// map whose part of a stream total cannot be determined (a process whose
+// lead time, process time or value adding time is unknown, stock that
+// waits for an unknown time, an inventory whose time or stock is unknown).
+// The totals that need such a value, and every KPI built on them, are
+// omitted (see Calculator.CalculateKPIs), never counted as 0.
 func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 	if vs == nil {
 		return nil
@@ -537,8 +516,9 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 			issue.Message = fmt.Sprintf("inventory %s: process_id %q names no process; the inventory is counted on its own",
 				inv.ID, inv.ProcessID)
 		case !linked && num(inv.Quantity) == 0 && num(inv.Range) == 0:
-			// Empty (nothing entered, or 0): nothing to count, nothing
-			// contradicts.
+			// Empty (0) or nothing entered: nothing contradicts the link
+			// (an inventory with nothing entered is reported as missing
+			// data, see Calculator.figures).
 			continue
 		case !linked:
 			issue.Field = "process_id"
@@ -553,14 +533,21 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 		case inv.Range != nil && !rangeChecked(inv) && c.timeThroughProcess(holder, ctx):
 			// The range is not checked against quantity ÷ demand rate, so
 			// check it against the process's waiting time, the same time.
-			waiting := c.resolvedIn(holder.Parameters, ctx).WaitingTime
-			if waiting == nil || consistent(*inv.Range, *waiting) {
+			p, ok := c.resolvedIn(holder.Parameters, ctx)
+			switch {
+			case !ok:
+				continue
+			case p.WaitingTime != nil:
+				if consistent(*inv.Range, *p.WaitingTime) {
+					continue
+				}
+				issue.Field, issue.StoredValue, issue.ComputedValue, issue.Unit = "range", *inv.Range, *p.WaitingTime, unit
+				issue.Message = fmt.Sprintf("inventory %s: range %g, but it is the stock of process %s, "+
+					"whose waiting_time is %g; calculations count the process's waiting time", inv.ID, *inv.Range,
+					inv.ProcessID, *p.WaitingTime)
+			default:
 				continue
 			}
-			issue.Field, issue.StoredValue, issue.ComputedValue, issue.Unit = "range", *inv.Range, *waiting, unit
-			issue.Message = fmt.Sprintf("inventory %s: range %g, but it is the stock of process %s, "+
-				"whose waiting_time is %g; calculations count the process's waiting time", inv.ID, *inv.Range,
-				inv.ProcessID, *waiting)
 		default:
 			continue
 		}
@@ -611,5 +598,8 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 			})
 		}
 	}
-	return issues
+	for i := range issues {
+		issues[i].Kind = IssueContradiction
+	}
+	return append(issues, c.figures(vs).missing...)
 }
