@@ -14,7 +14,13 @@ type DesignResult struct {
 	FutureState            *ValueStream            `json:"future_state"`
 	DesignPrinciples       []DesignPrinciple       `json:"design_principles"`
 	ContinuousImprovements []ContinuousImprovement `json:"continuous_improvements"`
-	DesignedAt             time.Time               `json:"designed_at"`
+	// ImprovementMetrics compares future with current KPIs (see
+	// Calculator.CalculateImprovementMetrics). Only set when targets were
+	// supplied.
+	ImprovementMetrics map[string]float64 `json:"improvement_metrics,omitempty"`
+	// Notes explains how the future state's numbers were produced.
+	Notes      []string  `json:"notes,omitempty"`
+	DesignedAt time.Time `json:"designed_at"`
 }
 
 // ImprovementPotential represents a potential improvement in the value stream
@@ -62,10 +68,33 @@ func NewDesigner() *Designer {
 	}
 }
 
+// noTargetsNote is reported when a future state is designed without targets.
+const noTargetsNote = "No improvement targets supplied: the future state keeps the current " +
+	"values, so its KPIs equal the current KPIs. Supply targets with " +
+	"Designer.DesignFutureStateWithTargets to project improvements."
+
 // DesignFutureState performs the complete design phase for a value stream
+// without improvement targets.
+//
+// The future state keeps every current number (times, rates, inventory);
+// it only adds structural recommendations (FIFO lane, kanban, supermarket
+// flow elements, unsized). No reductions are invented, so its KPIs equal
+// the current KPIs and DesignResult.Notes says so. To project improvements,
+// call DesignFutureStateWithTargets with the targets you expect to reach.
 func (d *Designer) DesignFutureState(current *ValueStream, analysis *AnalysisResult) (*DesignResult, error) {
+	return d.DesignFutureStateWithTargets(current, analysis, nil)
+}
+
+// DesignFutureStateWithTargets performs the complete design phase, building
+// the future state from the caller's targets (see DesignFutureStateFromTargets)
+// and computing its KPIs with the calculator. With nil targets it behaves
+// like DesignFutureState.
+func (d *Designer) DesignFutureStateWithTargets(current *ValueStream, analysis *AnalysisResult, targets *FutureStateTargets) (*DesignResult, error) {
 	if current == nil {
 		return nil, errors.New("current value stream cannot be nil")
+	}
+	if analysis == nil {
+		return nil, errors.New("analysis result cannot be nil")
 	}
 
 	result := &DesignResult{
@@ -87,12 +116,19 @@ func (d *Designer) DesignFutureState(current *ValueStream, analysis *AnalysisRes
 	}
 	result.IdealState = idealState
 
-	// Design future state based on ideal state and practical constraints
-	futureState, err := d.DesignFutureStateFromIdeal(idealState, current)
+	// Design future state from the supplied targets
+	futureState, err := d.DesignFutureStateFromTargets(current, targets)
 	if err != nil {
 		return nil, fmt.Errorf("failed to design future state: %w", err)
 	}
 	result.FutureState = futureState
+	if targets == nil {
+		result.Notes = append(result.Notes, noTargetsNote)
+	} else {
+		result.ImprovementMetrics = d.calculator.CalculateImprovementMetrics(current, futureState)
+		result.Notes = append(result.Notes, "Future state numbers come from the supplied targets; "+
+			"values without a target are unchanged.")
+	}
 
 	// Apply VSM design principles
 	principles := d.ApplyDesignPrinciples(current, futureState)
@@ -264,77 +300,105 @@ func (d *Designer) CreateIdealState(current *ValueStream) (*ValueStream, error) 
 	return ideal, nil
 }
 
-// DesignFutureStateFromIdeal creates a practical future state based on the ideal state
+// DesignFutureStateFromIdeal creates a future state with no projected
+// improvements: it is DesignFutureStateFromTargets(current, nil). The ideal
+// state is not used for numbers (kept for API compatibility); supply targets
+// via DesignFutureStateFromTargets to project improvements.
 func (d *Designer) DesignFutureStateFromIdeal(ideal, current *ValueStream) (*ValueStream, error) {
+	return d.DesignFutureStateFromTargets(current, nil)
+}
+
+// DesignFutureStateFromTargets builds a future state from the current state
+// and the caller's targets (see FutureStateTargets), then computes its KPIs
+// with the calculator. Values without a target keep their current value; with
+// nil targets the future state's numbers equal the current state's.
+//
+// Structural recommendations are added as unsized flow elements: a FIFO lane,
+// a kanban loop and, when the current state holds inventory, a supermarket.
+// Their capacity is 0 (to be sized by the team); they do not change the KPIs.
+//
+// Returns an error if a target is invalid or names a process or inventory ID
+// that is not in the current state.
+func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *FutureStateTargets) (*ValueStream, error) {
+	if current == nil {
+		return nil, errors.New("current value stream cannot be nil")
+	}
+	if targets == nil {
+		targets = &FutureStateTargets{}
+	}
+	if err := checkTargetIDs(current, targets); err != nil {
+		return nil, err
+	}
+
+	description := "Future state with current values (no targets supplied, no projected improvements)"
+	if targets.Default != nil || len(targets.Processes) > 0 || targets.InventoryDefault != nil || len(targets.Inventory) > 0 {
+		description = "Future state projected from the supplied improvement targets"
+	}
+
 	future := &ValueStream{
 		ID:            current.ID + "_future",
 		Name:          current.Name + " (Future State)",
 		State:         StateFuture,
 		ProductFamily: current.ProductFamily,
-		Description:   "Improved future state based on ideal state principles",
+		Description:   description,
 		Customer:      current.Customer,
 		Supplier:      current.Supplier,
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 	}
 
-	// Apply VSM principles to create future state
 	var futureProcesses []Process
-
 	for _, process := range current.Processes {
 		futureProcess := process
 		futureProcess.ID = process.ID + "_future"
 		futureProcess.Name = process.Name + " (Future)"
 
-		// Reduce waste by 50-70% compared to current state
-		futureProcess.Parameters.ProcessTime = process.Parameters.ProcessTime * 0.6
-		futureProcess.Parameters.IdleTime = process.Parameters.IdleTime * 0.3
-		futureProcess.Parameters.WaitingTime = process.Parameters.WaitingTime * 0.4
-		futureProcess.Parameters.TransportTime = process.Parameters.TransportTime * 0.5
-		futureProcess.Parameters.StorageTime = process.Parameters.StorageTime * 0.5
-		futureProcess.Parameters.NonValueAddingTime = process.Parameters.NonValueAddingTime * 0.4
-		futureProcess.Parameters.NecessaryNonValueAddingTime = process.Parameters.NecessaryNonValueAddingTime * 0.6
-		futureProcess.Parameters.ScrapRate = process.Parameters.ScrapRate * 0.3
-		futureProcess.Parameters.ReworkRate = process.Parameters.ReworkRate * 0.4
-
-		// Improve yield factor
-		if process.Parameters.YieldFactor < 0.95 {
-			futureProcess.Parameters.YieldFactor = 0.95
+		var own *ProcessTargets
+		if t, ok := targets.Processes[process.ID]; ok {
+			own = &t
 		}
+		params, err := d.calculator.applyProcessTargets(process.Parameters, own, targets.Default)
+		if err != nil {
+			return nil, fmt.Errorf("process %s: %w", process.ID, err)
+		}
+		futureProcess.Parameters = params
 
 		futureProcesses = append(futureProcesses, futureProcess)
 	}
-
 	future.Processes = futureProcesses
 
-	// Implement supermarket for pull system
-	if len(current.Inventory) > 0 {
-		supermarket := Inventory{
-			ID:          "supermarket_1",
-			Name:        "Supermarket",
-			Quantity:    current.Customer.Demand * 0.1, // Small buffer
-			Range:       0.5,                           // Half day coverage
-			Type:        "supermarket",
-			Description: "Pull system supermarket",
+	for _, inv := range current.Inventory {
+		var own *InventoryTargets
+		if t, ok := targets.Inventory[inv.ID]; ok {
+			own = &t
 		}
-		future.Inventory = []Inventory{supermarket}
+		futureInv, err := applyInventoryTargets(inv, own, targets.InventoryDefault)
+		if err != nil {
+			return nil, fmt.Errorf("inventory %s: %w", inv.ID, err)
+		}
+		future.Inventory = append(future.Inventory, futureInv)
 	}
 
-	// Add flow control elements
+	// Structural recommendations (unsized: capacity left to the team)
 	future.FlowElements = []FlowElement{
 		{
 			ID:          "fifo_lane_1",
 			Type:        "fifo",
-			Capacity:    10,
-			Description: "FIFO lane between processes",
+			Description: "Recommended FIFO lane between processes; capacity to be sized",
 		},
 		{
-			ID:             "kanban_1",
-			Type:           "kanban",
-			Capacity:       5,
-			ControlTickets: []string{"ticket_1", "ticket_2", "ticket_3", "ticket_4", "ticket_5"},
-			Description:    "Kanban control system",
+			ID:          "kanban_1",
+			Type:        "kanban",
+			Description: "Recommended kanban control loop; number of cards to be sized",
 		},
+	}
+	if len(current.Inventory) > 0 {
+		future.FlowElements = append(future.FlowElements, FlowElement{
+			ID:   "supermarket_1",
+			Type: "supermarket",
+			Description: "Recommended pull supermarket in place of push inventory; " +
+				"size from demand and replenishment time",
+		})
 	}
 
 	// Calculate future KPIs
@@ -441,6 +505,11 @@ func (d *Designer) checkTaktTimePrinciple(vs *ValueStream) bool {
 func (d *Designer) checkSupermarketPrinciple(vs *ValueStream) bool {
 	for _, inv := range vs.Inventory {
 		if inv.Type == "supermarket" {
+			return true
+		}
+	}
+	for _, element := range vs.FlowElements {
+		if element.Type == "supermarket" {
 			return true
 		}
 	}
