@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 )
 
@@ -268,11 +269,12 @@ const trendThreshold = 0.05
 // also returns the relative change (nil when undefined because the first
 // value is 0 and the last is not; the label then follows the sign).
 func (a *Assessor) analyzeTrend(kpiName string, history []AssessmentResult) (string, *float64) {
-	// Get last 5 data points
+	// The last 5 assessments, by date.
+	history = chronological(history)
 	values := []float64{}
-	for i := len(history) - 1; i >= 0 && i >= len(history)-5; i-- {
+	for i := max(len(history)-5, 0); i < len(history); i++ {
 		if kpi, exists := history[i].KPIs[kpiName]; exists {
-			values = append([]float64{kpi.Value}, values...) // Prepend to maintain chronological order
+			values = append(values, kpi.Value)
 		}
 	}
 
@@ -308,6 +310,16 @@ func (a *Assessor) analyzeTrend(kpiName string, history []AssessmentResult) (str
 	}
 
 	return trendLabel(GetKPIDirection(kpiName), sign), change
+}
+
+// chronological returns a copy of history sorted by AssessmentDate, oldest
+// first (assessments with the same date keep their order).
+func chronological(history []AssessmentResult) []AssessmentResult {
+	sorted := append([]AssessmentResult(nil), history...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return sorted[i].AssessmentDate.Before(sorted[j].AssessmentDate)
+	})
+	return sorted
 }
 
 // trendLabel names a rising (+1), falling (−1) or stable (0) movement.
@@ -378,13 +390,20 @@ func (a *Assessor) calculateTargetAchievement(kpis map[string]KPIMeasure) map[st
 	return achievement
 }
 
-// analyzeTrends performs trend analysis on historical data
+// analyzeTrends performs trend analysis on historical data: for each key
+// KPI, the last `periods` assessments that have it, oldest first (history
+// is sorted by AssessmentDate, so its order does not matter). Slope is per
+// day (least squares). Forecast is the value one average assessment
+// interval after the latest assessment: latest value + slope × interval;
+// Period names that interval ("daily" up to 1.5 days, "weekly" up to 10
+// days, else "monthly").
 func (a *Assessor) analyzeTrends(history []AssessmentResult, periods int) []TrendAnalysis {
 	trends := []TrendAnalysis{}
 
 	if len(history) < 2 {
 		return trends
 	}
+	history = chronological(history)
 
 	// Analyze trends for key KPIs
 	keyKPIs := []string{
@@ -396,25 +415,22 @@ func (a *Assessor) analyzeTrends(history []AssessmentResult, periods int) []Tren
 
 	for _, kpiName := range keyKPIs {
 		dataPoints := []DataPoint{}
-
-		// Collect data points from history (most recent first)
-		for i := len(history) - 1; i >= 0; i-- {
-			if kpi, exists := history[i].KPIs[kpiName]; exists {
-				dataPoints = append(dataPoints, DataPoint{
-					Date:  history[i].AssessmentDate,
-					Value: kpi.Value,
-				})
+		for _, h := range history {
+			if kpi, exists := h.KPIs[kpiName]; exists {
+				dataPoints = append(dataPoints, DataPoint{Date: h.AssessmentDate, Value: kpi.Value})
 			}
-			if len(dataPoints) >= periods {
-				break
-			}
+		}
+		if len(dataPoints) > periods {
+			dataPoints = dataPoints[len(dataPoints)-periods:]
 		}
 
 		if len(dataPoints) >= 2 {
+			first, latest := dataPoints[0], dataPoints[len(dataPoints)-1]
+			intervalDays := latest.Date.Sub(first.Date).Hours() / 24 / float64(len(dataPoints)-1)
 			trend := TrendAnalysis{
 				KPIName:    kpiName,
 				Direction:  GetKPIDirection(kpiName),
-				Period:     "weekly", // Assume weekly assessments
+				Period:     periodName(intervalDays),
 				DataPoints: dataPoints,
 			}
 
@@ -424,18 +440,27 @@ func (a *Assessor) analyzeTrends(history []AssessmentResult, periods int) []Tren
 			// Calculate correlation coefficient
 			trend.Correlation = a.calculateCorrelation(dataPoints)
 
-			// Simple forecast (linear extrapolation)
-			if len(dataPoints) > 0 {
-				lastValue := dataPoints[len(dataPoints)-1].Value
-				trend.Forecast = lastValue + trend.Slope*7        // 7 days ahead
-				trend.Confidence = math.Max(0, trend.Correlation) // Use correlation as confidence proxy
-			}
+			// Linear extrapolation one interval past the latest point.
+			trend.Forecast = latest.Value + trend.Slope*intervalDays
+			// Strength of the linear fit, whichever way it slopes.
+			trend.Confidence = math.Abs(trend.Correlation)
 
 			trends = append(trends, trend)
 		}
 	}
 
 	return trends
+}
+
+// periodName names an assessment interval given in days.
+func periodName(days float64) string {
+	switch {
+	case days <= 1.5:
+		return "daily"
+	case days <= 10:
+		return "weekly"
+	}
+	return "monthly"
 }
 
 // calculateSlope calculates the slope of a linear trend

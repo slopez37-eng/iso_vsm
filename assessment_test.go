@@ -130,3 +130,40 @@ func TestRatioKPIsLabelledRatio(t *testing.T) {
 		}
 	}
 }
+
+// Lead time 100 → 90 → 80, weekly: the forecast for next week is 70, from
+// the latest point, even when history is passed newest first.
+func TestTrendForecastFromLatest(t *testing.T) {
+	h := history("total_lead_time", 100, 90, 80)
+	reversed := []AssessmentResult{h[2], h[1], h[0]}
+	for name, hist := range map[string][]AssessmentResult{"oldest first": h, "newest first": reversed} {
+		got, err := NewAssessor().AssessValueStream(mixedUnitStream(), nil, hist)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var trend *TrendAnalysis
+		for i := range got.Trends {
+			if got.Trends[i].KPIName == "total_lead_time" {
+				trend = &got.Trends[i]
+			}
+		}
+		if trend == nil {
+			t.Fatalf("%s: no lead time trend", name)
+		}
+		if !approx(trend.Forecast, 70) {
+			t.Errorf("%s: forecast = %v, want 70", name, trend.Forecast)
+		}
+		if pts := trend.DataPoints; !pts[0].Date.Before(pts[len(pts)-1].Date) {
+			t.Errorf("%s: data points not oldest first", name)
+		}
+		if !approx(trend.Confidence, 1) {
+			t.Errorf("%s: confidence = %v, want 1 (perfect straight line, falling)", name, trend.Confidence)
+		}
+		if trend.Period != "weekly" {
+			t.Errorf("%s: period = %q, want weekly", name, trend.Period)
+		}
+		if m := got.KPIs["total_lead_time"]; m.Trend != "improving" {
+			t.Errorf("%s: KPI trend = %q, want improving", name, m.Trend)
+		}
+	}
+}
