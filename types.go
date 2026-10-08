@@ -88,8 +88,11 @@ type ProcessParameters struct {
 
 	// Resource parameters
 	EmployeeCount *float64 `json:"employee_count,omitempty"` // #EMP - Number of employees (FTE)
-	ResourceCount *int     `json:"resource_count,omitempty"` // #RES - Number of resources
-	FailureCount  *int     `json:"failure_count,omitempty"`  // #F - Number of failures
+	// ResourceCount (#RES) is the number of parallel resources: not
+	// entered counts as 1; 0 means no capacity (processing time and
+	// utilization unknown, see ResolveParameters).
+	ResourceCount *int `json:"resource_count,omitempty"`
+	FailureCount  *int `json:"failure_count,omitempty"` // #F - Number of failures
 
 	// Quality parameters
 	YieldFactor *float64 `json:"yield_factor,omitempty"` // YF - Yield factor
@@ -153,14 +156,6 @@ func cloneOptionals(v any) {
 // num returns *p, or 0 when p is nil (not entered). It is for sums and
 // display where a missing value adds nothing; presence checks use p != nil.
 func num(p *float64) float64 {
-	if p == nil {
-		return 0
-	}
-	return *p
-}
-
-// inum is num for the optional integer fields.
-func inum(p *int) int {
 	if p == nil {
 		return 0
 	}
@@ -257,18 +252,24 @@ type Inventory struct {
 	// Range is the time the quantity lasts at customer demand, in the
 	// reference time unit. Optional (nil = not entered); when the quantity
 	// and the customer demand rate are known, the range is computed from
-	// them instead and a stored range is only checked.
+	// them instead and a stored range is only checked. A quantity of 0
+	// lasts 0 with or without a demand rate (a stored range other than 0 is
+	// then a contradiction).
 	Range *float64 `json:"range,omitempty"`
 	Type  string   `json:"type"` // "stock", "warehouse", "supermarket", etc.
 	// ProcessID (optional) names the process whose stock_quantity is this
 	// same stock. The stock is then counted once in the lead time, through
 	// that process's waiting time, and quantity must equal the process's
-	// stock_quantity (CheckConsistency reports it when not). Without it, the
-	// inventory is a separate stock and its range adds to the lead time.
+	// stock_quantity (CheckConsistency reports it when not). A process's
+	// stock is one inventory: when several inventories link to the same
+	// process, only the first (in map order) counts, and the others are
+	// reported. Without it, the inventory is a separate stock and its range
+	// adds to the lead time.
 	// When the process has no waiting time to carry the stock's time (no
-	// customer demand rate and no waiting_time stored), the inventory's
-	// range is the only measure of it and is counted instead; the stock is
-	// still counted once (inventory turns). An empty inventory (quantity or
+	// customer demand rate, and no waiting_time, idle_time or lead_time
+	// stored that includes it), the inventory's range is the only measure
+	// of it and is counted instead; the stock is still counted once
+	// (inventory turns). An empty inventory (quantity or
 	// range entered as 0) linked to a process without stock is consistent;
 	// one with nothing entered is missing data (its time and stock are
 	// unknown, see CheckConsistency). See Calculator.CalculateKPIs.

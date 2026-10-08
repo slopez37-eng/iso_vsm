@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 )
 
 // Target is a future-state target for one value. Set exactly one of Value
@@ -81,6 +82,17 @@ func (t *Target) apply(current *float64) (*float64, error) {
 //     (for example 0 with value adding time set) is an error.
 //   - A reduction_percent target on a value that is not entered changes
 //     nothing (there is nothing to reduce); an absolute target enters it.
+//   - A target on a part of a total that the current state gives only as a
+//     total (setup_time of a process with process_time alone, storage_time
+//     of one with idle_time alone), even a target of 0, is an error: it
+//     would start a breakdown in which the parts not entered count as 0
+//     (the blank-parts rule, see ResolveParameters), and the breakdown
+//     cannot be inferred from the total. Target the total, or enter the
+//     parts first.
+//   - A total whose parts include an unknown value (see ResolveParameters)
+//     cannot follow targets: a target on it or on its other parts is an
+//     error, unless the unknown part itself has a target. Impossible values
+//     of the current state without a target are carried over unchanged.
 //
 // Targets that cannot be met consistently return an error naming the
 // conflict, rather than producing a map that contradicts itself.
@@ -225,10 +237,30 @@ func hasIssue(issues []ConsistencyIssue, field string) bool {
 // def field by field). See ProcessTargets for how the result is kept
 // consistent. It never writes through a pointer field of params.
 func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *ProcessTargets, ctx streamContext) (ProcessParameters, error) {
-	cur, curIssues := c.resolveParameters(params, ctx)
+	cr := c.resolve(params, ctx)
+	cur, curIssues := cr.params, cr.issues
 	p := cur
 	targeted := map[string]bool{}
 	get := func(f func(*ProcessTargets) *Target) *Target { return pick(own, def, f) }
+	// stillUnknown reports whether total has a part that is unknown in the
+	// current state (see resolution.unknownParts) and has no target of its
+	// own: the parts then cannot give the total, so the targets cannot
+	// recompute it.
+	stillUnknown := func(total string) bool {
+		for _, name := range cr.unknownParts[total] {
+			if !targeted[name] {
+				return true
+			}
+		}
+		return false
+	}
+	// cannotMove is the error for a target that would move a total whose
+	// parts are not all known.
+	cannotMove := func(total string) error {
+		return fmt.Errorf("%s cannot be computed for this process: %s unknown in the current state (see "+
+			"CheckConsistency), so a target on it or its parts cannot be applied consistently; enter or "+
+			"correct those values (or target them) first", total, strings.Join(cr.unknownParts[total], ", "))
+	}
 
 	for _, f := range directFields {
 		t := get(f.target)
@@ -269,19 +301,35 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 	}
 	updateStock()
 	if processingFormula(p) {
-		p.ProcessingTime = F(*p.CycleTime * *p.OrderQuantity / float64(*p.ResourceCount))
+		p.ProcessingTime = F(processingTime(p))
 	}
 
 	// Process time: A.6 for repetitive processes, else the A.2 parts, else
 	// the total alone.
 	repetitive := cur.RepetitionTime != nil && cur.RepetitionCount != nil
 	hasParts := len(processPartsGiven(cur)) > 0
-	if t := get(func(t *ProcessTargets) *Target { return t.ProcessTime }); t != nil {
+	ptTarget := get(func(t *ProcessTargets) *Target { return t.ProcessTime })
+	ptUnknown := stillUnknown("process_time")
+	if ptUnknown {
+		partTargeted := targeted["setup_time"] || targeted["cycle_time"]
+		switch {
+		case !hasParts && !partTargeted:
+			// No part entered: a target on the total sets it, as for a
+			// process time given only as a total.
+			ptUnknown = ptTarget == nil
+		case ptTarget != nil || (partTargeted && cur.ProcessTime != nil):
+			return params, cannotMove("process_time")
+		default:
+			ptTarget = nil
+		}
+	}
+	if t := ptTarget; t != nil {
 		v, err := applyField("process_time", t, cur.ProcessTime, false)
 		if err != nil {
 			return params, err
 		}
 		if v != nil {
+			targeted["process_time"] = true
 			if repetitive {
 				return params, fmt.Errorf("process_time: for this process it is setup_time + repetition_time × " +
 					"repetition_count (A.6); target setup_time, or change the repetition data in the current state")
@@ -303,20 +351,21 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		}
 	}
 	switch {
+	case ptUnknown:
+		// Unknown parts: the process time stays as it is (stored, or
+		// unknown).
 	case repetitive:
 		p.ProcessTime = F(c.CalculateRepetitiveProcessTime(num(p.SetupTime), *p.RepetitionTime, *p.RepetitionCount))
 	case hasParts:
 		p.ProcessTime = F(c.CalculateProcessTime(p))
-	case len(processPartsGiven(p)) > 0 && cur.ProcessTime != nil && c.CalculateProcessTime(p) == 0 && !processingFormula(p):
-		// Targets entered parts of a process time given only as a total,
-		// all 0: they do not contradict the total, so they are left out
-		// and the total stays.
-		p.ProcessingTime, p.SetupTime, p.HandlingTime = cur.ProcessingTime, cur.SetupTime, cur.HandlingTime
-		p.WaitingTimeProcess, p.AncillaryTime = cur.WaitingTimeProcess, cur.AncillaryTime
-	case len(processPartsGiven(p)) > 0 && cur.ProcessTime != nil:
+	case len(processPartsGiven(p)) > 0 && params.ProcessTime != nil:
+		// A part target (even 0) starts a breakdown, and blank parts are
+		// then 0 (see the blank-parts rule at ResolveParameters), so the
+		// stored total would be replaced by the parts.
 		return params, fmt.Errorf("process_time is given only as a total for this process, so a target " +
-			"that sets one of its parts (setup or processing time) would replace it; target process_time " +
-			"instead, or add the breakdown to the current state")
+			"that sets one of its parts (setup or processing time) would start a breakdown in which the " +
+			"parts not entered count as 0, replacing the total; the breakdown cannot be inferred from the " +
+			"total: target process_time instead, or enter the parts in the current state first")
 	case len(processPartsGiven(p)) > 0:
 		// A target entered the first part of a process time not known before.
 		p.ProcessTime = F(c.CalculateProcessTime(p))
@@ -327,16 +376,23 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		return c.CalculateTotalIdleTime(num(q.TransportTime), num(q.WaitingTime), num(q.StorageTime))
 	}
 	hasIdleParts := idlePartsGiven(cur) || idlePartsGiven(p)
-	if hasIdleParts && !idlePartsGiven(cur) && cur.IdleTime != nil && idleParts(&p) == 0 {
-		// Targets entered parts of an idle time given only as a total, all
-		// 0 (for example storage time 0): they do not contradict the total,
-		// so they are left out and the total stays.
-		p.TransportTime, p.WaitingTime, p.StorageTime = cur.TransportTime, cur.WaitingTime, cur.StorageTime
-		p.StockQuantity, p.RangeOfInventory = cur.StockQuantity, cur.RangeOfInventory
-		hasIdleParts = false
+	itTarget := get(func(t *ProcessTargets) *Target { return t.IdleTime })
+	itUnknown := stillUnknown("idle_time")
+	if itUnknown {
+		partTargeted := targeted["transport_time"] || targeted["waiting_time"] || targeted["storage_time"]
+		switch {
+		case !idlePartsGiven(cur) && !partTargeted:
+			// No part entered (only the unknown one): a target on the total
+			// sets it, as for an idle time given only as a total.
+			hasIdleParts = false
+		case itTarget != nil || (partTargeted && cur.IdleTime != nil):
+			return params, cannotMove("idle_time")
+		default:
+			itTarget, hasIdleParts = nil, false
+		}
 	}
 	itTargeted := false
-	if t := get(func(t *ProcessTargets) *Target { return t.IdleTime }); t != nil {
+	if t := itTarget; t != nil {
 		v, err := applyField("idle_time", t, cur.IdleTime, false)
 		if err != nil {
 			return params, err
@@ -345,9 +401,11 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		case v == nil:
 		case !hasIdleParts:
 			itTargeted = true
+			targeted["idle_time"] = true
 			p.IdleTime = v
 		default:
 			itTargeted = true
+			targeted["idle_time"] = true
 			stockDriven := rateKnown && p.StockQuantity != nil
 			waiting := p.WaitingTime
 			// Transport from repetitions (A.10) is fixed, except that an idle
@@ -376,17 +434,32 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		}
 	}
 	if !itTargeted && hasIdleParts {
-		if !idlePartsGiven(cur) && cur.IdleTime != nil {
+		if !idlePartsGiven(cur) && params.IdleTime != nil {
+			// As for process time: a part target (even 0) would start a
+			// breakdown that replaces the total.
 			return params, fmt.Errorf("idle_time is given only as a total for this process, so a target that " +
-				"sets transport, waiting or storage time (or stock_quantity) would replace it; target idle_time " +
-				"instead, or add the breakdown to the current state")
+				"sets transport, waiting or storage time (or stock_quantity) would start a breakdown in which " +
+				"the parts not entered count as 0, replacing the total; the breakdown cannot be inferred from " +
+				"the total: target idle_time instead, or enter the parts in the current state first")
 		}
 		p.IdleTime = F(idleParts(&p))
 	}
 
 	// Yield: 1 − (scrap + rework) (A.17).
 	hasDefects := p.ScrapRate != nil || p.ReworkRate != nil
-	if t := get(func(t *ProcessTargets) *Target { return t.YieldFactor }); t != nil {
+	yfTarget := get(func(t *ProcessTargets) *Target { return t.YieldFactor })
+	if stillUnknown("yield_factor") {
+		rateTargeted := targeted["scrap_rate"] || targeted["rework_rate"]
+		switch {
+		case !hasDefects && !rateTargeted:
+			// No usable rate entered: a yield target sets the yield.
+		case yfTarget != nil || (rateTargeted && cur.YieldFactor != nil):
+			return params, cannotMove("yield_factor")
+		default:
+			yfTarget, hasDefects = nil, false
+		}
+	}
+	if t := yfTarget; t != nil {
 		if t.ReductionPercent != nil {
 			return params, fmt.Errorf("yield_factor: use an absolute value, not reduction_percent")
 		}
@@ -403,6 +476,7 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 				"(scrap_rate + rework_rate) (A.17)", *v)
 		}
 		p.YieldFactor = v
+		targeted["yield_factor"] = true
 	}
 	if hasDefects {
 		switch {
@@ -410,16 +484,22 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 			p.YieldFactor = F(c.CalculateYieldFactor(num(p.ScrapRate), num(p.ReworkRate)))
 		case !hasIssue(curIssues, fieldDefects):
 			return params, fmt.Errorf("scrap_rate + rework_rate = %g is above 1", num(p.ScrapRate)+num(p.ReworkRate))
+		default:
+			// The current state already has scrap + rework above 1
+			// (reported by CheckConsistency); untouched, it is carried
+			// over, with its stored yield.
+			p.YieldFactor = params.YieldFactor
 		}
-		// Otherwise the current state already has scrap + rework above 1
-		// (reported by CheckConsistency); untouched, it is carried over.
 	}
 
 	// Lead time and its value classification. The lead time is the flow
 	// (process + idle time) whenever process or idle time is known, even
-	// when the result is 0.
+	// when the result is 0, unless one of them is unknown (see
+	// resolution.unknown): then the classification, else the current lead
+	// time.
 	flow := num(p.ProcessTime) + num(p.IdleTime)
-	flowSet := p.ProcessTime != nil || p.IdleTime != nil
+	flowUnknown := (p.ProcessTime == nil && cr.unknown["process_time"]) || (p.IdleTime == nil && cr.unknown["idle_time"])
+	flowSet := (p.ProcessTime != nil || p.IdleTime != nil) && !flowUnknown
 	if p.ProcessTime != nil && p.ValueAddingTime != nil && exceeds(*p.ValueAddingTime, *p.ProcessTime) &&
 		!hasIssue(curIssues, "value_adding_time") {
 		return params, fmt.Errorf("process_time: the targets give %g, below value_adding_time %g "+
@@ -464,8 +544,30 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		p.LeadTime = F(flow)
 	case flowSet:
 		p.LeadTime = F(flow)
-	case classified || p.ValueAddingTime != nil:
+	case classified:
 		p.LeadTime = F(c.CalculateLeadTime(p))
+	case flowUnknown && cur.LeadTime != nil && (!sameValue(p.ProcessTime, cur.ProcessTime) || !sameValue(p.IdleTime, cur.IdleTime)):
+		// A stored lead time stands in for an unknown part; it cannot follow
+		// the changed parts.
+		return params, cannotMove("lead_time")
+	}
+
+	// Impossible values of the current state (reported by
+	// CheckConsistency) that no target replaced are carried over.
+	for _, name := range impossibleFields(params) {
+		if targeted[name] {
+			continue
+		}
+		for _, b := range boundedFloats {
+			if b.name == name {
+				*b.value(&p) = *b.value(&params)
+			}
+		}
+		for _, b := range boundedInts {
+			if b.name == name {
+				*b.value(&p) = *b.value(&params)
+			}
+		}
 	}
 
 	out := c.trimDerived(params, p, ctx)

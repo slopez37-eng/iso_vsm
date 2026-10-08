@@ -276,9 +276,12 @@ func (a *Analyzer) hasLoadInputs(vs *ValueStream) bool {
 //	capacity    = AvailableTime × #RES ÷ CT          (units per DemandPeriod)
 //	utilization = Demand × CT ÷ (AvailableTime × #RES) (fraction; = CT ÷ (takt × #RES))
 //
-// #RES is the process's ResourceCount (not entered, or 0 or less, counts as 1): resources
-// working in parallel multiply capacity, as in processing time = CT × PQ ÷
-// #RES (A.5).
+// #RES is the process's ResourceCount: resources working in parallel
+// multiply capacity, as in processing time = CT × PQ ÷ #RES (A.5). Not
+// entered, it counts as 1 (a process runs on at least one resource).
+// Entered as 0 the process has no capacity, so its utilization is
+// undefined: ok is false (CheckConsistency reports the 0 when there is
+// demand; a negative count is impossible and reported too).
 //
 // Demand and AvailableTime are both per Customer.DemandPeriod, so capacity and
 // demand are compared over the same period. CT is the process's CycleTime,
@@ -288,8 +291,8 @@ func (a *Analyzer) hasLoadInputs(vs *ValueStream) bool {
 //
 // ok is false (and nothing is assumed) when the customer, Demand,
 // DemandPeriod, AvailableTime or the process's CycleTime is not entered, or
-// Demand, AvailableTime or CycleTime is 0, or the process's time unit is not
-// supported.
+// Demand, AvailableTime or CycleTime is 0, ResourceCount is entered as 0 or
+// less, or the process's time unit is not supported.
 func (a *Analyzer) CalculateProcessLoad(process Process, vs *ValueStream) (capacity, utilization float64, ok bool) {
 	if vs == nil || !a.hasLoadInputs(vs) {
 		return 0, 0, false
@@ -301,7 +304,10 @@ func (a *Analyzer) CalculateProcessLoad(process Process, vs *ValueStream) (capac
 		return 0, 0, false
 	}
 	cycleTime := *ct
-	resources := float64(max(inum(process.Parameters.ResourceCount), 1))
+	resources, ok := resourceCount(process.Parameters)
+	if !ok {
+		return 0, 0, false
+	}
 	available := *vs.Customer.AvailableTime * resources
 	return available / cycleTime, *vs.Customer.Demand * cycleTime / available, true
 }

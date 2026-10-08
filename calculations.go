@@ -108,6 +108,11 @@ func (c *Calculator) CalculateTotalProcessTime(processes []Process) float64 {
 
 // CalculateProcessingTime calculates processing time according to formula (A.5)
 // PRT = CT × (PQ ÷ #RES)
+//
+// Like the other single-formula methods it returns 0 when the denominator
+// (resourceCount) is 0 (see Calculator). The model does not use it:
+// ResolveParameters treats a resource_count of 0 as no resource, so the
+// processing time is unknown, and reports it.
 func (c *Calculator) CalculateProcessingTime(cycleTime float64, processQuantity int, resourceCount int) float64 {
 	if resourceCount == 0 {
 		return 0
@@ -599,15 +604,15 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 //     stock cannot be known (nothing entered, or range alone and no demand
 //     rate). A stock entered as 0 counts as 0; a process stock_quantity not
 //     entered adds nothing (the process holds no stock).
-//   - average_yield_factor: mean of the processes' yield factors (1 − scrap −
-//     rework when those are given, else the stored YieldFactor) over the
-//     processes whose yield is known: yield_factor, scrap_rate or
-//     rework_rate entered (0 included: a yield of 0, or a scrap rate of 0,
-//     is quality data). A process that scraps everything counts with yield
-//     0. A process whose scrap_rate + rework_rate is above 1
-//     (impossible; CheckConsistency reports it) is left out rather than
-//     counted with a negative yield. Omitted when no process has quality
-//     data.
+//   - average_yield_factor: mean of the processes' resolved yield factors
+//     (1 − scrap − rework when a rate is given, else the stored
+//     YieldFactor; see ResolveParameters) over the processes whose yield is
+//     known (0 included: a yield of 0, or a scrap rate of 0, is quality
+//     data). A process that scraps everything counts with yield 0. A
+//     process whose yield is unknown because of impossible values (a rate
+//     or yield outside 0–1, scrap_rate + rework_rate above 1;
+//     CheckConsistency reports them) is left out rather than counted with a
+//     yield outside 0–1. Omitted when no process has a known yield.
 //
 // All process values are resolved in the stream first (see
 // ResolveParametersInStream), so stored
@@ -651,10 +656,11 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 	var totalYield float64
 	processCount := 0
 	for _, process := range vs.Processes {
-		if !yieldKnown(process.Parameters) {
-			continue
+		yield := c.ResolveParametersInStream(process.Parameters, vs).YieldFactor
+		if yield == nil {
+			continue // no quality data, or unknown (impossible values)
 		}
-		totalYield += *c.ResolveParametersInStream(process.Parameters, vs).YieldFactor
+		totalYield += *yield
 		processCount++
 	}
 	if processCount > 0 {
@@ -662,17 +668,6 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 	}
 
 	return kpis
-}
-
-// yieldKnown reports whether a process has usable quality data: a yield
-// factor, or a scrap or rework rate it is computed from, entered (0
-// included). Scrap + rework above 1 is impossible, so such a yield is not
-// known (see defectsImpossible).
-func yieldKnown(p ProcessParameters) bool {
-	if defectsImpossible(p) {
-		return false
-	}
-	return p.YieldFactor != nil || p.ScrapRate != nil || p.ReworkRate != nil
 }
 
 // defectsImpossible reports whether scrap_rate + rework_rate is above 1

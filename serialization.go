@@ -550,11 +550,15 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		mapStr += fmt.Sprintf("  %d. %s (%s)\n", i+1, process.Name, process.Type)
 		mapStr += fmt.Sprintf("     Process Time: %s\n", optional(params.ProcessTime, "%.2f "+unit))
 		mapStr += fmt.Sprintf("     Cycle Time: %s\n", optional(params.CycleTime, "%.2f "+unit))
-		if yieldKnown(process.Parameters) {
+		q := process.Parameters
+		switch {
+		case params.YieldFactor != nil:
 			mapStr += fmt.Sprintf("     Yield Factor: %.2f%%\n", *params.YieldFactor*100)
-		} else if defectsImpossible(process.Parameters) {
+		case defectsImpossible(q):
 			mapStr += "     Yield Factor: unknown (scrap + rework above 100%)\n"
-		} else {
+		case q.YieldFactor != nil || q.ScrapRate != nil || q.ReworkRate != nil:
+			mapStr += "     Yield Factor: unknown (impossible quality values)\n"
+		default:
 			mapStr += "     Yield Factor: not given\n"
 		}
 

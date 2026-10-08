@@ -328,7 +328,8 @@ func (c *Calculator) idealParameters(params ProcessParameters, ctx streamContext
 	p.TransportRepetitionTime, p.TransportRepetitionCount = nil, nil
 	p.YieldFactor = F(1)
 	if processingFormula(p) && positive(p.OrderQuantity) {
-		p.CycleTime = F(num(vat) * float64(*p.ResourceCount) / *p.OrderQuantity)
+		resources, _ := resourceCount(p)
+		p.CycleTime = F(num(vat) * resources / *p.OrderQuantity)
 	}
 	return c.trimDerived(params, p, ctx)
 }

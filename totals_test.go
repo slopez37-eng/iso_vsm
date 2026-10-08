@@ -374,3 +374,55 @@ func TestAnalysisAgreesWithKPIs(t *testing.T) {
 		}
 	}
 }
+
+// An inventory entered as empty (quantity 0) adds no time, with or
+// without customer demand; a range stored next to quantity 0 contradicts
+// it (and 0 is used).
+func TestEmptyInventoryWithoutDemand(t *testing.T) {
+	stream := func(inv Inventory) *ValueStream {
+		return &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+			TimeUnit: TimeUnitMinutes, ProcessTime: F(10), ValueAddingTime: F(5)}}},
+			Inventory: []Inventory{inv}}
+	}
+	c := NewCalculator()
+	vs := stream(Inventory{ID: "i", Quantity: F(0)})
+	if lt, ok := c.CalculateKPIs(vs)["total_lead_time"]; !ok || !approx(lt, 10) {
+		t.Errorf("quantity 0, no demand: total_lead_time %v (present %v), want 10", lt, ok)
+	}
+	if issues := CheckConsistency(vs); len(issues) != 0 {
+		t.Errorf("quantity 0, no demand: issues %+v, want none", issues)
+	}
+	vs = stream(Inventory{ID: "i", Quantity: F(0), Range: F(100)})
+	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 10) {
+		t.Errorf("quantity 0, range 100: total_lead_time %v, want 10 (the empty inventory lasts 0)", lt)
+	}
+	issue, ok := findIssue(CheckConsistency(vs), "inventory", "i", "range")
+	if !ok || issue.Kind != IssueContradiction || issue.ComputedValue != 0 {
+		t.Errorf("quantity 0, range 100: issues %+v, want a range contradiction (0)", CheckConsistency(vs))
+	}
+}
+
+// Two inventories linked to the same process: the process's stock is
+// counted once (through the first), and the second link is a
+// contradiction.
+func TestTwoInventoriesLinkedToOneProcess(t *testing.T) {
+	inv := func(id string) Inventory {
+		return Inventory{ID: id, Quantity: F(100), Range: F(50), ProcessID: "p"}
+	}
+	vs := &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+		TimeUnit: TimeUnitMinutes, ProcessTime: F(10), StockQuantity: F(100), ValueAddingTime: F(5)}}},
+		Inventory: []Inventory{inv("i1"), inv("i2")}}
+	if lt := NewCalculator().CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 60) {
+		t.Errorf("total_lead_time = %v, want 60 (10 + the stock's 50, once)", lt)
+	}
+	issues := CheckConsistency(vs)
+	if issue, ok := findIssue(issues, "inventory", "i2", "process_id"); !ok || issue.Kind != IssueContradiction {
+		t.Errorf("issues %+v, want a contradiction on inventory i2's link", issues)
+	}
+	if _, ok := findIssue(issues, "inventory", "i1", "process_id"); ok {
+		t.Errorf("issues %+v: the first link is the stock, not a contradiction", issues)
+	}
+	if len(issues) != 1 {
+		t.Errorf("issues %+v, want only the second link", issues)
+	}
+}

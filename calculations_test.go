@@ -254,18 +254,21 @@ func TestValidateProcessParameters(t *testing.T) {
 	}
 	bad := ProcessParameters{ProcessTime: F(-1), CycleTime: F(-1), CustomerDemand: F(-1), ValueAddingTime: F(5),
 		YieldFactor: F(2), ScrapRate: F(-0.1), ReworkRate: F(1.5)}
-	// The entered process time -1 is an error, and value adding time 5
-	// exceeds it; scrap + rework = 1.4 is the 8th.
-	if errs := c.ValidateProcessParameters(bad); len(errs) != 8 {
-		t.Errorf("got %d errors, want 8 (VAT above process time, scrap + rework = 1.4 too): %v", len(errs), errs)
+	// The entered process time -1 is an error (and an impossible value,
+	// so unknown: value adding time is not compared with it); scrap +
+	// rework = 1.4 is the 7th.
+	if errs := c.ValidateProcessParameters(bad); len(errs) != 7 {
+		t.Errorf("got %d errors, want 7 (scrap + rework = 1.4 too): %v", len(errs), errs)
 	}
 	for name, tc := range map[string]struct {
 		p    ProcessParameters
 		want int
 	}{
-		"VAT above PT":              {ProcessParameters{ProcessTime: F(4), ValueAddingTime: F(5)}, 1},
-		"no PT, VAT above lead":     {ProcessParameters{IdleTime: F(10), ValueAddingTime: F(20)}, 1},
-		"no PT, VAT within lead":    {ProcessParameters{IdleTime: F(30), ValueAddingTime: F(20)}, 0},
+		"VAT above PT":           {ProcessParameters{ProcessTime: F(4), ValueAddingTime: F(5)}, 1},
+		"no PT, VAT above lead":  {ProcessParameters{LeadTime: F(10), ValueAddingTime: F(20)}, 1},
+		"no PT, VAT within lead": {ProcessParameters{LeadTime: F(30), ValueAddingTime: F(20)}, 0},
+		// Idle time entered: a blank process time counts as 0.
+		"idle only, VAT above PT 0": {ProcessParameters{IdleTime: F(30), ValueAddingTime: F(20)}, 1},
 		"defects 1.004 (tolerance)": {ProcessParameters{ScrapRate: F(0.6), ReworkRate: F(0.404)}, 1},
 	} {
 		if errs := c.ValidateProcessParameters(tc.p); len(errs) != tc.want {

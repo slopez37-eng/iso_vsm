@@ -233,7 +233,7 @@ func TestTargetsOutputIsConsistent(t *testing.T) {
 		"idle 0":            {Default: &ProcessTargets{IdleTime: AbsoluteTarget(0)}},
 		"waiting −40%":      {Processes: map[string]ProcessTargets{"p1": {WaitingTime: ReductionTarget(40)}, "p3": {WaitingTime: ReductionTarget(40)}}},
 		"stock −50%":        {Default: &ProcessTargets{StockQuantity: ReductionTarget(50)}},
-		"storage 0":         {Default: &ProcessTargets{StorageTime: AbsoluteTarget(0)}},
+		"storage 0":         {Processes: map[string]ProcessTargets{"p1": {StorageTime: AbsoluteTarget(0)}, "p2": {StorageTime: AbsoluteTarget(0)}, "p3": {StorageTime: AbsoluteTarget(0)}}},
 		"scrap/rework −50%": {Default: &ProcessTargets{ScrapRate: ReductionTarget(50), ReworkRate: ReductionTarget(50)}},
 		"scrap 0 rework 0":  {Default: &ProcessTargets{ScrapRate: AbsoluteTarget(0), ReworkRate: AbsoluteTarget(0)}},
 		"yield 0.98":        {Processes: map[string]ProcessTargets{"p1": {YieldFactor: AbsoluteTarget(0.98)}, "p3": {YieldFactor: AbsoluteTarget(0.98)}}},
@@ -749,5 +749,40 @@ func TestZeroYieldTargetIsEntered(t *testing.T) {
 	}
 	if got, ok := future.KPIs["average_yield_factor"]; !ok || got != 0 {
 		t.Errorf("average_yield_factor = %v (present %v), want 0", got, ok)
+	}
+}
+
+// A target on a part of a total given only as a total starts a breakdown
+// (blank parts would then be 0, collapsing the total), even a target of
+// 0: it is rejected, never applied by dropping the target.
+func TestPartTargetOnTotalOnlyProcess(t *testing.T) {
+	stream := func(p ProcessParameters) *ValueStream {
+		p.TimeUnit = TimeUnitMinutes
+		return &ValueStream{ID: "vs", Name: "T", Processes: []Process{{ID: "p", Name: "p", Parameters: p}}}
+	}
+	for name, tc := range map[string]struct {
+		current ProcessParameters
+		targets ProcessTargets
+	}{
+		"setup 0 on process time 30":  {ProcessParameters{ProcessTime: F(30)}, ProcessTargets{SetupTime: AbsoluteTarget(0)}},
+		"setup 5 on process time 30":  {ProcessParameters{ProcessTime: F(30)}, ProcessTargets{SetupTime: AbsoluteTarget(5)}},
+		"storage 0 on idle time 10":   {ProcessParameters{ProcessTime: F(5), IdleTime: F(10)}, ProcessTargets{StorageTime: AbsoluteTarget(0)}},
+		"transport 2 on idle time 10": {ProcessParameters{ProcessTime: F(5), IdleTime: F(10)}, ProcessTargets{TransportTime: AbsoluteTarget(2)}},
+	} {
+		future, err := NewDesigner().DesignFutureStateFromTargets(stream(tc.current),
+			&FutureStateTargets{Processes: map[string]ProcessTargets{"p": tc.targets}})
+		if err == nil || !strings.Contains(err.Error(), "only as a total") {
+			var p ProcessParameters
+			if future != nil {
+				p = future.Processes[0].Parameters
+			}
+			t.Errorf("%s: err %v (future setup %v, storage %v), want a rejection", name, err, p.SetupTime, p.StorageTime)
+		}
+	}
+	// Targeting the total itself is fine.
+	future, err := NewDesigner().DesignFutureStateFromTargets(stream(ProcessParameters{ProcessTime: F(30)}),
+		&FutureStateTargets{Processes: map[string]ProcessTargets{"p": {ProcessTime: AbsoluteTarget(20)}}})
+	if err != nil || num(future.Processes[0].Parameters.ProcessTime) != 20 {
+		t.Errorf("process time target on a total-only process: err %v", err)
 	}
 }

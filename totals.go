@@ -11,16 +11,17 @@ import (
 // CheckConsistency (missing data) and the text export all read them from
 // figures, so a rule changed here changes every result the same way.
 //
-// The rule for unknown values: a total is known only when every part of it
-// is known. A process's own totals follow ResolveParameters (inside one
-// process, parts that are not entered add nothing, so a process with a
-// process time and no idle time has lead time = process time). A stream
+// The rule for unknown values: a process's own totals follow the
+// blank-parts rule of ResolveParameters (once a part is entered, blank parts
+// count as 0, so a process with a process time and no idle time has lead
+// time = process time; an unknown part makes the total unknown). A stream
 // total needs, from every element on the map, the value it adds: a process
-// whose lead time cannot be determined, or an inventory whose time cannot be
-// determined, makes the stream lead time unknown, not smaller. An element
-// that is not on the map adds nothing. Every unknown part is reported as a
-// ConsistencyIssue of Kind IssueMissingData (see CheckConsistency), and the
-// KPIs that need it are omitted.
+// whose lead time cannot be determined, stock that waits for an unknown
+// time, or an inventory whose time cannot be determined, makes the stream
+// lead time unknown, not smaller. An element that is not on the map adds
+// nothing. Every unknown part is reported as a ConsistencyIssue of Kind
+// IssueMissingData (see CheckConsistency), and the KPIs that need it are
+// omitted.
 
 // Issue kinds (ConsistencyIssue.Kind).
 const (
@@ -137,17 +138,27 @@ func (c *Calculator) figures(vs *ValueStream) streamFigures {
 
 	// Which processes have an inventory counted on its own as their stock
 	// (see timeThroughProcess): that inventory carries the stock's time.
+	linkedInv, duplicateOf := linkedInventories(vs)
 	carried := map[string]bool{}
-	for _, inv := range vs.Inventory {
-		if holder, linked := stockHolder(vs, inv); linked && !c.timeThroughProcess(holder, ctx) {
+	for i, inv := range vs.Inventory {
+		if holder, _ := stockHolder(vs, inv); linkedInv[i] && duplicateOf[i] == "" && !c.timeThroughProcess(holder, ctx) {
 			carried[holder.ID] = true
 		}
 	}
 
 	for _, process := range vs.Processes {
-		p, ok := c.resolvedIn(process.Parameters, ctx)
+		params := process.Parameters
+		if carried[process.ID] {
+			// The stock's wait is the inventory's time, counted there.
+			params.WaitingTime = F(0)
+		}
+		p, ok := c.resolvedIn(params, ctx)
 		pf := processFigures{params: p, unitOK: ok}
-		stock.add(F(num(process.Parameters.StockQuantity)))
+		if process.Parameters.StockQuantity != nil && p.StockQuantity == nil {
+			stock.add(nil) // impossible (reported by resolveParameters)
+		} else {
+			stock.add(F(num(p.StockQuantity)))
+		}
 		if !ok {
 			// Reported by resolveParameters (unsupported time unit).
 			for _, s := range []*sum{&pt, &idle, &lt, &vat} {
@@ -156,19 +167,20 @@ func (c *Calculator) figures(vs *ValueStream) streamFigures {
 			f.processes = append(f.processes, pf)
 			continue
 		}
+		// The process's totals follow the blank-parts rule
+		// (ResolveParameters): known, or nil when unknown.
 		pf.leadTime, pf.idle = p.LeadTime, p.IdleTime
-		if pf.idle == nil && p.ProcessTime != nil {
-			pf.idle = F(0) // lead time = process time (ResolveParameters)
+		if pf.leadTime == nil {
+			pf.idle = nil
 		}
-		idleTotalOnly := !idlePartsGiven(p) && p.IdleTime != nil
-		if positive(p.StockQuantity) && p.WaitingTime == nil && !idleTotalOnly && !carried[process.ID] {
+		switch {
+		case pf.leadTime == nil && positive(p.StockQuantity) && p.WaitingTime == nil:
 			// Stock that waits for a time nothing on the map gives.
-			pf.leadTime, pf.idle = nil, nil
 			missing("process", process.ID, "waiting_time", ruleLeadTotal,
 				"stock_quantity %g waits for an unknown time: enter waiting_time or idle_time, a range on an "+
 					"inventory linked to this process (process_id), or customer demand with a day or week "+
 					"demand_period; "+ltKPIs, *p.StockQuantity)
-		} else if pf.leadTime == nil {
+		case pf.leadTime == nil:
 			missing("process", process.ID, "lead_time", ruleLeadTotal,
 				"lead time unknown: enter process_time (or its parts), idle_time, the value classification or "+
 					"lead_time; "+ltKPIs)
@@ -189,8 +201,8 @@ func (c *Calculator) figures(vs *ValueStream) streamFigures {
 		idle.add(pf.idle)
 		lt.add(pf.leadTime)
 		vat.add(p.ValueAddingTime)
-		// The idle parts (not entered: none); only used when the idle
-		// total is known.
+		// The idle parts (blank: none); only used when the idle total is
+		// known.
 		transport.add(F(num(p.TransportTime)))
 		waiting.add(F(num(p.WaitingTime)))
 		storage.add(F(num(p.StorageTime)))
@@ -198,39 +210,49 @@ func (c *Calculator) figures(vs *ValueStream) streamFigures {
 	}
 
 	rate, rateKnown := ctx.demandRate(ctx.unit)
-	for _, inv := range vs.Inventory {
-		holder, linked := stockHolder(vs, inv)
+	for i, inv := range vs.Inventory {
 		var inf inventoryFigures
+		quantity, rng := nonNegative(inv.Quantity), nonNegative(inv.Range)
 		switch {
-		case linked:
+		case duplicateOf[i] != "":
+			// A second inventory linked to the same process: the process's
+			// stock is counted once, through the first (CheckConsistency
+			// reports it).
+			inf.stock = F(0)
+			f.inventories = append(f.inventories, inf)
+			continue
+		case linkedInv[i]:
 			inf.stock = F(0) // the process's stock_quantity, counted there
-		case inv.Quantity != nil:
-			inf.stock = inv.Quantity
-		case inv.Range != nil && (*inv.Range == 0 || rateKnown):
-			inf.stock = F(*inv.Range * rate)
+		case quantity != nil:
+			inf.stock = quantity
+		case inv.Quantity == nil && rng != nil && (*rng == 0 || rateKnown):
+			inf.stock = F(*rng * rate)
 		}
-		inf.counted = !linked || !c.timeThroughProcess(holder, ctx)
+		holder, _ := stockHolder(vs, inv)
+		inf.counted = !linkedInv[i] || !c.timeThroughProcess(holder, ctx)
 		if inf.counted {
 			if r, ok := ctx.inventoryRange(inv); ok {
 				inf.time = F(r)
-			} else {
-				inf.time = inv.Range
+			} else if inv.Quantity == nil || quantity != nil {
+				inf.time = rng
 			}
 		}
 		switch {
-		case inf.counted && inf.time == nil && inf.stock == nil:
+		case inf.counted && inf.time == nil && inf.stock == nil && inv.Quantity == nil && inv.Range == nil:
 			missing("inventory", inv.ID, "quantity", ruleLeadTotal,
 				"neither quantity nor range entered: its waiting time and stock are unknown, so "+
 					"total_lead_time, inventory_turns and the KPIs built on them are not computed")
-		case inf.counted && inf.time == nil:
+		case inf.counted && inf.time == nil && quantity != nil:
 			missing("inventory", inv.ID, "range", ruleLeadTotal,
 				"quantity %g entered, but no range and no customer demand rate to compute it (demand with a "+
-					"day or week demand_period); "+ltKPIs, num(inv.Quantity))
-		case inf.stock == nil && vs.Customer != nil && positive(vs.Customer.Demand):
+					"day or week demand_period); "+ltKPIs, *quantity)
+		case inf.stock == nil && rng != nil && vs.Customer != nil && positive(vs.Customer.Demand):
 			missing("inventory", inv.ID, "quantity", ruleStockTotal,
 				"range entered but no quantity, and no customer demand rate to turn the range into stock; "+
 					"inventory_turns is not computed")
 		}
+		// An impossible quantity or range (reported by CheckConsistency)
+		// leaves the time or stock unknown.
 		if inf.counted {
 			idle.add(inf.time)
 			lt.add(inf.time)
@@ -271,6 +293,15 @@ func (f streamFigures) processEfficiency() (float64, bool) {
 		return 0, false
 	}
 	return *f.processTime / *f.leadTime, true
+}
+
+// nonNegative returns v, or nil when v is impossible (below 0, see
+// "Impossible values" at ResolveParameters).
+func nonNegative(v *float64) *float64 {
+	if v == nil || exceeds(0, *v) {
+		return nil
+	}
+	return v
 }
 
 // unknownTotal is NaN, the value of a float64-only total that is unknown.

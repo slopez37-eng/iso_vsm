@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -137,7 +138,7 @@ func TestProcessTimeShortfallMessage(t *testing.T) {
 	if len(issues) != 1 {
 		t.Fatalf("got %+v, want one issue", issues)
 	}
-	want := "process_time: stored 20, but its parts sum to 4 (only setup_time given) — enter the missing parts, " +
+	want := "process_time: stored 20, but its parts sum to 4 (only setup_time given; blank parts count as 0) — enter the missing parts, " +
 		"or clear the given parts to use the stored total; calculations use 4"
 	if issues[0].Message != want {
 		t.Errorf("message = %q\nwant      %q", issues[0].Message, want)
@@ -773,13 +774,14 @@ func TestDefectsJustAboveOneImpossible(t *testing.T) {
 	}
 }
 
-// Value adding time above the lead time (process time not given) is
+// Value adding time above the lead time (process time not known) is
 // reported, and flow efficiency is unknown rather than above 100%.
 func TestValueAddingTimeAboveLeadTime(t *testing.T) {
 	vs := &ValueStream{ID: "vs", Name: "VAT", Processes: []Process{{ID: "p", Name: "P", Parameters: ProcessParameters{
-		TimeUnit: TimeUnitMinutes, IdleTime: F(10), ValueAddingTime: F(20)}}}}
+		TimeUnit: TimeUnitMinutes, LeadTime: F(10), ValueAddingTime: F(20)}}}}
 	issues := contradictions(CheckConsistency(vs))
-	if len(issues) != 1 || issues[0].Field != "value_adding_time" || !approx(issues[0].ComputedValue, 10) {
+	if len(issues) != 1 || issues[0].Field != "value_adding_time" || issues[0].Rule != ruleVATWithinLT ||
+		!approx(issues[0].ComputedValue, 10) {
 		t.Errorf("issues = %+v, want one value_adding_time issue (lead time 10)", issues)
 	}
 	if r, ok := NewCalculator().CalculateKPIs(vs)["value_added_ratio"]; ok {
@@ -798,12 +800,24 @@ func TestValueAddingTimeAboveLeadTime(t *testing.T) {
 		t.Errorf("loaded issues = %+v, want one", loaded.ConsistencyIssues)
 	}
 	// Within the lead time it is fine.
-	vs.Processes[0].Parameters.IdleTime = F(40)
+	vs.Processes[0].Parameters.LeadTime = F(40)
 	if issues := contradictions(CheckConsistency(vs)); len(issues) != 0 {
 		t.Errorf("VAT 20 within lead time 40 flagged: %+v", issues)
 	}
 	if r := NewCalculator().CalculateKPIs(vs)["value_added_ratio"]; !approx(r, 0.5) {
 		t.Errorf("value_added_ratio = %v, want 0.5", r)
+	}
+	// With idle time entered, a blank process time is 0 (blank = none
+	// once started), so value adding time cannot fit in it: reported, with
+	// the reason.
+	vs.Processes[0].Parameters = ProcessParameters{TimeUnit: TimeUnitMinutes, IdleTime: F(40), ValueAddingTime: F(20)}
+	issues = contradictions(CheckConsistency(vs))
+	if len(issues) != 1 || issues[0].Rule != ruleVATWithinPT || issues[0].ComputedValue != 0 ||
+		!strings.Contains(issues[0].Message, "not entered") {
+		t.Errorf("idle 40, VAT 20, process time blank: issues %+v, want VAT above process time 0", issues)
+	}
+	if lt := NewCalculator().CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 40) {
+		t.Errorf("idle 40, process time blank: lead time %v, want 40", lt)
 	}
 }
 
@@ -900,6 +914,194 @@ func TestEnteredZeroVersusNotEntered(t *testing.T) {
 	}
 	if got, _ = resolve(ProcessParameters{}); got.LeadTime != nil {
 		t.Errorf("nothing entered: LT %v, want not entered", *got.LeadTime)
+	}
+	// Once the flow is started, a blank process or idle time is 0.
+	if got, _ = resolve(ProcessParameters{ProcessTime: F(10)}); got.IdleTime == nil || *got.IdleTime != 0 || num(got.LeadTime) != 10 {
+		t.Errorf("process time 10 alone: IT %v LT %v, want 0 and 10", got.IdleTime, num(got.LeadTime))
+	}
+	if got, _ = resolve(ProcessParameters{IdleTime: F(10)}); got.ProcessTime == nil || *got.ProcessTime != 0 || num(got.LeadTime) != 10 {
+		t.Errorf("idle time 10 alone: PT %v LT %v, want 0 and 10", got.ProcessTime, num(got.LeadTime))
+	}
+	// Rework blank next to scrap 0: rework 0, yield 1 (above); rework
+	// entered alone: scrap 0.
+	if got, _ = resolve(ProcessParameters{ReworkRate: F(0.1)}); got.YieldFactor == nil || !approx(*got.YieldFactor, 0.9) {
+		t.Errorf("rework 0.1 alone: yield %v, want 0.9", got.YieldFactor)
+	}
+}
+
+// TestBlankPartsRule pins the blank-parts rule ("blank = none, once
+// started", see ResolveParameters) for every total defined by parts: one
+// part entered (the blank parts count as 0), all parts blank with a stored
+// total (used as is), and everything blank (unknown, nil).
+func TestBlankPartsRule(t *testing.T) {
+	c := NewCalculator()
+	pt := func(p ProcessParameters) *float64 { return p.ProcessTime }
+	it := func(p ProcessParameters) *float64 { return p.IdleTime }
+	lt := func(p ProcessParameters) *float64 { return p.LeadTime }
+	vat := func(p ProcessParameters) *float64 { return p.ValueAddingTime }
+	yf := func(p ProcessParameters) *float64 { return p.YieldFactor }
+	for _, tc := range []struct {
+		name   string
+		in     ProcessParameters
+		get    func(ProcessParameters) *float64
+		want   *float64 // nil: unknown
+		issues []string
+	}{
+		// process_time = processing + setup + handling + WTp + ancillary (A.2)
+		{"A.2 one part", ProcessParameters{HandlingTime: F(3)}, pt, F(3), nil},
+		{"A.2 one part, stored total differs", ProcessParameters{HandlingTime: F(3), ProcessTime: F(8)}, pt, F(3), []string{"process_time"}},
+		{"A.2 total only", ProcessParameters{ProcessTime: F(8)}, pt, F(8), nil},
+		{"A.2 nothing", ProcessParameters{}, pt, nil, nil},
+		// A.6: setup blank counts 0.
+		{"A.6 setup blank", ProcessParameters{RepetitionTime: F(2), RepetitionCount: I(3)}, pt, F(6), nil},
+		// idle_time = transport + waiting + storage
+		{"idle one part", ProcessParameters{StorageTime: F(4)}, it, F(4), nil},
+		{"idle one part, stored total differs", ProcessParameters{StorageTime: F(4), IdleTime: F(9)}, it, F(4), []string{"idle_time"}},
+		{"idle total only", ProcessParameters{IdleTime: F(9)}, it, F(9), nil},
+		{"idle nothing", ProcessParameters{}, it, nil, nil},
+		// lead_time = process_time + idle_time
+		{"lead: process time only", ProcessParameters{ProcessTime: F(10)}, lt, F(10), nil},
+		{"lead: idle time only", ProcessParameters{IdleTime: F(10)}, lt, F(10), nil},
+		{"lead: process time only, stored total differs", ProcessParameters{ProcessTime: F(10), LeadTime: F(30)}, lt, F(10), []string{"lead_time"}},
+		{"lead: total only", ProcessParameters{LeadTime: F(30)}, lt, F(30), nil},
+		{"lead: nothing", ProcessParameters{}, lt, nil, nil},
+		{"idle time only: process time 0", ProcessParameters{IdleTime: F(10)}, pt, F(0), nil},
+		{"process time only: idle time 0", ProcessParameters{ProcessTime: F(10)}, it, F(0), nil},
+		// lead_time = VAT + NVAT + NNVAT (A.3), started by NVAT or NNVAT
+		{"class: NVAT only", ProcessParameters{NonValueAddingTime: F(5)}, lt, F(5), nil},
+		{"class: NVAT only, VAT 0", ProcessParameters{NonValueAddingTime: F(5)}, vat, F(0), nil},
+		{"class: NVAT + flow agree", ProcessParameters{NonValueAddingTime: F(5), ProcessTime: F(5)}, lt, F(5), nil},
+		{"class: NVAT + flow differ", ProcessParameters{NonValueAddingTime: F(5), ProcessTime: F(8)}, lt, F(8), []string{fieldClassSum}},
+		{"class: VAT alone does not start it", ProcessParameters{ValueAddingTime: F(5)}, lt, nil, nil},
+		// yield_factor = 1 − (scrap + rework) (A.17)
+		{"yield: scrap 0 only", ProcessParameters{ScrapRate: F(0)}, yf, F(1), nil},
+		{"yield: rework only", ProcessParameters{ReworkRate: F(0.25)}, yf, F(0.75), nil},
+		{"yield: scrap only, stored differs", ProcessParameters{ScrapRate: F(0), YieldFactor: F(0.5)}, yf, F(1), []string{"yield_factor"}},
+		{"yield: total only", ProcessParameters{YieldFactor: F(0.8)}, yf, F(0.8), nil},
+		{"yield: nothing", ProcessParameters{}, yf, nil, nil},
+	} {
+		got, issues := c.resolveParameters(tc.in, streamContext{})
+		v := tc.get(got)
+		if (v == nil) != (tc.want == nil) || (v != nil && !approx(*v, *tc.want)) {
+			t.Errorf("%s: got %v, want %v", tc.name, v, tc.want)
+		}
+		var fields []string
+		for _, is := range issues {
+			fields = append(fields, is.Field)
+		}
+		if !reflect.DeepEqual(fields, tc.issues) {
+			t.Errorf("%s: issues %v, want %v", tc.name, fields, tc.issues)
+		}
+	}
+
+	// In a stream: a process with idle time only has process time 0, and
+	// one with a classification has value adding time 0, so the stream
+	// totals are known; a process with nothing usable is missing data.
+	vs := &ValueStream{ID: "vs", Processes: []Process{
+		{ID: "a", Parameters: ProcessParameters{ProcessTime: F(10), ValueAddingTime: F(4)}},
+		{ID: "b", Parameters: ProcessParameters{IdleTime: F(20), NonValueAddingTime: F(20)}},
+	}}
+	kpis := c.CalculateKPIs(vs)
+	if !approx(kpis["total_lead_time"], 30) || !approx(kpis["total_value_adding_time"], 4) ||
+		!approx(kpis["process_efficiency"], 10.0/30) {
+		t.Errorf("stream KPIs %v, want lead 30, VAT 4, process efficiency 1/3", kpis)
+	}
+	if issues := CheckConsistency(vs); len(issues) != 0 {
+		t.Errorf("stream issues %+v, want none", issues)
+	}
+	vs.Processes = append(vs.Processes, Process{ID: "c", Parameters: ProcessParameters{CycleTime: F(1)}})
+	if _, ok := c.CalculateKPIs(vs)["total_lead_time"]; ok {
+		t.Errorf("a process with nothing usable: total_lead_time computed")
+	}
+	if _, ok := findIssue(CheckConsistency(vs), "process", "c", "lead_time"); !ok {
+		t.Errorf("a process with nothing usable: no missing lead_time")
+	}
+}
+
+// Impossible values (negative times, quantities, counts; rates outside
+// 0–1) are contradictions, and what is computed from them is unknown.
+func TestImpossibleValues(t *testing.T) {
+	c := NewCalculator()
+	stream := func(p ProcessParameters) *ValueStream {
+		return &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: p}}}
+	}
+	for _, tc := range []struct {
+		name  string
+		in    ProcessParameters
+		field string
+		kpi   string // KPI that must be omitted
+	}{
+		{"scrap -0.1", ProcessParameters{ProcessTime: F(1), ScrapRate: F(-0.1)}, "scrap_rate", "average_yield_factor"},
+		{"rework 1.5", ProcessParameters{ProcessTime: F(1), ReworkRate: F(1.5)}, "rework_rate", "average_yield_factor"},
+		{"yield 1.2", ProcessParameters{ProcessTime: F(1), YieldFactor: F(1.2)}, "yield_factor", "average_yield_factor"},
+		{"setup -5", ProcessParameters{ProcessingTime: F(10), SetupTime: F(-5)}, "setup_time", "total_lead_time"},
+		{"idle -3", ProcessParameters{ProcessTime: F(10), IdleTime: F(-3)}, "idle_time", "total_lead_time"},
+		{"stock -1", ProcessParameters{ProcessTime: F(10), StockQuantity: F(-1)}, "stock_quantity", "total_lead_time"},
+		{"repetitions -2", ProcessParameters{RepetitionTime: F(1), RepetitionCount: I(-2)}, "repetition_count", "total_lead_time"},
+	} {
+		vs := stream(tc.in)
+		issue, ok := findIssue(CheckConsistency(vs), "process", "p", tc.field)
+		if !ok || issue.Kind != IssueContradiction {
+			t.Errorf("%s: issues %+v, want a contradiction on %s", tc.name, CheckConsistency(vs), tc.field)
+		}
+		if v, ok := c.CalculateKPIs(vs)[tc.kpi]; ok {
+			t.Errorf("%s: %s = %v, want omitted", tc.name, tc.kpi, v)
+		}
+	}
+	// A rate at its bound is fine.
+	if issues := CheckConsistency(stream(ProcessParameters{ProcessTime: F(1), ValueAddingTime: F(1), ScrapRate: F(1)})); len(issues) != 0 {
+		t.Errorf("scrap 1: issues %+v, want none", issues)
+	}
+	// Inventory and customer values.
+	vs := &ValueStream{ID: "vs", Customer: &Customer{ID: "c", Demand: F(-5), DemandPeriod: DemandPeriodDay},
+		Processes: []Process{{ID: "p", Parameters: ProcessParameters{ProcessTime: F(1), ValueAddingTime: F(1)}}},
+		Inventory: []Inventory{{ID: "i", Quantity: F(-1), Range: F(2)}}}
+	issues := CheckConsistency(vs)
+	for _, want := range [][3]string{{"customer", "c", "demand"}, {"inventory", "i", "quantity"}} {
+		if is, ok := findIssue(issues, want[0], want[1], want[2]); !ok || is.Kind != IssueContradiction {
+			t.Errorf("issues %+v, want a contradiction on %s %s", issues, want[0], want[2])
+		}
+	}
+	if v, ok := c.CalculateKPIs(vs)["total_lead_time"]; ok {
+		t.Errorf("inventory quantity -1: total_lead_time = %v, want omitted", v)
+	}
+}
+
+// Resource count: not entered counts as 1; entered as 0 there is no
+// capacity (a contradiction when there is demand or an order), and a
+// negative count is impossible.
+func TestResourceCountZeroAndNegative(t *testing.T) {
+	c := NewCalculator()
+	cust := &Customer{ID: "c", Demand: F(100), DemandPeriod: DemandPeriodDay, AvailableTime: F(480)}
+	stream := func(rc *int) *ValueStream {
+		return &ValueStream{ID: "vs", Customer: cust, Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+			TimeUnit: TimeUnitMinutes, CycleTime: F(2), OrderQuantity: F(10), ResourceCount: rc, ValueAddingTime: F(1)}}}}
+	}
+	got := c.ResolveParametersInStream(stream(nil).Processes[0].Parameters, stream(nil))
+	if got.ProcessingTime == nil || *got.ProcessingTime != 20 {
+		t.Errorf("resource count not entered: processing time %v, want 2 × 10 ÷ 1 = 20", got.ProcessingTime)
+	}
+	for _, rc := range []int{0, -1} {
+		vs := stream(I(rc))
+		issue, ok := findIssue(CheckConsistency(vs), "process", "p", "resource_count")
+		if !ok || issue.Kind != IssueContradiction {
+			t.Errorf("resource count %d: issues %+v, want a resource_count contradiction", rc, CheckConsistency(vs))
+		}
+		if p := c.ResolveParametersInStream(vs.Processes[0].Parameters, vs); p.ProcessingTime != nil || p.ProcessTime != nil {
+			t.Errorf("resource count %d: processing %v, process time %v; want unknown", rc, p.ProcessingTime, p.ProcessTime)
+		}
+		if _, ok := c.CalculateKPIs(vs)["total_lead_time"]; ok {
+			t.Errorf("resource count %d: total_lead_time computed", rc)
+		}
+		if capacity, u, ok := NewAnalyzer().CalculateProcessLoad(vs.Processes[0], vs); ok {
+			t.Errorf("resource count %d: capacity %v, utilization %v; want undefined", rc, capacity, u)
+		}
+	}
+	// 0 resources and nothing to process: nothing contradicts it.
+	idle := &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+		ProcessTime: F(1), ValueAddingTime: F(1), ResourceCount: I(0)}}}}
+	if issues := CheckConsistency(idle); len(issues) != 0 {
+		t.Errorf("0 resources, no demand or order: issues %+v, want none", issues)
 	}
 }
 
