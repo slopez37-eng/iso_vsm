@@ -214,17 +214,17 @@ func (a *Analyzer) AnalyzeIdleTimes(vs *ValueStream) (*IdleTimeAnalysis, error) 
 
 	breakdown := IdleTimeBreakdown{}
 
+	// Express every process in one time unit before summing (see
+	// Calculator.ReferenceTimeUnit), and use the same process/idle time
+	// definitions as CalculateOverallLeadTime.
+	unit := a.calculator.ReferenceTimeUnit(vs.Processes)
 	for _, process := range vs.Processes {
-		params := process.Parameters
+		params := a.calculator.normalizeTimes(process.Parameters, unit)
 
-		// Calculate idle time for this process
-		idleTime := a.calculator.CalculateTotalIdleTime(
-			params.TransportTime,
-			params.WaitingTime,
-			params.StorageTime,
-		)
+		// Idle time for this process: stored IdleTime, else TT + WT + ST_T
+		idleTime := a.calculator.effectiveIdleTime(params)
 
-		processTime := a.calculator.CalculateProcessTime(params)
+		processTime := a.calculator.effectiveProcessTime(params)
 
 		analysis.IdleTimeByProcess[process.ID] = idleTime
 		totalIdleTime += idleTime
@@ -376,10 +376,16 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 
 		// Check for inventory issues (high waiting times)
 		if params.WaitingTime > params.ProcessTime {
+			// Waiting-to-process ratio; with no process time recorded the
+			// ratio is undefined, so report 0 rather than +Inf.
+			frequency := 0.0
+			if params.ProcessTime > 0 {
+				frequency = params.WaitingTime / params.ProcessTime
+			}
 			analysis.FlowInterruptions = append(analysis.FlowInterruptions, FlowInterruption{
 				Type:        "inventory",
 				Location:    process.Name,
-				Frequency:   params.WaitingTime / params.ProcessTime,
+				Frequency:   frequency,
 				Impact:      params.WaitingTime,
 				Description: "Excess inventory causing waiting times",
 			})

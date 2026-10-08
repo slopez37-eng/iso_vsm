@@ -447,9 +447,11 @@ func (d *Designer) checkContinuousFlowPrinciple(vs *ValueStream) bool {
 	totalIdle := 0.0
 	totalProcess := 0.0
 
+	unit := d.calculator.ReferenceTimeUnit(vs.Processes)
 	for _, process := range vs.Processes {
-		totalIdle += process.Parameters.IdleTime
-		totalProcess += d.calculator.CalculateProcessTime(process.Parameters)
+		params := d.calculator.normalizeTimes(process.Parameters, unit)
+		totalIdle += d.calculator.effectiveIdleTime(params)
+		totalProcess += d.calculator.effectiveProcessTime(params)
 	}
 
 	if totalProcess > 0 {

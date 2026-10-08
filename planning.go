@@ -313,12 +313,16 @@ func (p *Planner) estimateBenefits(potential ImprovementPotential) float64 {
 	return baseBenefit * potential.Impact
 }
 
-// calculatePaybackPeriod calculates payback period in months
+// calculatePaybackPeriod calculates payback period in months.
+// Payback = investment ÷ annual net benefit × 12, where annual net benefit =
+// Benefits − Operational (both treated as annual amounts). Returns 0 when the
+// net benefit is not positive (the measure never pays back).
 func (p *Planner) calculatePaybackPeriod(costs Costs) float64 {
-	if costs.Operational <= 0 {
+	netBenefit := costs.Benefits - costs.Operational
+	if netBenefit <= 0 {
 		return 0
 	}
-	return costs.Investment / costs.Operational * 12 // Months
+	return costs.Investment / netBenefit * 12 // Months
 }
 
 // PlanWorkshop creates a workshop plan for discussing the value stream plan
