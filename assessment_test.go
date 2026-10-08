@@ -175,7 +175,7 @@ func TestTrendsNormaliseUnitsAndPeriods(t *testing.T) {
 	a := NewAssessor()
 	stream := func(unit TimeUnit, factor float64) *ValueStream {
 		return &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
-			ProcessTime: 20 * factor, IdleTime: 40 * factor, ValueAddingTime: 10 * factor, TimeUnit: unit}}}}
+			ProcessTime: F(20 * factor), IdleTime: F(40 * factor), ValueAddingTime: F(10 * factor), TimeUnit: unit}}}}
 	}
 	week := 7 * 24 * time.Hour
 	first, err := a.AssessValueStream(stream(TimeUnitMinutes, 1), nil, nil)
@@ -211,8 +211,8 @@ func TestTrendsNormaliseUnitsAndPeriods(t *testing.T) {
 	// week (14 per week) is not an improvement.
 	turns := func(period DemandPeriod, demand float64) *ValueStream {
 		vs := stream(TimeUnitMinutes, 1)
-		vs.Customer = &Customer{ID: "c", Demand: demand, DemandPeriod: period}
-		vs.Inventory = []Inventory{{ID: "i", Quantity: 50}}
+		vs.Customer = &Customer{ID: "c", Demand: F(demand), DemandPeriod: period}
+		vs.Inventory = []Inventory{{ID: "i", Quantity: F(50)}}
 		return vs
 	}
 	daily, err := a.AssessValueStream(turns(DemandPeriodDay, 100), nil, nil)
@@ -300,12 +300,12 @@ func TestAssessValueStreamRatesOnlyTargetedKPIs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := got.KPIs["total_lead_time"]; m.Status != StatusExcellent || !m.HasTarget {
-		t.Errorf("lead time at target: %q (has target %v), want excellent", m.Status, m.HasTarget)
+	if m := got.KPIs["total_lead_time"]; m.Status != StatusExcellent || m.Target == nil {
+		t.Errorf("lead time at target: %q (target %v), want excellent", m.Status, num(m.Target))
 	}
 	for name, m := range got.KPIs {
-		if name != "total_lead_time" && (m.Status != StatusUnrated || m.HasTarget) {
-			t.Errorf("%s without target: status %q has_target %v, want unrated", name, m.Status, m.HasTarget)
+		if name != "total_lead_time" && (m.Status != StatusUnrated || m.Target != nil) {
+			t.Errorf("%s without target: status %q target %v, want unrated", name, m.Status, m.Target)
 		}
 	}
 	if got.PerformanceIndex != 1 {

@@ -1,12 +1,262 @@
 package vsm
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"sort"
 )
+
+// File format.
+//
+// FormatVersion is written as "format_version" in the JSON of every
+// ValueStream, VSMProject, DesignResult and AssessmentResult (by their
+// MarshalJSON methods, so it is there whichever way they are written:
+// Serializer methods, SaveToFile or json.Marshal).
+//
+// Format 2 (current): optional numbers are pointers in Go (nil = not
+// entered, see ProcessParameters). In JSON a value that was not entered is
+// omitted (or null), and 0 is an entered zero: "setup_time": 0 is a setup
+// time of zero, a missing setup_time is unknown.
+//
+// Legacy files (written before format 2, without "format_version") stored
+// every blank number as 0, and the model read 0 as "not entered". Reading
+// one (UnmarshalJSON, so every load path) keeps that meaning: every numeric
+// field of processes, the customer, inventories and flow elements that is
+// 0 (or absent) becomes not entered (nil). The one exception is
+// "yield_factor_given": true, which marked a yield_factor of 0 as entered;
+// that yield stays 0 (the flag itself is no longer part of the model).
+// Non-zero values load unchanged, so a legacy file gives the same results
+// as before. In an assessment result, "working_days_per_week": 0 becomes
+// not entered and a KPI target counts only when "has_target" is true.
+//
+// A value stream nested in a project or design result follows its own
+// "format_version"; without one, the container's. Files are always written
+// in the current format; loading and saving a legacy file converts it.
+const FormatVersion = 2
+
+// MarshalJSON writes vs with "format_version" (see FormatVersion).
+func (vs ValueStream) MarshalJSON() ([]byte, error) {
+	type plain ValueStream
+	return json.Marshal(struct {
+		FormatVersion int `json:"format_version"`
+		plain
+	}{FormatVersion, plain(vs)})
+}
+
+// UnmarshalJSON reads vs in the current or the legacy format (see
+// FormatVersion).
+func (vs *ValueStream) UnmarshalJSON(data []byte) error {
+	return decodeStream(data, 0, vs)
+}
+
+// decodeStream decodes data into vs. A stream without its own
+// format_version is read as format inherited (0: legacy).
+func decodeStream(data []byte, inherited int, vs *ValueStream) error {
+	type plain ValueStream
+	var w struct {
+		FormatVersion *int `json:"format_version"`
+		plain
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*vs = ValueStream(w.plain)
+	version := inherited
+	if w.FormatVersion != nil {
+		version = *w.FormatVersion
+	}
+	if version < FormatVersion {
+		return migrateLegacyStream(vs, data)
+	}
+	return nil
+}
+
+// decodeStreamRaw decodes an optional nested stream: nil for an absent or
+// null value.
+func decodeStreamRaw(raw json.RawMessage, inherited int) (*ValueStream, error) {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, nil
+	}
+	vs := &ValueStream{}
+	if err := decodeStream(raw, inherited, vs); err != nil {
+		return nil, err
+	}
+	return vs, nil
+}
+
+// migrateLegacyStream converts a stream read from a legacy file (data) to
+// the current meaning: legacy 0 meant "not entered" (see FormatVersion).
+func migrateLegacyStream(vs *ValueStream, data []byte) error {
+	var legacy struct {
+		Processes []struct {
+			Parameters struct {
+				YieldFactorGiven bool `json:"yield_factor_given"`
+			} `json:"parameters"`
+		} `json:"processes"`
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	for i := range vs.Processes {
+		p := &vs.Processes[i].Parameters
+		zeroYield := i < len(legacy.Processes) && legacy.Processes[i].Parameters.YieldFactorGiven &&
+			num(p.YieldFactor) == 0
+		clearZeros(p)
+		if zeroYield {
+			p.YieldFactor = F(0)
+		}
+	}
+	if vs.Customer != nil {
+		clearZeros(vs.Customer)
+	}
+	for i := range vs.Inventory {
+		clearZeros(&vs.Inventory[i])
+	}
+	for i := range vs.FlowElements {
+		clearZeros(&vs.FlowElements[i])
+	}
+	return nil
+}
+
+// clearZeros sets every *float64 and *int field of the struct v points to
+// that holds 0 to nil (legacy "not entered").
+func clearZeros(v any) {
+	s := reflect.ValueOf(v).Elem()
+	for i := 0; i < s.NumField(); i++ {
+		f := s.Field(i)
+		if f.Kind() != reflect.Pointer || f.IsNil() || !f.CanSet() {
+			continue
+		}
+		switch e := f.Elem(); e.Kind() {
+		case reflect.Float64, reflect.Int:
+			if e.IsZero() {
+				f.Set(reflect.Zero(f.Type()))
+			}
+		}
+	}
+}
+
+// MarshalJSON writes project with "format_version" (see FormatVersion).
+func (project VSMProject) MarshalJSON() ([]byte, error) {
+	type plain VSMProject
+	return json.Marshal(struct {
+		FormatVersion int `json:"format_version"`
+		plain
+	}{FormatVersion, plain(project)})
+}
+
+// UnmarshalJSON reads project in the current or the legacy format (see
+// FormatVersion).
+func (project *VSMProject) UnmarshalJSON(data []byte) error {
+	type plain VSMProject
+	var w struct {
+		FormatVersion int `json:"format_version"`
+		plain
+		CurrentState json.RawMessage `json:"current_state"`
+		FutureState  json.RawMessage `json:"future_state"`
+		IdealState   json.RawMessage `json:"ideal_state"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*project = VSMProject(w.plain)
+	current, err := decodeStreamRaw(w.CurrentState, w.FormatVersion)
+	if err != nil {
+		return fmt.Errorf("current_state: %w", err)
+	}
+	if current != nil {
+		project.CurrentState = *current
+	}
+	if project.FutureState, err = decodeStreamRaw(w.FutureState, w.FormatVersion); err != nil {
+		return fmt.Errorf("future_state: %w", err)
+	}
+	if project.IdealState, err = decodeStreamRaw(w.IdealState, w.FormatVersion); err != nil {
+		return fmt.Errorf("ideal_state: %w", err)
+	}
+	return nil
+}
+
+// MarshalJSON writes result with "format_version" (see FormatVersion).
+func (result DesignResult) MarshalJSON() ([]byte, error) {
+	type plain DesignResult
+	return json.Marshal(struct {
+		FormatVersion int `json:"format_version"`
+		plain
+	}{FormatVersion, plain(result)})
+}
+
+// UnmarshalJSON reads result in the current or the legacy format (see
+// FormatVersion).
+func (result *DesignResult) UnmarshalJSON(data []byte) error {
+	type plain DesignResult
+	var w struct {
+		FormatVersion int `json:"format_version"`
+		plain
+		FutureState json.RawMessage `json:"future_state"`
+		IdealState  json.RawMessage `json:"ideal_state"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*result = DesignResult(w.plain)
+	var err error
+	if result.FutureState, err = decodeStreamRaw(w.FutureState, w.FormatVersion); err != nil {
+		return fmt.Errorf("future_state: %w", err)
+	}
+	if result.IdealState, err = decodeStreamRaw(w.IdealState, w.FormatVersion); err != nil {
+		return fmt.Errorf("ideal_state: %w", err)
+	}
+	return nil
+}
+
+// MarshalJSON writes result with "format_version" (see FormatVersion).
+func (result AssessmentResult) MarshalJSON() ([]byte, error) {
+	type plain AssessmentResult
+	return json.Marshal(struct {
+		FormatVersion int `json:"format_version"`
+		plain
+	}{FormatVersion, plain(result)})
+}
+
+// UnmarshalJSON reads result in the current or the legacy format (see
+// FormatVersion): in a legacy file, working_days_per_week 0 is not entered
+// and a KPI target counts only with "has_target": true.
+func (result *AssessmentResult) UnmarshalJSON(data []byte) error {
+	type plain AssessmentResult
+	var w struct {
+		FormatVersion int `json:"format_version"`
+		plain
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*result = AssessmentResult(w.plain)
+	if w.FormatVersion >= FormatVersion {
+		return nil
+	}
+	if num(result.WorkingDaysPerWeek) == 0 {
+		result.WorkingDaysPerWeek = nil
+	}
+	var legacy struct {
+		KPIs map[string]struct {
+			HasTarget bool `json:"has_target"`
+		} `json:"kpis"`
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	for name, m := range result.KPIs {
+		if !legacy.KPIs[name].HasTarget {
+			m.Target = nil
+			result.KPIs[name] = m
+		}
+	}
+	return nil
+}
 
 // Serializer provides JSON serialization/deserialization for VSM objects
 type Serializer struct {
@@ -260,19 +510,19 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 			period = "period"
 		}
 		mapStr += fmt.Sprintf("Customer: %s\n", vs.Customer.Name)
-		mapStr += fmt.Sprintf("Demand: %.2f units/%s\n", vs.Customer.Demand, period)
-		if w := vs.Customer.WorkingDaysPerWeek; w > 0 {
-			mapStr += fmt.Sprintf("Working Days: %g working days/week (inventory ranges are calendar time)\n", w)
+		mapStr += fmt.Sprintf("Demand: %s\n", optional(vs.Customer.Demand, "%.2f units/"+period))
+		if w := vs.Customer.WorkingDaysPerWeek; w != nil {
+			mapStr += fmt.Sprintf("Working Days: %g working days/week (inventory ranges are calendar time)\n", *w)
 		}
-		if vs.Customer.AvailableTime > 0 {
-			mapStr += fmt.Sprintf("Available Time: %.2f %s/%s\n", vs.Customer.AvailableTime, timeUnit, period)
+		if a := vs.Customer.AvailableTime; a != nil {
+			mapStr += fmt.Sprintf("Available Time: %.2f %s/%s\n", *a, timeUnit, period)
 		}
 		// Same takt the KPIs use: AvailableTime ÷ Demand, else stored TaktTime.
-		takt := vs.Customer.TaktTime
+		var takt *float64
 		if v, ok := kpis["customer_takt"]; ok {
-			takt = v
+			takt = &v
 		}
-		mapStr += fmt.Sprintf("Takt Time: %.2f %s\n\n", takt, timeUnit)
+		mapStr += fmt.Sprintf("Takt Time: %s\n\n", optional(takt, "%.2f "+timeUnit))
 	}
 
 	// Supplier
@@ -291,21 +541,21 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 			unit = timeUnit
 		}
 		mapStr += fmt.Sprintf("  %d. %s (%s)\n", i+1, process.Name, process.Type)
-		mapStr += fmt.Sprintf("     Process Time: %.2f %s\n", params.ProcessTime, unit)
-		mapStr += fmt.Sprintf("     Cycle Time: %.2f %s\n", params.CycleTime, unit)
+		mapStr += fmt.Sprintf("     Process Time: %s\n", optional(params.ProcessTime, "%.2f "+unit))
+		mapStr += fmt.Sprintf("     Cycle Time: %s\n", optional(params.CycleTime, "%.2f "+unit))
 		if yieldKnown(process.Parameters) {
-			mapStr += fmt.Sprintf("     Yield Factor: %.2f%%\n", params.YieldFactor*100)
+			mapStr += fmt.Sprintf("     Yield Factor: %.2f%%\n", *params.YieldFactor*100)
 		} else if defectsImpossible(process.Parameters) {
 			mapStr += "     Yield Factor: unknown (scrap + rework above 100%)\n"
 		} else {
 			mapStr += "     Yield Factor: not given\n"
 		}
 
-		if process.Parameters.ScrapRate > 0 {
-			mapStr += fmt.Sprintf("     Scrap Rate: %.2f%%\n", process.Parameters.ScrapRate*100)
+		if r := process.Parameters.ScrapRate; r != nil {
+			mapStr += fmt.Sprintf("     Scrap Rate: %.2f%%\n", *r*100)
 		}
-		if process.Parameters.ReworkRate > 0 {
-			mapStr += fmt.Sprintf("     Rework Rate: %.2f%%\n", process.Parameters.ReworkRate*100)
+		if r := process.Parameters.ReworkRate; r != nil {
+			mapStr += fmt.Sprintf("     Rework Rate: %.2f%%\n", *r*100)
 		}
 		mapStr += "\n"
 	}
@@ -315,7 +565,11 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		ctx := calc.contextOf(vs)
 		mapStr += "Inventory:\n"
 		for _, inv := range vs.Inventory {
-			mapStr += fmt.Sprintf("  %s: %.2f units (%.2f %s range)", inv.Name, inv.Quantity, ctx.inventoryTime(inv), timeUnit)
+			rangeText := "range not given"
+			if _, derived := ctx.inventoryRange(inv); derived || inv.Range != nil {
+				rangeText = fmt.Sprintf("%.2f %s range", ctx.inventoryTime(inv), timeUnit)
+			}
+			mapStr += fmt.Sprintf("  %s: %s (%s)", inv.Name, optional(inv.Quantity, "%.2f units"), rangeText)
 			if holder, linked := stockHolder(vs, inv); linked {
 				mapStr += fmt.Sprintf(" — stock of process %s, counted in its waiting time", holder.ID)
 			}
@@ -328,7 +582,11 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 	if len(vs.FlowElements) > 0 {
 		mapStr += "Flow Control Elements:\n"
 		for _, element := range vs.FlowElements {
-			mapStr += fmt.Sprintf("  %s (%s): Capacity %.2f\n", element.ID, element.Type, element.Capacity)
+			capacity := "to be sized"
+			if element.Capacity != nil {
+				capacity = fmt.Sprintf("%.2f", *element.Capacity)
+			}
+			mapStr += fmt.Sprintf("  %s (%s): Capacity %s\n", element.ID, element.Type, capacity)
 		}
 		mapStr += "\n"
 	}
@@ -366,6 +624,14 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 	}
 
 	return mapStr, nil
+}
+
+// optional formats *v with format, or "not given" when v is nil.
+func optional(v *float64, format string) string {
+	if v == nil {
+		return "not given"
+	}
+	return fmt.Sprintf(format, *v)
 }
 
 // sortedKeys returns m's keys in order.
@@ -420,8 +686,8 @@ func (v *Validator) ValidateValueStream(vs *ValueStream) error {
 	}
 
 	if vs.Customer != nil && !workingDaysValid(vs.Customer.WorkingDaysPerWeek) {
-		return fmt.Errorf("customer working_days_per_week %g must be between 1 and 7 (or absent for 7)",
-			vs.Customer.WorkingDaysPerWeek)
+		return fmt.Errorf("customer working_days_per_week %g must be between 1 and 7 (or not entered for 7)",
+			*vs.Customer.WorkingDaysPerWeek)
 	}
 
 	// Validate inventory
@@ -444,11 +710,11 @@ func (v *Validator) ValidateProcess(process *Process) error {
 		return errors.New("process name cannot be empty")
 	}
 
-	if process.Parameters.ProcessTime < 0 {
+	if pt := process.Parameters.ProcessTime; pt != nil && *pt < 0 {
 		return errors.New("process time cannot be negative")
 	}
 
-	if process.Parameters.CycleTime < 0 {
+	if ct := process.Parameters.CycleTime; ct != nil && *ct < 0 {
 		return errors.New("cycle time cannot be negative")
 	}
 
@@ -461,11 +727,11 @@ func (v *Validator) ValidateInventory(inv *Inventory) error {
 		return errors.New("inventory ID cannot be empty")
 	}
 
-	if inv.Quantity < 0 {
+	if inv.Quantity != nil && *inv.Quantity < 0 {
 		return errors.New("inventory quantity cannot be negative")
 	}
 
-	if inv.Range < 0 {
+	if inv.Range != nil && *inv.Range < 0 {
 		return errors.New("inventory range cannot be negative")
 	}
 

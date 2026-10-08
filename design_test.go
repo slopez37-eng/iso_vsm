@@ -14,20 +14,20 @@ func targetStream() *ValueStream {
 	return &ValueStream{
 		ID:       "vs",
 		Name:     "Targets",
-		Customer: &Customer{ID: "c", Demand: 100, DemandPeriod: DemandPeriodDay, AvailableTime: 480},
+		Customer: &Customer{ID: "c", Demand: F(100), DemandPeriod: DemandPeriodDay, AvailableTime: F(480)},
 		Processes: []Process{
 			{ID: "p1", Name: "Cut", Parameters: ProcessParameters{
-				TimeUnit: TimeUnitMinutes, ProcessTime: 10, SetupTime: 4, HandlingTime: 6, CycleTime: 3,
-				IdleTime: 30, WaitingTime: 20, TransportTime: 10, ValueAddingTime: 5,
-				ScrapRate: 0.05, ReworkRate: 0.05, YieldFactor: 0.9,
+				TimeUnit: TimeUnitMinutes, ProcessTime: F(10), SetupTime: F(4), HandlingTime: F(6), CycleTime: F(3),
+				IdleTime: F(30), WaitingTime: F(20), TransportTime: F(10), ValueAddingTime: F(5),
+				ScrapRate: F(0.05), ReworkRate: F(0.05), YieldFactor: F(0.9),
 			}},
 			{ID: "p2", Name: "Weld", Parameters: ProcessParameters{
-				TimeUnit: TimeUnitMinutes, ProcessingTime: 6, SetupTime: 2, CycleTime: 4,
-				WaitingTime: 40, ValueAddingTime: 4,
+				TimeUnit: TimeUnitMinutes, ProcessingTime: F(6), SetupTime: F(2), CycleTime: F(4),
+				WaitingTime: F(40), ValueAddingTime: F(4),
 			}},
 		},
 		// 200 at 100 per day last 2 days = 2880 min.
-		Inventory: []Inventory{{ID: "i1", Name: "WIP", Quantity: 200, Range: 2880}},
+		Inventory: []Inventory{{ID: "i1", Name: "WIP", Quantity: F(200), Range: F(2880)}},
 	}
 }
 
@@ -59,7 +59,7 @@ func TestDesignFutureStateInventsNoImprovements(t *testing.T) {
 		t.Errorf("improvement metrics without targets: %v", got.ImprovementMetrics)
 	}
 	for _, fe := range got.FutureState.FlowElements {
-		if fe.Capacity != 0 || len(fe.ControlTickets) != 0 {
+		if num(fe.Capacity) != 0 || len(fe.ControlTickets) != 0 {
 			t.Errorf("flow element %s has invented sizing: %+v", fe.ID, fe)
 		}
 	}
@@ -92,17 +92,17 @@ func TestDesignFutureStateFromTargets(t *testing.T) {
 		name      string
 		got, want float64
 	}{
-		{"p1 setup", p1.SetupTime, 1},
-		{"p1 process time follows setup (10 − 3)", p1.ProcessTime, 7},
-		{"p1 waiting (default −50%)", p1.WaitingTime, 10},
-		{"p1 idle follows waiting (30 − 10)", p1.IdleTime, 20},
-		{"p1 scrap", p1.ScrapRate, 0},
-		{"p1 yield follows scrap (0.9 + 0.05)", p1.YieldFactor, 0.95},
-		{"p1 cycle time", p1.CycleTime, 2},
-		{"p2 waiting (own target wins)", p2.WaitingTime, 5},
-		{"p2 setup untouched", p2.SetupTime, 2},
-		{"inventory quantity", future.Inventory[0].Quantity, 150},
-		{"inventory range follows quantity (150 ÷ 100 per day)", future.Inventory[0].Range, 2160},
+		{"p1 setup", num(p1.SetupTime), 1},
+		{"p1 process time follows setup (10 − 3)", num(p1.ProcessTime), 7},
+		{"p1 waiting (default −50%)", num(p1.WaitingTime), 10},
+		{"p1 idle follows waiting (30 − 10)", num(p1.IdleTime), 20},
+		{"p1 scrap", num(p1.ScrapRate), 0},
+		{"p1 yield follows scrap (0.9 + 0.05)", num(p1.YieldFactor), 0.95},
+		{"p1 cycle time", num(p1.CycleTime), 2},
+		{"p2 waiting (own target wins)", num(p2.WaitingTime), 5},
+		{"p2 setup untouched", num(p2.SetupTime), 2},
+		{"inventory quantity", num(future.Inventory[0].Quantity), 150},
+		{"inventory range follows quantity (150 ÷ 100 per day)", num(future.Inventory[0].Range), 2160},
 	}
 	for _, c := range checks {
 		if !approx(c.got, c.want) {
@@ -137,8 +137,8 @@ func TestDesignFutureStateWithTargetsMetrics(t *testing.T) {
 	if lt := got.FutureState.KPIs["total_lead_time"]; !approx(lt, 18+2880) {
 		t.Errorf("future lead time = %v, want 2898", lt)
 	}
-	if p2 := got.FutureState.Processes[1].Parameters; p2.WaitingTime != 0 {
-		t.Errorf("p2 waiting = %v, want 0", p2.WaitingTime)
+	if p2 := got.FutureState.Processes[1].Parameters; num(p2.WaitingTime) != 0 {
+		t.Errorf("p2 waiting = %v, want 0", num(p2.WaitingTime))
 	}
 	// Current lead time = (10 + 30) + (8 + 40) + 2880 = 2968.
 	if r := got.ImprovementMetrics["total_lead_time_improvement_ratio"]; !approx(r, 2898.0/2968) {
@@ -179,8 +179,8 @@ func TestFutureStateTargetsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p1 := future.Processes[0].Parameters; p1.SetupTime != 1 || p1.WaitingTime != 10 {
-		t.Errorf("p1 setup %v waiting %v, want 1 and 10", p1.SetupTime, p1.WaitingTime)
+	if p1 := future.Processes[0].Parameters; num(p1.SetupTime) != 1 || num(p1.WaitingTime) != 10 {
+		t.Errorf("p1 setup %v waiting %v, want 1 and 10", num(p1.SetupTime), num(p1.WaitingTime))
 	}
 }
 
@@ -205,15 +205,15 @@ func richStream() *ValueStream {
 	vs := targetStream()
 	vs.Processes = append(vs.Processes,
 		Process{ID: "p3", Name: "Batch", Parameters: ProcessParameters{
-			TimeUnit: TimeUnitMinutes, CycleTime: 2, OrderQuantity: 10, ResourceCount: 1, SetupTime: 5,
+			TimeUnit: TimeUnitMinutes, CycleTime: F(2), OrderQuantity: F(10), ResourceCount: I(1), SetupTime: F(5),
 			// PT 20 + 5 + 3 = 28; IT 6 + 72 (5 in stock at 100/day) + 4 = 82; LT 110.
-			HandlingTime: 3, StockQuantity: 5, TransportRepetitionTime: 3, TransportRepetitionCount: 2,
-			StorageTime: 4, ValueAddingTime: 12, NonValueAddingTime: 92, NecessaryNonValueAddingTime: 6,
-			ScrapRate: 0.04, ReworkRate: 0.06,
+			HandlingTime: F(3), StockQuantity: F(5), TransportRepetitionTime: F(3), TransportRepetitionCount: I(2),
+			StorageTime: F(4), ValueAddingTime: F(12), NonValueAddingTime: F(92), NecessaryNonValueAddingTime: F(6),
+			ScrapRate: F(0.04), ReworkRate: F(0.06),
 		}},
 		Process{ID: "p4", Name: "Repeat", Parameters: ProcessParameters{
-			TimeUnit: TimeUnitHours, SetupTime: 0.5, RepetitionTime: 0.25, RepetitionCount: 4,
-			IdleTime: 2, YieldFactor: 0.97,
+			TimeUnit: TimeUnitHours, SetupTime: F(0.5), RepetitionTime: F(0.25), RepetitionCount: I(4),
+			IdleTime: F(2), YieldFactor: F(0.97),
 		}},
 	)
 	return vs
@@ -281,56 +281,56 @@ func TestTargetsFollowFormulas(t *testing.T) {
 	// Cycle time halves: processing time (A.5) halves. Stock waiting time
 	// does not change: it is stock ÷ demand rate, not stock × cycle time.
 	p3 := param(run(&FutureStateTargets{Processes: map[string]ProcessTargets{"p3": {CycleTime: ReductionTarget(50)}}}), "p3")
-	if !approx(p3.ProcessingTime, 10) || !approx(p3.WaitingTime, 72) || !approx(p3.ProcessTime, 18) || !approx(p3.IdleTime, 82) {
-		t.Errorf("cycle time target: PRT %v WT %v PT %v IT %v, want 10 72 18 82", p3.ProcessingTime, p3.WaitingTime, p3.ProcessTime, p3.IdleTime)
+	if !approx(num(p3.ProcessingTime), 10) || !approx(num(p3.WaitingTime), 72) || !approx(num(p3.ProcessTime), 18) || !approx(num(p3.IdleTime), 82) {
+		t.Errorf("cycle time target: PRT %v WT %v PT %v IT %v, want 10 72 18 82", num(p3.ProcessingTime), num(p3.WaitingTime), num(p3.ProcessTime), num(p3.IdleTime))
 	}
 	// Lead time fell 10 (110 → 100): taken from NVAT (92 → 82).
-	if !approx(p3.NonValueAddingTime, 82) || !approx(p3.NecessaryNonValueAddingTime, 6) {
-		t.Errorf("NVAT %v NNVAT %v, want 82 and 6", p3.NonValueAddingTime, p3.NecessaryNonValueAddingTime)
+	if !approx(num(p3.NonValueAddingTime), 82) || !approx(num(p3.NecessaryNonValueAddingTime), 6) {
+		t.Errorf("NVAT %v NNVAT %v, want 82 and 6", num(p3.NonValueAddingTime), num(p3.NecessaryNonValueAddingTime))
 	}
 
 	// A waiting-time target on a stock-driven process sets the stock:
 	// 10 min at 100 per day (1440 min).
 	perMinute := 100.0 / 1440
 	p3 = param(run(&FutureStateTargets{Processes: map[string]ProcessTargets{"p3": {WaitingTime: AbsoluteTarget(10)}}}), "p3")
-	if !approx(p3.StockQuantity, 10*perMinute) || !approx(p3.WaitingTime, 10) {
-		t.Errorf("waiting target: SQ %v WT %v, want %v and 10", p3.StockQuantity, p3.WaitingTime, 10*perMinute)
+	if !approx(num(p3.StockQuantity), 10*perMinute) || !approx(num(p3.WaitingTime), 10) {
+		t.Errorf("waiting target: SQ %v WT %v, want %v and 10", num(p3.StockQuantity), num(p3.WaitingTime), 10*perMinute)
 	}
 
 	// Idle time −50% with transport fixed by A.10 (6): waiting and storage
 	// (72 + 4) scale to 41 − 6 = 35; waiting through the stock.
 	p3 = param(run(&FutureStateTargets{Processes: map[string]ProcessTargets{"p3": {IdleTime: ReductionTarget(50)}}}), "p3")
-	if !approx(p3.IdleTime, 41) || !approx(p3.TransportTime, 6) || !approx(p3.WaitingTime, 72*35.0/76) ||
-		!approx(p3.StockQuantity, p3.WaitingTime*perMinute) {
-		t.Errorf("idle target: IT %v TT %v WT %v SQ %v", p3.IdleTime, p3.TransportTime, p3.WaitingTime, p3.StockQuantity)
+	if !approx(num(p3.IdleTime), 41) || !approx(num(p3.TransportTime), 6) || !approx(num(p3.WaitingTime), 72*35.0/76) ||
+		!approx(num(p3.StockQuantity), num(p3.WaitingTime)*perMinute) {
+		t.Errorf("idle target: IT %v TT %v WT %v SQ %v", num(p3.IdleTime), num(p3.TransportTime), num(p3.WaitingTime), num(p3.StockQuantity))
 	}
 
 	// Process time target on p1 (PT 10 = setup 4 + handling 6): −50%
 	// scales both; with setup also targeted to 1, handling takes the rest.
 	p1 := run(&FutureStateTargets{Processes: map[string]ProcessTargets{"p1": {ProcessTime: ReductionTarget(50)}}}).Processes[0].Parameters
-	if !approx(p1.ProcessTime, 5) || !approx(p1.SetupTime, 2) {
-		t.Errorf("PT −50%%: PT %v ST %v, want 5 and 2", p1.ProcessTime, p1.SetupTime)
+	if !approx(num(p1.ProcessTime), 5) || !approx(num(p1.SetupTime), 2) {
+		t.Errorf("PT −50%%: PT %v ST %v, want 5 and 2", num(p1.ProcessTime), num(p1.SetupTime))
 	}
 	p1 = run(&FutureStateTargets{Processes: map[string]ProcessTargets{"p1": {ProcessTime: AbsoluteTarget(5), SetupTime: AbsoluteTarget(1)}}}).Processes[0].Parameters
-	if !approx(p1.ProcessTime, 5) || !approx(p1.SetupTime, 1) {
-		t.Errorf("PT 5 + setup 1: PT %v ST %v", p1.ProcessTime, p1.SetupTime)
+	if !approx(num(p1.ProcessTime), 5) || !approx(num(p1.SetupTime), 1) {
+		t.Errorf("PT 5 + setup 1: PT %v ST %v", num(p1.ProcessTime), num(p1.SetupTime))
 	}
 
 	// Yield target splits over untargeted scrap and rework in proportion.
 	p3 = param(run(&FutureStateTargets{Processes: map[string]ProcessTargets{"p3": {YieldFactor: AbsoluteTarget(0.95)}}}), "p3")
-	if !approx(p3.ScrapRate, 0.02) || !approx(p3.ReworkRate, 0.03) || !approx(p3.YieldFactor, 0.95) {
-		t.Errorf("yield target: SR %v RR %v YF %v", p3.ScrapRate, p3.ReworkRate, p3.YieldFactor)
+	if !approx(num(p3.ScrapRate), 0.02) || !approx(num(p3.ReworkRate), 0.03) || !approx(num(p3.YieldFactor), 0.95) {
+		t.Errorf("yield target: SR %v RR %v YF %v", num(p3.ScrapRate), num(p3.ReworkRate), num(p3.YieldFactor))
 	}
 	// Scrap and rework to 0: yield 1, stored.
 	p1 = run(&FutureStateTargets{Processes: map[string]ProcessTargets{"p1": {ScrapRate: AbsoluteTarget(0), ReworkRate: AbsoluteTarget(0)}}}).Processes[0].Parameters
-	if p1.YieldFactor != 1 {
-		t.Errorf("yield with no defects = %v, want 1", p1.YieldFactor)
+	if num(p1.YieldFactor) != 1 {
+		t.Errorf("yield with no defects = %v, want 1", num(p1.YieldFactor))
 	}
 
 	// Setup on the repetitive process (A.6) moves its process time.
 	p4 := param(run(&FutureStateTargets{Processes: map[string]ProcessTargets{"p4": {SetupTime: AbsoluteTarget(0.25)}}}), "p4")
-	if !approx(p4.ProcessTime, 1.25) {
-		t.Errorf("A.6 process time = %v, want 1.25", p4.ProcessTime)
+	if !approx(num(p4.ProcessTime), 1.25) {
+		t.Errorf("A.6 process time = %v, want 1.25", num(p4.ProcessTime))
 	}
 }
 
@@ -372,7 +372,7 @@ func TestTargetsThatCannotBeConsistent(t *testing.T) {
 // stored totals are replaced by their parts.
 func TestTargetsFromContradictingCurrentState(t *testing.T) {
 	vs := targetStream()
-	vs.Processes[0].Parameters.IdleTime = 99 // parts: 20 + 10
+	vs.Processes[0].Parameters.IdleTime = F(99) // parts: 20 + 10
 	future, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
 		Default: &ProcessTargets{WaitingTime: ReductionTarget(50)}})
 	if err != nil {
@@ -381,7 +381,7 @@ func TestTargetsFromContradictingCurrentState(t *testing.T) {
 	if issues := CheckConsistency(future); len(issues) != 0 {
 		t.Errorf("future issues: %+v", issues)
 	}
-	if it := future.Processes[0].Parameters.IdleTime; !approx(it, 20) {
+	if it := num(future.Processes[0].Parameters.IdleTime); !approx(it, 20) {
 		t.Errorf("p1 idle = %v, want 20 (10 transport + 10 waiting)", it)
 	}
 }
@@ -405,7 +405,7 @@ func TestTargetsStrictProcessTime(t *testing.T) {
 
 	// Shortfall in the current state (stored 20, parts 4): the future uses
 	// the parts and is consistent.
-	future, err := design(stream(ProcessParameters{ProcessTime: 20, SetupTime: 4, IdleTime: 10}),
+	future, err := design(stream(ProcessParameters{ProcessTime: F(20), SetupTime: F(4), IdleTime: F(10)}),
 		&ProcessTargets{SetupTime: ReductionTarget(50)})
 	if err != nil {
 		t.Fatal(err)
@@ -413,31 +413,31 @@ func TestTargetsStrictProcessTime(t *testing.T) {
 	if issues := CheckConsistency(future); len(issues) != 0 {
 		t.Errorf("shortfall future issues: %+v", issues)
 	}
-	if pt := NewCalculator().ResolveParameters(future.Processes[0].Parameters).ProcessTime; !approx(pt, 2) {
+	if pt := num(NewCalculator().ResolveParameters(future.Processes[0].Parameters).ProcessTime); !approx(pt, 2) {
 		t.Errorf("shortfall future PT = %v, want 2", pt)
 	}
 
 	// Total only: a process_time target sets the total.
-	future, err = design(stream(ProcessParameters{ProcessTime: 12, IdleTime: 10}),
+	future, err = design(stream(ProcessParameters{ProcessTime: F(12), IdleTime: F(10)}),
 		&ProcessTargets{ProcessTime: ReductionTarget(25)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pt := future.Processes[0].Parameters.ProcessTime; !approx(pt, 9) {
+	if pt := num(future.Processes[0].Parameters.ProcessTime); !approx(pt, 9) {
 		t.Errorf("total-only PT = %v, want 9", pt)
 	}
 	if issues := CheckConsistency(future); len(issues) != 0 {
 		t.Errorf("total-only future issues: %+v", issues)
 	}
 	// Total only: a setup target would replace the total with a part.
-	if _, err := design(stream(ProcessParameters{ProcessTime: 12}),
+	if _, err := design(stream(ProcessParameters{ProcessTime: F(12)}),
 		&ProcessTargets{SetupTime: AbsoluteTarget(2)}); err == nil {
 		t.Error("setup target on a total-only process: expected an error")
 	}
 
 	// Repetitive with agreeing A.2 parts: setup 2 + 3 × 2 = 8 = setup 2 +
 	// processing 6. A setup target keeps A.6 and A.2 in agreement.
-	future, err = design(stream(ProcessParameters{SetupTime: 2, ProcessingTime: 6, RepetitionTime: 3, RepetitionCount: 2}),
+	future, err = design(stream(ProcessParameters{SetupTime: F(2), ProcessingTime: F(6), RepetitionTime: F(3), RepetitionCount: I(2)}),
 		&ProcessTargets{SetupTime: AbsoluteTarget(1)})
 	if err != nil {
 		t.Fatal(err)
@@ -445,7 +445,7 @@ func TestTargetsStrictProcessTime(t *testing.T) {
 	if issues := CheckConsistency(future); len(issues) != 0 {
 		t.Errorf("repetitive future issues: %+v", issues)
 	}
-	if pt := NewCalculator().ResolveParameters(future.Processes[0].Parameters).ProcessTime; !approx(pt, 7) {
+	if pt := num(NewCalculator().ResolveParameters(future.Processes[0].Parameters).ProcessTime); !approx(pt, 7) {
 		t.Errorf("repetitive future PT = %v, want 7", pt)
 	}
 }
@@ -465,13 +465,13 @@ func TestZeroTargetsRecomputeLeadTime(t *testing.T) {
 		lead    float64
 		nvat    float64
 	}{
-		{"zero process time", ProcessParameters{ProcessTime: 10, LeadTime: 10},
+		{"zero process time", ProcessParameters{ProcessTime: F(10), LeadTime: F(10)},
 			ProcessTargets{ProcessTime: AbsoluteTarget(0)}, 0, 0},
-		{"zero process and idle time", ProcessParameters{ProcessTime: 10, IdleTime: 5, LeadTime: 15},
+		{"zero process and idle time", ProcessParameters{ProcessTime: F(10), IdleTime: F(5), LeadTime: F(15)},
 			ProcessTargets{ProcessTime: AbsoluteTarget(0), IdleTime: AbsoluteTarget(0)}, 0, 0},
-		{"zero process time, classified", ProcessParameters{ProcessTime: 10, IdleTime: 5, NonValueAddingTime: 15},
+		{"zero process time, classified", ProcessParameters{ProcessTime: F(10), IdleTime: F(5), NonValueAddingTime: F(15)},
 			ProcessTargets{ProcessTime: AbsoluteTarget(0)}, 5, 5},
-		{"zero process and idle time, classified", ProcessParameters{ProcessTime: 10, IdleTime: 5, NonValueAddingTime: 15},
+		{"zero process and idle time, classified", ProcessParameters{ProcessTime: F(10), IdleTime: F(5), NonValueAddingTime: F(15)},
 			ProcessTargets{ProcessTime: AbsoluteTarget(0), IdleTime: AbsoluteTarget(0)}, 0, 0},
 	}
 	c := NewCalculator()
@@ -489,8 +489,8 @@ func TestZeroTargetsRecomputeLeadTime(t *testing.T) {
 				t.Errorf("future issues: %+v", issues)
 			}
 			got := c.ResolveParametersInStream(future.Processes[0].Parameters, future)
-			if got.ProcessTime != 0 || !approx(got.LeadTime, tt.lead) || !approx(got.NonValueAddingTime, tt.nvat) {
-				t.Errorf("PT %v LT %v NVAT %v, want 0, %v, %v", got.ProcessTime, got.LeadTime, got.NonValueAddingTime, tt.lead, tt.nvat)
+			if num(got.ProcessTime) != 0 || !approx(num(got.LeadTime), tt.lead) || !approx(num(got.NonValueAddingTime), tt.nvat) {
+				t.Errorf("PT %v LT %v NVAT %v, want 0, %v, %v", num(got.ProcessTime), num(got.LeadTime), num(got.NonValueAddingTime), tt.lead, tt.nvat)
 			}
 			if lt := future.KPIs["total_lead_time"]; !approx(lt, tt.lead) {
 				t.Errorf("total_lead_time KPI = %v, want %v", lt, tt.lead)
@@ -505,7 +505,7 @@ func TestZeroTargetsRecomputeLeadTime(t *testing.T) {
 		"zero process and idle time": {ProcessTime: AbsoluteTarget(0), IdleTime: AbsoluteTarget(0)},
 		"process time −100%":         {ProcessTime: ReductionTarget(100)},
 	} {
-		current := stream(ProcessParameters{ProcessTime: 10, IdleTime: 5, ValueAddingTime: 4})
+		current := stream(ProcessParameters{ProcessTime: F(10), IdleTime: F(5), ValueAddingTime: F(4)})
 		if _, err := NewDesigner().DesignFutureStateFromTargets(current, &FutureStateTargets{Default: &targets}); err == nil ||
 			!strings.Contains(err.Error(), "value_adding_time") {
 			t.Errorf("%s with value adding time 4: err = %v, want a value_adding_time error", name, err)
@@ -518,7 +518,7 @@ func TestZeroTargetsRecomputeLeadTime(t *testing.T) {
 // target that creates such a state is rejected.
 func TestTargetsWithImpossibleDefects(t *testing.T) {
 	vs := &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
-		ProcessTime: 10, ScrapRate: 0.8, ReworkRate: 0.4, TimeUnit: TimeUnitMinutes}}}}
+		ProcessTime: F(10), ScrapRate: F(0.8), ReworkRate: F(0.4), TimeUnit: TimeUnitMinutes}}}}
 	future, err := NewDesigner().DesignFutureStateFromTargets(vs, nil)
 	if err != nil {
 		t.Fatalf("no targets: %v", err)
@@ -527,7 +527,7 @@ func TestTargetsWithImpossibleDefects(t *testing.T) {
 		t.Errorf("impossible yield must stay unknown, got %v", future.KPIs["average_yield_factor"])
 	}
 	ok := &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
-		ProcessTime: 10, ScrapRate: 0.1, ReworkRate: 0.1, TimeUnit: TimeUnitMinutes}}}}
+		ProcessTime: F(10), ScrapRate: F(0.1), ReworkRate: F(0.1), TimeUnit: TimeUnitMinutes}}}}
 	_, err = NewDesigner().DesignFutureStateFromTargets(ok, &FutureStateTargets{Default: &ProcessTargets{ScrapRate: AbsoluteTarget(0.95)}})
 	if err == nil {
 		t.Errorf("scrap target 0.95 with rework 0.1 should be rejected")
@@ -539,8 +539,8 @@ func TestTargetsWithImpossibleDefects(t *testing.T) {
 // not 1 (the zero must not read as "yield not given").
 func TestZeroYieldTargetKept(t *testing.T) {
 	vs := &ValueStream{ID: "vs", Processes: []Process{
-		{ID: "a", Parameters: ProcessParameters{ProcessTime: 10, YieldFactor: 0.9, TimeUnit: TimeUnitMinutes}},
-		{ID: "b", Parameters: ProcessParameters{ProcessTime: 10, YieldFactor: 1, TimeUnit: TimeUnitMinutes}},
+		{ID: "a", Parameters: ProcessParameters{ProcessTime: F(10), YieldFactor: F(0.9), TimeUnit: TimeUnitMinutes}},
+		{ID: "b", Parameters: ProcessParameters{ProcessTime: F(10), YieldFactor: F(1), TimeUnit: TimeUnitMinutes}},
 	}}
 	future, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
 		Processes: map[string]ProcessTargets{"a": {YieldFactor: AbsoluteTarget(0)}},
@@ -573,10 +573,10 @@ func TestZeroYieldTargetKept(t *testing.T) {
 func TestInventoryRangeTargetUsesResolvedRange(t *testing.T) {
 	stream := func(storedRange float64) *ValueStream {
 		return &ValueStream{ID: "vs", Name: "r",
-			Customer: &Customer{ID: "c", Demand: 100, DemandPeriod: DemandPeriodDay},
+			Customer: &Customer{ID: "c", Demand: F(100), DemandPeriod: DemandPeriodDay},
 			Processes: []Process{{ID: "p", Name: "p", Parameters: ProcessParameters{
-				ProcessTime: 0.01, TimeUnit: TimeUnitDays}}},
-			Inventory: []Inventory{{ID: "i", Name: "i", Quantity: 200, Range: storedRange}},
+				ProcessTime: F(0.01), TimeUnit: TimeUnitDays}}},
+			Inventory: []Inventory{{ID: "i", Name: "i", Quantity: F(200), Range: optF(storedRange)}},
 		}
 	}
 	targets := &FutureStateTargets{InventoryDefault: &InventoryTargets{Range: ReductionTarget(50)}}
@@ -586,8 +586,8 @@ func TestInventoryRangeTargetUsesResolvedRange(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 		inv := future.Inventory[0]
-		if !approx(inv.Quantity, 100) {
-			t.Errorf("%s: quantity = %v, want 100", name, inv.Quantity)
+		if !approx(num(inv.Quantity), 100) {
+			t.Errorf("%s: quantity = %v, want 100", name, num(inv.Quantity))
 		}
 		if r := NewCalculator().contextOf(future).inventoryTime(inv); !approx(r, 1) {
 			t.Errorf("%s: range = %v days, want 1", name, r)
@@ -606,7 +606,7 @@ func TestInventoryRangeTargetUsesResolvedRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inv := future.Inventory[0]; !approx(inv.Quantity, 150) || !approx(inv.Range, 1.5) {
+	if inv := future.Inventory[0]; !approx(num(inv.Quantity), 150) || !approx(num(inv.Range), 1.5) {
 		t.Errorf("rate unknown: inventory = %+v, want quantity 150, range 1.5", inv)
 	}
 }
@@ -615,16 +615,16 @@ func TestInventoryRangeTargetUsesResolvedRange(t *testing.T) {
 // quantity cut is a cut of the stock that range stands for.
 func TestInventoryRangeOnlyTargets(t *testing.T) {
 	vs := &ValueStream{ID: "vs", Name: "r",
-		Customer:  &Customer{ID: "c", Demand: 100, DemandPeriod: DemandPeriodDay},
-		Processes: []Process{{ID: "p", Name: "p", Parameters: ProcessParameters{ProcessTime: 0.01, TimeUnit: TimeUnitDays}}},
-		Inventory: []Inventory{{ID: "i", Name: "i", Range: 2}},
+		Customer:  &Customer{ID: "c", Demand: F(100), DemandPeriod: DemandPeriodDay},
+		Processes: []Process{{ID: "p", Name: "p", Parameters: ProcessParameters{ProcessTime: F(0.01), TimeUnit: TimeUnitDays}}},
+		Inventory: []Inventory{{ID: "i", Name: "i", Range: F(2)}},
 	}
 	future, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
 		InventoryDefault: &InventoryTargets{Quantity: ReductionTarget(50)}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inv := future.Inventory[0]; inv.Quantity != 0 || !approx(inv.Range, 1) {
+	if inv := future.Inventory[0]; num(inv.Quantity) != 0 || !approx(num(inv.Range), 1) {
 		t.Errorf("inventory = %+v, want range 1 (quantity left unstored)", inv)
 	}
 }
@@ -633,7 +633,7 @@ func TestInventoryRangeOnlyTargets(t *testing.T) {
 // to zero: removing the stock removes the inventory's time, without a link
 // issue.
 func TestZeroStockTargetRemovesLinkedInventory(t *testing.T) {
-	vs := linkStream(100, Inventory{ID: "i", Range: 1440, ProcessID: "p"})
+	vs := linkStream(100, Inventory{ID: "i", Range: F(1440), ProcessID: "p"})
 	if lt := NewCalculator().CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 1450) {
 		t.Fatalf("current total_lead_time = %v, want 1450", lt)
 	}
@@ -645,21 +645,21 @@ func TestZeroStockTargetRemovesLinkedInventory(t *testing.T) {
 	if lt := future.KPIs["total_lead_time"]; !approx(lt, 10) {
 		t.Errorf("future total_lead_time = %v, want 10", lt)
 	}
-	if inv := future.Inventory[0]; inv.Quantity != 0 || inv.Range != 0 {
+	if inv := future.Inventory[0]; num(inv.Quantity) != 0 || num(inv.Range) != 0 {
 		t.Errorf("future inventory = %+v, want empty", inv)
 	}
 	if issues := CheckConsistency(future); len(issues) != 0 {
 		t.Errorf("future issues = %+v, want none", issues)
 	}
 	// Range alone without a demand rate: the range moves with the stock.
-	vs = linkStream(100, Inventory{ID: "i", Range: 1440, ProcessID: "p"})
+	vs = linkStream(100, Inventory{ID: "i", Range: F(1440), ProcessID: "p"})
 	vs.Customer = nil
 	future, err = NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
 		Processes: map[string]ProcessTargets{"p": {StockQuantity: ReductionTarget(50)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inv := future.Inventory[0]; !approx(inv.Range, 720) || inv.Quantity != 0 {
+	if inv := future.Inventory[0]; !approx(num(inv.Range), 720) || num(inv.Quantity) != 0 {
 		t.Errorf("future inventory = %+v, want range 720", inv)
 	}
 	if lt := future.KPIs["total_lead_time"]; !approx(lt, 730) {

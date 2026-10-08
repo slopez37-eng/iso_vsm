@@ -203,8 +203,8 @@ func main() {
     customer := &vsm.Customer{
         ID:       "customer_1",
         Name:     "Manufacturing Corp",
-        Demand:   1000, // units per period
-        TaktTime: 5.0,  // time units per unit
+        Demand:   vsm.F(1000), // units per period
+        TaktTime: vsm.F(5.0),  // time units per unit
     }
 
     // Create value stream
@@ -221,6 +221,13 @@ func main() {
 ```
 
 #### Step 3: Add Processes
+
+Every numeric parameter is optional. Fill one in with `vsm.F(v)` (or
+`vsm.I(n)` for counts); a field left out is "not entered", and `vsm.F(0)` is
+an entered zero (a setup time of 0, a stock of 0, a yield of 0). In JSON a
+value that was not entered is omitted; files written before
+`"format_version": 2` read a 0 as "not entered" (see serialization.go).
+
 ```go
 // Add manufacturing processes
 processes := []vsm.Process{
@@ -229,12 +236,12 @@ processes := []vsm.Process{
         Name: "Receiving",
         Type: vsm.ProcessTypeMaterial,
         Parameters: vsm.ProcessParameters{
-            ProcessTime:    30,   // minutes
-            CycleTime:      5,    // minutes
-            YieldFactor:    0.98, // 98% yield
+            ProcessTime:    vsm.F(30),   // minutes
+            CycleTime:      vsm.F(5),    // minutes
+            YieldFactor:    vsm.F(0.98), // 98% yield
             TimeUnit:       vsm.TimeUnitMinutes,
-            SetupTime:      10,
-            WaitingTime:    15,
+            SetupTime:      vsm.F(10),
+            WaitingTime:    vsm.F(15),
         },
     },
     {
@@ -242,12 +249,12 @@ processes := []vsm.Process{
                 Name: "Assembly",
                 Type: vsm.ProcessTypeMaterial,
                 Parameters: vsm.ProcessParameters{
-            ProcessTime:    45,
-            CycleTime:      8,
-            YieldFactor:    0.95,
+            ProcessTime:    vsm.F(45),
+            CycleTime:      vsm.F(8),
+            YieldFactor:    vsm.F(0.95),
             TimeUnit:       vsm.TimeUnitMinutes,
-            SetupTime:      20,
-            WaitingTime:    10,
+            SetupTime:      vsm.F(20),
+            WaitingTime:    vsm.F(10),
         },
     },
 }
@@ -292,7 +299,7 @@ inventory := []vsm.Inventory{
         ID:          "raw_materials",
         Name:        "Raw Materials Buffer",
         Type:        vsm.InventoryTypeWIP,
-        Quantity:    500,
+        Quantity:    vsm.F(500),
         TurnRate:    12, // turns per year
         HoldingCost: 0.15, // 15% of value per year
     },

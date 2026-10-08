@@ -14,7 +14,7 @@ func TestValueStreamRoundTrip(t *testing.T) {
 	vs.State = StateCurrent
 	vs.ProductFamily = "Brackets"
 	vs.Supplier = &Supplier{ID: "s1", Name: "Steel", DeliveryTime: 2}
-	vs.FlowElements = []FlowElement{{ID: "f1", Type: "kanban", Capacity: 20, ControlTickets: []string{"k1"}}}
+	vs.FlowElements = []FlowElement{{ID: "f1", Type: "kanban", Capacity: F(20), ControlTickets: []string{"k1"}}}
 	vs.KPIs = NewCalculator().CalculateKPIs(vs)
 	vs.CreatedAt, vs.UpdatedAt, vs.Version = ts, ts, "1.0"
 
@@ -42,7 +42,7 @@ func TestCustomerWithoutAvailableTimeStillLoads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserialize: %v", err)
 	}
-	if vs.Customer.AvailableTime != 0 || vs.Customer.TaktTime != 6 {
+	if num(vs.Customer.AvailableTime) != 0 || num(vs.Customer.TaktTime) != 6 {
 		t.Errorf("unexpected customer: %+v", vs.Customer)
 	}
 }
@@ -69,7 +69,7 @@ func TestExportValueStreamMapShowsRatiosAsPercent(t *testing.T) {
 // and lists the disagreements.
 func TestExportUsesComputedKPIsAndListsIssues(t *testing.T) {
 	vs := &ValueStream{ID: "vs", Name: "Stale", Processes: []Process{{ID: "p", Name: "Press", Type: ProcessTypeMaterial,
-		Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: 20, ProcessingTime: 5}}},
+		Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: F(20), ProcessingTime: F(5)}}},
 		KPIs: map[string]float64{"total_lead_time": 20, "team_morale": 7},
 	}
 	out, err := NewSerializer().ExportValueStreamMap(vs)
@@ -99,7 +99,7 @@ func TestExportUsesComputedKPIsAndListsIssues(t *testing.T) {
 func TestDeserializeVSMProjectRefreshesIssues(t *testing.T) {
 	stream := func(id string, processTime float64) ValueStream {
 		return ValueStream{ID: id, Name: id, Processes: []Process{{ID: "p", Name: "P",
-			Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: processTime, ProcessingTime: 5}}},
+			Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: F(processTime), ProcessingTime: F(5)}}},
 			// A stale list, as if written by an older run.
 			ConsistencyIssues: []ConsistencyIssue{{Element: "process", ID: "gone", Field: "idle_time", Message: "stale"}},
 		}
@@ -137,7 +137,7 @@ func TestDeserializeVSMProjectRefreshesIssues(t *testing.T) {
 func TestProjectAndDesignFileLoadsRefreshIssues(t *testing.T) {
 	stale := []ConsistencyIssue{{Element: "process", ID: "gone", Message: "stale"}}
 	vs := ValueStream{ID: "vs", Name: "VS", ConsistencyIssues: stale, Processes: []Process{{ID: "p", Name: "P",
-		Parameters: ProcessParameters{ProcessTime: 20, ProcessingTime: 5}}}}
+		Parameters: ProcessParameters{ProcessTime: F(20), ProcessingTime: F(5)}}}}
 	s := NewSerializer()
 
 	path := t.TempDir() + "/project.json"

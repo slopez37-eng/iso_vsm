@@ -44,62 +44,94 @@ const (
 	TimeUnitWeeks   TimeUnit = "weeks"
 )
 
-// ProcessParameters contains all the parameters for a process according to Table A.2
+// ProcessParameters contains all the parameters for a process according to
+// Table A.2.
+//
+// Every numeric field is optional: nil means "not entered", and any value,
+// including 0, is a value that was entered (a setup time of 0, a stock of 0,
+// a yield of 0 are real measurements). Use F and I to fill them in literals,
+// e.g. ProcessParameters{SetupTime: vsm.F(0), ResourceCount: vsm.I(2)}.
+// In JSON a field that was not entered is omitted (see serialization.go for
+// how files written before format_version 2 are read).
 type ProcessParameters struct {
 	// Basic time parameters
-	ProcessTime              float64 `json:"process_time"`               // PT - Process time
-	CycleTime                float64 `json:"cycle_time"`                 // CT - Cycle time
-	SetupTime                float64 `json:"setup_time"`                 // ST - Setup time
-	Downtime                 float64 `json:"downtime"`                   // DT - Downtime
-	IdleTime                 float64 `json:"idle_time"`                  // IT - Idle time
-	WaitingTime              float64 `json:"waiting_time"`               // WT - Waiting time
-	WaitingTimeProcess       float64 `json:"waiting_time_process"`       // WTp - Waiting time, process
-	TransportTime            float64 `json:"transport_time"`             // TT - Transport time
-	TransportRepetitionTime  float64 `json:"transport_repetition_time"`  // TRT - Transport repetition time
-	TransportRepetitionCount int     `json:"transport_repetition_count"` // #TRep - Number of transport repetitions
-	StorageTime              float64 `json:"storage_time"`               // ST_T - Storage time
-	HandlingTime             float64 `json:"handling_time"`              // HT - Handling time
-	AncillaryTime            float64 `json:"ancillary_time"`             // AT - Ancillary time
-	TimeBetweenFailures      float64 `json:"time_between_failures"`      // TBF - Time between failures
-	TimeToRepair             float64 `json:"time_to_repair"`             // TTR - Time to repair
-	RepetitionTime           float64 `json:"repetition_time"`            // RT - Repetition time
-	RepetitionCount          int     `json:"repetition_count"`           // #Rep - Number of repetitions
+	ProcessTime              *float64 `json:"process_time,omitempty"`               // PT - Process time
+	CycleTime                *float64 `json:"cycle_time,omitempty"`                 // CT - Cycle time
+	SetupTime                *float64 `json:"setup_time,omitempty"`                 // ST - Setup time
+	Downtime                 *float64 `json:"downtime,omitempty"`                   // DT - Downtime
+	IdleTime                 *float64 `json:"idle_time,omitempty"`                  // IT - Idle time
+	WaitingTime              *float64 `json:"waiting_time,omitempty"`               // WT - Waiting time
+	WaitingTimeProcess       *float64 `json:"waiting_time_process,omitempty"`       // WTp - Waiting time, process
+	TransportTime            *float64 `json:"transport_time,omitempty"`             // TT - Transport time
+	TransportRepetitionTime  *float64 `json:"transport_repetition_time,omitempty"`  // TRT - Transport repetition time
+	TransportRepetitionCount *int     `json:"transport_repetition_count,omitempty"` // #TRep - Number of transport repetitions
+	StorageTime              *float64 `json:"storage_time,omitempty"`               // ST_T - Storage time
+	HandlingTime             *float64 `json:"handling_time,omitempty"`              // HT - Handling time
+	AncillaryTime            *float64 `json:"ancillary_time,omitempty"`             // AT - Ancillary time
+	TimeBetweenFailures      *float64 `json:"time_between_failures,omitempty"`      // TBF - Time between failures
+	TimeToRepair             *float64 `json:"time_to_repair,omitempty"`             // TTR - Time to repair
+	RepetitionTime           *float64 `json:"repetition_time,omitempty"`            // RT - Repetition time
+	RepetitionCount          *int     `json:"repetition_count,omitempty"`           // #Rep - Number of repetitions
 
 	// Value adding time parameters
-	ValueAddingTime             float64 `json:"value_adding_time"`               // VAT - Value adding time
-	NonValueAddingTime          float64 `json:"non_value_adding_time"`           // NVAT - Non-value adding time
-	NecessaryNonValueAddingTime float64 `json:"necessary_non_value_adding_time"` // NNVAT - Necessary non-value adding time
-	ValueAddingTimeProcess      float64 `json:"value_adding_time_process"`       // VATp - Value adding time, process
+	ValueAddingTime             *float64 `json:"value_adding_time,omitempty"`               // VAT - Value adding time
+	NonValueAddingTime          *float64 `json:"non_value_adding_time,omitempty"`           // NVAT - Non-value adding time
+	NecessaryNonValueAddingTime *float64 `json:"necessary_non_value_adding_time,omitempty"` // NNVAT - Necessary non-value adding time
+	ValueAddingTimeProcess      *float64 `json:"value_adding_time_process,omitempty"`       // VATp - Value adding time, process
 
 	// Quantity parameters
-	CustomerDemand float64 `json:"customer_demand"` // CD - Customer demand
-	OrderQuantity  float64 `json:"order_quantity"`  // PQ - Process quantity
-	StockQuantity  float64 `json:"stock_quantity"`  // SQ - Stock quantity
-	BatchSize      int     `json:"batch_size"`      // Batch size
+	CustomerDemand *float64 `json:"customer_demand,omitempty"` // CD - Customer demand
+	OrderQuantity  *float64 `json:"order_quantity,omitempty"`  // PQ - Process quantity
+	StockQuantity  *float64 `json:"stock_quantity,omitempty"`  // SQ - Stock quantity
+	BatchSize      *int     `json:"batch_size,omitempty"`      // Batch size
 
 	// Resource parameters
-	EmployeeCount float64 `json:"employee_count"` // #EMP - Number of employees (FTE)
-	ResourceCount int     `json:"resource_count"` // #RES - Number of resources
-	FailureCount  int     `json:"failure_count"`  // #F - Number of failures
+	EmployeeCount *float64 `json:"employee_count,omitempty"` // #EMP - Number of employees (FTE)
+	ResourceCount *int     `json:"resource_count,omitempty"` // #RES - Number of resources
+	FailureCount  *int     `json:"failure_count,omitempty"`  // #F - Number of failures
 
 	// Quality parameters
-	YieldFactor float64 `json:"yield_factor"` // YF - Yield factor
-	// YieldFactorGiven marks a yield_factor of 0 as given (nothing comes out
-	// good), not "not given". Optional: a yield_factor above 0, or a
-	// scrap_rate or rework_rate, already makes the yield known. Future-state
-	// targets set it when they set a yield of 0 without a defect breakdown.
-	YieldFactorGiven bool    `json:"yield_factor_given,omitempty"`
-	ScrapRate        float64 `json:"scrap_rate"`  // SR - Scrap rate
-	ReworkRate       float64 `json:"rework_rate"` // RR - Rework rate
+	YieldFactor *float64 `json:"yield_factor,omitempty"` // YF - Yield factor
+	ScrapRate   *float64 `json:"scrap_rate,omitempty"`   // SR - Scrap rate
+	ReworkRate  *float64 `json:"rework_rate,omitempty"`  // RR - Rework rate
 
 	// Derived parameters (calculated)
-	LeadTime         float64 `json:"lead_time"`          // LT - Lead time
-	OperatingTime    float64 `json:"operating_time"`     // OT - Operating time
-	ProcessingTime   float64 `json:"processing_time"`    // PRT - Processing time
-	RangeOfInventory float64 `json:"range_of_inventory"` // Range of inventory
+	LeadTime         *float64 `json:"lead_time,omitempty"`          // LT - Lead time
+	OperatingTime    *float64 `json:"operating_time,omitempty"`     // OT - Operating time
+	ProcessingTime   *float64 `json:"processing_time,omitempty"`    // PRT - Processing time
+	RangeOfInventory *float64 `json:"range_of_inventory,omitempty"` // Range of inventory
 
 	TimeUnit TimeUnit `json:"time_unit"`
 }
+
+// F returns a pointer to v, for filling an optional numeric field that was
+// entered (including 0): ProcessParameters{SetupTime: vsm.F(0)}.
+func F(v float64) *float64 { return &v }
+
+// I is F for the optional integer fields (counts).
+func I(v int) *int { return &v }
+
+// num returns *p, or 0 when p is nil (not entered). It is for sums and
+// display where a missing value adds nothing; presence checks use p != nil.
+func num(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// inum is num for the optional integer fields.
+func inum(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// positive reports whether p is entered and above 0: the condition for a
+// value used as a divisor or rate (a demand of 0 has no rate), not a
+// presence check.
+func positive(p *float64) bool { return p != nil && *p > 0 }
 
 // Process represents a process in the value stream
 type Process struct {
@@ -133,10 +165,16 @@ func (p DemandPeriod) IsValid() bool {
 
 // Customer represents the end customer in the value stream
 type Customer struct {
-	ID       string  `json:"id"`
-	Name     string  `json:"name"`
-	Demand   float64 `json:"demand"`    // Customer demand per DemandPeriod
-	TaktTime float64 `json:"takt_time"` // Customer takt time
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Demand is the customer demand per DemandPeriod. Optional (nil = not
+	// entered); a demand of 0 is entered but gives no demand rate, so
+	// nothing that divides by it (takt, inventory time, turns) is computed.
+	Demand *float64 `json:"demand,omitempty"`
+	// TaktTime is the stored customer takt time (optional). When
+	// AvailableTime and Demand are both entered, takt is computed from them
+	// instead (see Calculator.CalculateKPIs).
+	TaktTime *float64 `json:"takt_time,omitempty"`
 	// DemandPeriod is the period Demand and AvailableTime are counted over
 	// (day, week, month or year). Optional, but process capacity and
 	// utilization are only computed when it is set (see
@@ -149,16 +187,16 @@ type Customer struct {
 	// and with DemandPeriod also set, utilization = Demand × cycle time /
 	// (AvailableTime × resource count), equivalently cycle time / (takt ×
 	// resource count); see Analyzer.CalculateProcessLoad.
-	AvailableTime float64 `json:"available_time,omitempty"`
+	AvailableTime *float64 `json:"available_time,omitempty"`
 	// WorkingDaysPerWeek is how many days a week the plant works (1 to 7,
-	// fractions allowed, e.g. 5.5). Optional: absent (0) means 7. It
+	// fractions allowed, e.g. 5.5). Optional: absent (nil) means 7. It
 	// matters only for a "day" DemandPeriod: Demand is then per working day,
 	// so stock ÷ daily demand is working days of cover, which the model
 	// turns into calendar (elapsed) time as working days × 7 ÷
 	// WorkingDaysPerWeek (an average; no calendar dates). A week is always
 	// 7 calendar days. See Calculator.CalculateCustomerInventoryTime.
-	WorkingDaysPerWeek float64 `json:"working_days_per_week,omitempty"`
-	Description        string  `json:"description,omitempty"`
+	WorkingDaysPerWeek *float64 `json:"working_days_per_week,omitempty"`
+	Description        string   `json:"description,omitempty"`
 }
 
 // Supplier represents a supplier in the value stream
@@ -171,11 +209,18 @@ type Supplier struct {
 
 // Inventory represents inventory/stock in the value stream
 type Inventory struct {
-	ID       string  `json:"id"`
-	Name     string  `json:"name"`
-	Quantity float64 `json:"quantity"` // Number of products (same unit as Customer.Demand)
-	Range    float64 `json:"range"`    // Time the quantity lasts at customer demand, in the reference time unit
-	Type     string  `json:"type"`     // "stock", "warehouse", "supermarket", etc.
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Quantity is the number of products (same unit as Customer.Demand).
+	// Optional: nil = not entered; 0 = an empty inventory (no stock, no
+	// inventory time).
+	Quantity *float64 `json:"quantity,omitempty"`
+	// Range is the time the quantity lasts at customer demand, in the
+	// reference time unit. Optional (nil = not entered); when the quantity
+	// and the customer demand rate are known, the range is computed from
+	// them instead and a stored range is only checked.
+	Range *float64 `json:"range,omitempty"`
+	Type  string   `json:"type"` // "stock", "warehouse", "supermarket", etc.
 	// ProcessID (optional) names the process whose stock_quantity is this
 	// same stock. The stock is then counted once in the lead time, through
 	// that process's waiting time, and quantity must equal the process's
@@ -185,7 +230,8 @@ type Inventory struct {
 	// customer demand rate and no waiting_time stored), the inventory's
 	// range is the only measure of it and is counted instead; the stock is
 	// still counted once (inventory turns). An empty inventory (quantity
-	// and range 0) linked to a process without stock is consistent. See
+	// and range not entered or 0) linked to a process without stock is
+	// consistent. See
 	// Calculator.CalculateKPIs.
 	ProcessID   string `json:"process_id,omitempty"`
 	Description string `json:"description,omitempty"`
@@ -195,7 +241,7 @@ type Inventory struct {
 type FlowElement struct {
 	ID             string   `json:"id"`
 	Type           string   `json:"type"`                      // "fifo", "lifo", "kanban", etc.
-	Capacity       float64  `json:"capacity"`                  // Process quantity or capacity
+	Capacity       *float64 `json:"capacity,omitempty"`        // Process quantity or capacity; nil = not sized yet
 	ControlTickets []string `json:"control_tickets,omitempty"` // Kanban cards, etc.
 	Description    string   `json:"description,omitempty"`
 }

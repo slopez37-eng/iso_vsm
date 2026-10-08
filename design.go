@@ -302,7 +302,10 @@ func (d *Designer) CreateIdealState(current *ValueStream) (*ValueStream, error) 
 // idealParameters returns params reduced to value-adding time only, kept
 // consistent (see ResolveParameters): process time = processing time = lead
 // time = value adding time; setup, handling, waiting, ancillary, idle, stock,
-// NVAT, NNVAT, scrap and rework are 0; yield is 1. When processing time is
+// NVAT, NNVAT, scrap and rework that were known become 0 (those not entered
+// stay not entered); repetition and transport repetition data is removed;
+// yield is 1. A process without value adding time keeps no process, lead or
+// processing time (nothing is known to remain). When processing time is
 // computed from cycle time × order quantity ÷ resources (A.5), the cycle
 // time is set so that it gives the value adding time.
 func (c *Calculator) idealParameters(params ProcessParameters, ctx streamContext) ProcessParameters {
@@ -311,15 +314,22 @@ func (c *Calculator) idealParameters(params ProcessParameters, ctx streamContext
 	p := r
 	p.ProcessTime, p.ProcessingTime, p.LeadTime = vat, vat, vat
 	p.ValueAddingTime, p.ValueAddingTimeProcess = vat, vat
-	p.SetupTime, p.HandlingTime, p.WaitingTimeProcess, p.AncillaryTime = 0, 0, 0, 0
-	p.RepetitionTime, p.RepetitionCount = 0, 0
-	p.IdleTime, p.WaitingTime, p.TransportTime, p.StorageTime = 0, 0, 0, 0
-	p.TransportRepetitionTime, p.TransportRepetitionCount = 0, 0
-	p.StockQuantity, p.RangeOfInventory = 0, 0
-	p.NonValueAddingTime, p.NecessaryNonValueAddingTime = 0, 0
-	p.ScrapRate, p.ReworkRate, p.YieldFactor = 0, 0, 1
-	if p.CycleTime > 0 && p.OrderQuantity > 0 && p.ResourceCount > 0 {
-		p.CycleTime = vat * float64(p.ResourceCount) / p.OrderQuantity
+	for _, field := range []**float64{
+		&p.SetupTime, &p.HandlingTime, &p.WaitingTimeProcess, &p.AncillaryTime,
+		&p.IdleTime, &p.WaitingTime, &p.TransportTime, &p.StorageTime,
+		&p.StockQuantity, &p.RangeOfInventory,
+		&p.NonValueAddingTime, &p.NecessaryNonValueAddingTime,
+		&p.ScrapRate, &p.ReworkRate,
+	} {
+		if *field != nil {
+			*field = F(0)
+		}
+	}
+	p.RepetitionTime, p.RepetitionCount = nil, nil
+	p.TransportRepetitionTime, p.TransportRepetitionCount = nil, nil
+	p.YieldFactor = F(1)
+	if processingFormula(p) && positive(p.OrderQuantity) {
+		p.CycleTime = F(num(vat) * float64(*p.ResourceCount) / *p.OrderQuantity)
 	}
 	return c.trimDerived(params, p, ctx)
 }
@@ -339,7 +349,8 @@ func (d *Designer) DesignFutureStateFromIdeal(ideal, current *ValueStream) (*Val
 //
 // Structural recommendations are added as unsized flow elements: a FIFO lane,
 // a kanban loop and, when the current state holds inventory, a supermarket.
-// Their capacity is 0 (to be sized by the team); they do not change the KPIs.
+// Their capacity is not entered (to be sized by the team); they do not change
+// the KPIs.
 //
 // Returns an error if a target is invalid or names a process or inventory ID
 // that is not in the current state.
@@ -408,18 +419,21 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 			// In either stored form (quantity, or range alone), and down to
 			// zero when the process's stock is targeted away.
 			own, def = nil, nil
-			futureStock := futureProcesses[processIndex(current, holder.ID)].Parameters.StockQuantity
+			futureStock := num(futureProcesses[processIndex(current, holder.ID)].Parameters.StockQuantity)
+			currentStock := *holder.Parameters.StockQuantity
 			ctx := d.calculator.contextOf(current)
 			_, rateKnown := ctx.demandRate(ctx.unit)
 			switch {
-			case inv.Quantity > 0 || (inv.Range > 0 && rateKnown):
+			case inv.Quantity != nil || (inv.Range != nil && rateKnown):
 				// With the demand rate known, a range-only inventory's
 				// range follows from the quantity (see applyInventoryTargets).
 				own = &InventoryTargets{Quantity: AbsoluteTarget(futureStock)}
-			case inv.Range > 0:
+			case inv.Range != nil && currentStock > 0:
 				// Range alone, demand rate unknown: the range is
 				// proportional to the stock.
-				own = &InventoryTargets{Range: AbsoluteTarget(inv.Range * futureStock / holder.Parameters.StockQuantity)}
+				own = &InventoryTargets{Range: AbsoluteTarget(*inv.Range * futureStock / currentStock)}
+			case inv.Range != nil && futureStock == 0:
+				own = &InventoryTargets{Range: AbsoluteTarget(0)}
 			}
 		}
 		futureInv, err := d.calculator.applyInventoryTargets(inv, own, def, d.calculator.contextOf(current))
@@ -556,9 +570,9 @@ func (d *Designer) checkTaktTimePrinciple(vs *ValueStream) bool {
 	unit := d.calculator.ReferenceTimeUnit(vs.Processes)
 	// Check if any process has cycle time close to customer takt
 	for _, process := range vs.Processes {
-		cycleTime := d.calculator.normalizeTimes(process.Parameters, unit).CycleTime
-		if cycleTime > 0 {
-			ratio := cycleTime / takt
+		ct := d.calculator.normalizeTimes(process.Parameters, unit).CycleTime
+		if positive(ct) {
+			ratio := *ct / takt
 			if ratio >= 0.9 && ratio <= 1.1 { // Within 10% of takt time
 				return true
 			}
@@ -591,8 +605,8 @@ func (d *Designer) checkContinuousFlowPrinciple(vs *ValueStream) bool {
 	ctx := d.calculator.contextOf(vs)
 	for _, process := range vs.Processes {
 		params := d.calculator.resolvedIn(process.Parameters, ctx)
-		totalIdle += params.IdleTime
-		totalProcess += params.ProcessTime
+		totalIdle += num(params.IdleTime)
+		totalProcess += num(params.ProcessTime)
 	}
 
 	_, inventory := d.calculator.inventoryTimes(vs)

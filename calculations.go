@@ -65,12 +65,12 @@ func (c *Calculator) CalculateAvailability(tbf, ttr []float64) (float64, error) 
 // CalculateProcessTime calculates process time from its components (A.2).
 // PT = PRT + ST + HT + WTp + AT
 //
-// This is the component sum only; the stored ProcessParameters.ProcessTime
-// field is not read. ResolveParameters decides between this sum and a stored
-// ProcessTime (see there).
+// This is the component sum only (components not entered add 0); the stored
+// ProcessParameters.ProcessTime field is not read. ResolveParameters decides
+// between this sum and a stored ProcessTime (see there).
 func (c *Calculator) CalculateProcessTime(params ProcessParameters) float64 {
-	return params.ProcessingTime + params.SetupTime + params.HandlingTime +
-		params.WaitingTimeProcess + params.AncillaryTime
+	return num(params.ProcessingTime) + num(params.SetupTime) + num(params.HandlingTime) +
+		num(params.WaitingTimeProcess) + num(params.AncillaryTime)
 }
 
 // CalculateLeadTime calculates one process's lead time from its value
@@ -81,8 +81,10 @@ func (c *Calculator) CalculateProcessTime(params ProcessParameters) float64 {
 // must equal process time + idle time (CheckConsistency reports it when it
 // does not). It is used as the lead time only when process and idle time are
 // not given (see ResolveParameters).
+//
+// Components not entered add 0.
 func (c *Calculator) CalculateLeadTime(params ProcessParameters) float64 {
-	return params.ValueAddingTime + params.NonValueAddingTime + params.NecessaryNonValueAddingTime
+	return num(params.ValueAddingTime) + num(params.NonValueAddingTime) + num(params.NecessaryNonValueAddingTime)
 }
 
 // CalculateTotalProcessTime calculates total process time over all processes (A.4).
@@ -103,9 +105,9 @@ func (c *Calculator) streamTotals(vs *ValueStream) (processTime, leadTime, value
 	ctx := c.contextOf(vs)
 	for _, process := range vs.Processes {
 		p := c.resolvedIn(process.Parameters, ctx)
-		processTime += p.ProcessTime
-		leadTime += p.LeadTime
-		valueAdding += p.ValueAddingTime
+		processTime += num(p.ProcessTime)
+		leadTime += num(p.LeadTime)
+		valueAdding += num(p.ValueAddingTime)
 	}
 	_, inventory := c.inventoryTimes(vs)
 	return processTime, leadTime + inventory, valueAdding
@@ -147,15 +149,16 @@ func (c *Calculator) CalculateStockQuantity(processTime float64, processQuantity
 // of its parts whenever parts are given (see ResolveParameters). Downtime is
 // not an A.2 component, so it is not subtracted. A negative result means the
 // components add up to more than the stored ProcessTime.
+// Values not entered count as 0.
 func (c *Calculator) CalculateHandlingTime(params ProcessParameters) float64 {
-	return params.ProcessTime - (params.ProcessingTime + params.SetupTime +
-		params.WaitingTimeProcess + params.AncillaryTime)
+	return num(params.ProcessTime) - (num(params.ProcessingTime) + num(params.SetupTime) +
+		num(params.WaitingTimeProcess) + num(params.AncillaryTime))
 }
 
 // CalculateValueAddingTime calculates total value adding time over all processes (A.9).
 // VAT = Σ(VATp_i) for i = 1 to n
 //
-// VATp_i is ValueAddingTimeProcess when set (> 0), otherwise the process's
+// VATp_i is ValueAddingTimeProcess when entered, otherwise the process's
 // ValueAddingTime (see ResolveParameters). Each process is converted to
 // ReferenceTimeUnit(processes).
 func (c *Calculator) CalculateValueAddingTime(processes []Process) float64 {
@@ -190,10 +193,10 @@ var demandPeriodSeconds = map[DemandPeriod]float64{
 	DemandPeriodWeek: 604800,
 }
 
-// workingDaysValid reports whether n is a usable WorkingDaysPerWeek: 0
-// (absent, meaning 7) or between 1 and 7.
-func workingDaysValid(n float64) bool {
-	return n == 0 || (n >= 1 && n <= 7)
+// workingDaysValid reports whether n is a usable WorkingDaysPerWeek: nil
+// (not entered, meaning 7) or between 1 and 7.
+func workingDaysValid(n *float64) bool {
+	return n == nil || (*n >= 1 && *n <= 7)
 }
 
 // periodSeconds returns the average calendar (elapsed) time, in seconds,
@@ -209,8 +212,8 @@ func periodSeconds(cust *Customer) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
-	if cust.DemandPeriod == DemandPeriodDay && cust.WorkingDaysPerWeek > 0 {
-		seconds *= 7 / cust.WorkingDaysPerWeek
+	if cust.DemandPeriod == DemandPeriodDay && cust.WorkingDaysPerWeek != nil {
+		seconds *= 7 / *cust.WorkingDaysPerWeek
 	}
 	return seconds, true
 }
@@ -220,10 +223,10 @@ func periodSeconds(cust *Customer) (float64, bool) {
 // CalculateCustomerInventoryTime).
 func customerDemandRate(cust *Customer, u TimeUnit) (float64, bool) {
 	seconds, ok := periodSeconds(cust)
-	if !ok || cust.Demand <= 0 || !isKnownTimeUnit(u) {
+	if !ok || !positive(cust.Demand) || !isKnownTimeUnit(u) {
 		return 0, false
 	}
-	return cust.Demand / NewCalculator().ConvertTimeUnit(seconds, TimeUnitSeconds, u), true
+	return *cust.Demand / NewCalculator().ConvertTimeUnit(seconds, TimeUnitSeconds, u), true
 }
 
 // CalculateCustomerInventoryTime returns how long stockQuantity units last
@@ -235,7 +238,7 @@ func customerDemandRate(cust *Customer, u TimeUnit) (float64, bool) {
 // day: stock ÷ daily demand is working days of cover, converted to calendar
 // time as working days × 7 ÷ WorkingDaysPerWeek days (7 when absent, so a
 // day is then 24 h). A "week" is 7 calendar days. ok is false, and the time
-// is not known, when cust is nil, demand is 0, unit is unknown,
+// is not known, when cust is nil, demand is not entered or 0, unit is unknown,
 // WorkingDaysPerWeek is outside 1–7, or the period is not "day" or "week"
 // (months and years have no fixed length; state demand per day or week
 // instead). The model uses this for waiting_time and range_of_inventory of
@@ -266,13 +269,13 @@ func (c *Calculator) CalculateCustomerInventoryQuantity(coverageTime float64, un
 // working 7 days a week (a day period is 24 h): stock ÷ (demand per period
 // ÷ period length).
 func (c *Calculator) CalculateInventoryTime(stockQuantity, demand float64, period DemandPeriod, unit TimeUnit) (float64, bool) {
-	return c.CalculateCustomerInventoryTime(stockQuantity, &Customer{Demand: demand, DemandPeriod: period}, unit)
+	return c.CalculateCustomerInventoryTime(stockQuantity, &Customer{Demand: F(demand), DemandPeriod: period}, unit)
 }
 
 // CalculateInventoryQuantity is CalculateCustomerInventoryQuantity for a
 // customer working 7 days a week: the inverse of CalculateInventoryTime.
 func (c *Calculator) CalculateInventoryQuantity(coverageTime float64, unit TimeUnit, demand float64, period DemandPeriod) (float64, bool) {
-	return c.CalculateCustomerInventoryQuantity(coverageTime, unit, &Customer{Demand: demand, DemandPeriod: period})
+	return c.CalculateCustomerInventoryQuantity(coverageTime, unit, &Customer{Demand: F(demand), DemandPeriod: period})
 }
 
 // CalculateCustomerTakt calculates customer takt according to formula (A.12)
@@ -466,55 +469,66 @@ func isKnownTimeUnit(u TimeUnit) bool {
 }
 
 // normalizeTimes returns a copy of params with every time field converted to
-// unit to. If either unit is empty or unknown, or they are equal, params is
-// returned unchanged.
+// unit to (fields not entered stay nil). If either unit is empty or unknown,
+// or they are equal, params is returned unchanged.
 func (c *Calculator) normalizeTimes(params ProcessParameters, to TimeUnit) ProcessParameters {
 	from := params.TimeUnit
 	if from == to || !isKnownTimeUnit(from) || !isKnownTimeUnit(to) {
 		return params
 	}
-	conv := func(v float64) float64 { return c.ConvertTimeUnit(v, from, to) }
-
 	p := params
-	p.ProcessTime = conv(p.ProcessTime)
-	p.CycleTime = conv(p.CycleTime)
-	p.SetupTime = conv(p.SetupTime)
-	p.Downtime = conv(p.Downtime)
-	p.IdleTime = conv(p.IdleTime)
-	p.WaitingTime = conv(p.WaitingTime)
-	p.WaitingTimeProcess = conv(p.WaitingTimeProcess)
-	p.TransportTime = conv(p.TransportTime)
-	p.TransportRepetitionTime = conv(p.TransportRepetitionTime)
-	p.StorageTime = conv(p.StorageTime)
-	p.HandlingTime = conv(p.HandlingTime)
-	p.AncillaryTime = conv(p.AncillaryTime)
-	p.TimeBetweenFailures = conv(p.TimeBetweenFailures)
-	p.TimeToRepair = conv(p.TimeToRepair)
-	p.RepetitionTime = conv(p.RepetitionTime)
-	p.ValueAddingTime = conv(p.ValueAddingTime)
-	p.NonValueAddingTime = conv(p.NonValueAddingTime)
-	p.NecessaryNonValueAddingTime = conv(p.NecessaryNonValueAddingTime)
-	p.ValueAddingTimeProcess = conv(p.ValueAddingTimeProcess)
-	p.LeadTime = conv(p.LeadTime)
-	p.OperatingTime = conv(p.OperatingTime)
-	p.ProcessingTime = conv(p.ProcessingTime)
-	p.RangeOfInventory = conv(p.RangeOfInventory)
+	for _, field := range timeFields {
+		if v := *field(&p); v != nil {
+			*field(&p) = F(c.ConvertTimeUnit(*v, from, to))
+		}
+	}
 	p.TimeUnit = to
 	return p
 }
 
-// ValidateProcessParameters validates that process parameters are consistent
+// timeFields are the ProcessParameters fields that are times (in the
+// process's TimeUnit).
+var timeFields = []func(*ProcessParameters) **float64{
+	func(p *ProcessParameters) **float64 { return &p.ProcessTime },
+	func(p *ProcessParameters) **float64 { return &p.CycleTime },
+	func(p *ProcessParameters) **float64 { return &p.SetupTime },
+	func(p *ProcessParameters) **float64 { return &p.Downtime },
+	func(p *ProcessParameters) **float64 { return &p.IdleTime },
+	func(p *ProcessParameters) **float64 { return &p.WaitingTime },
+	func(p *ProcessParameters) **float64 { return &p.WaitingTimeProcess },
+	func(p *ProcessParameters) **float64 { return &p.TransportTime },
+	func(p *ProcessParameters) **float64 { return &p.TransportRepetitionTime },
+	func(p *ProcessParameters) **float64 { return &p.StorageTime },
+	func(p *ProcessParameters) **float64 { return &p.HandlingTime },
+	func(p *ProcessParameters) **float64 { return &p.AncillaryTime },
+	func(p *ProcessParameters) **float64 { return &p.TimeBetweenFailures },
+	func(p *ProcessParameters) **float64 { return &p.TimeToRepair },
+	func(p *ProcessParameters) **float64 { return &p.RepetitionTime },
+	func(p *ProcessParameters) **float64 { return &p.ValueAddingTime },
+	func(p *ProcessParameters) **float64 { return &p.NonValueAddingTime },
+	func(p *ProcessParameters) **float64 { return &p.NecessaryNonValueAddingTime },
+	func(p *ProcessParameters) **float64 { return &p.ValueAddingTimeProcess },
+	func(p *ProcessParameters) **float64 { return &p.LeadTime },
+	func(p *ProcessParameters) **float64 { return &p.OperatingTime },
+	func(p *ProcessParameters) **float64 { return &p.ProcessingTime },
+	func(p *ProcessParameters) **float64 { return &p.RangeOfInventory },
+}
+
+// ValidateProcessParameters validates that process parameters are consistent.
+// Values that are not entered are not checked.
 func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error {
 	var errs []error
+	negative := func(v *float64) bool { return v != nil && *v < 0 }
+	outside01 := func(v *float64) bool { return v != nil && (*v < 0 || *v > 1) }
 
 	// Basic validation rules
-	if params.ProcessTime < 0 {
+	if negative(params.ProcessTime) {
 		errs = append(errs, errors.New("process time cannot be negative"))
 	}
-	if params.CycleTime < 0 {
+	if negative(params.CycleTime) {
 		errs = append(errs, errors.New("cycle time cannot be negative"))
 	}
-	if params.CustomerDemand < 0 {
+	if negative(params.CustomerDemand) {
 		errs = append(errs, errors.New("customer demand cannot be negative"))
 	}
 
@@ -523,15 +537,15 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 		errs = append(errs, errors.New("value adding time cannot exceed process time or lead time"))
 	}
 
-	if params.YieldFactor < 0 || params.YieldFactor > 1 {
+	if outside01(params.YieldFactor) {
 		errs = append(errs, errors.New("yield factor must be between 0 and 1"))
 	}
 
-	if params.ScrapRate < 0 || params.ScrapRate > 1 {
+	if outside01(params.ScrapRate) {
 		errs = append(errs, errors.New("scrap rate must be between 0 and 1"))
 	}
 
-	if params.ReworkRate < 0 || params.ReworkRate > 1 {
+	if outside01(params.ReworkRate) {
 		errs = append(errs, errors.New("rework rate must be between 0 and 1"))
 	}
 
@@ -547,9 +561,9 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 // Time KPIs are in ReferenceTimeUnit(vs.Processes). A KPI is left out of the
 // map, rather than reported as 0, when it cannot be computed honestly:
 //   - customer_takt: Customer.AvailableTime ÷ Customer.Demand when both are
-//     set (both are per Customer.DemandPeriod, so the period cancels and
-//     DemandPeriod is not required here); otherwise Customer.TaktTime when
-//     set; otherwise omitted.
+//     entered and demand is above 0 (both are per Customer.DemandPeriod, so
+//     the period cancels and DemandPeriod is not required here); otherwise
+//     Customer.TaktTime when entered; otherwise omitted.
 //   - total_lead_time, total_value_adding_time: omitted when there are no
 //     processes. Lead time = Σ(process time + idle time) over the processes
 //     (see CalculateOverallLeadTime) + the time of each inventory point in
@@ -573,13 +587,15 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 //     counts, each once: every process's stock_quantity, plus each
 //     inventory not linked to a process with stock (its quantity, or range
 //     × demand rate when given by range alone). Omitted when there is no
-//     customer, demand is 0, stock is 0, or an inventory's stock cannot be
-//     known (range alone, no demand rate).
+//     customer, demand is not entered or 0, stock is 0, or an inventory's
+//     stock cannot be known (range alone, no demand rate). A stock entered
+//     as 0 counts as 0; one not entered adds nothing.
 //   - average_yield_factor: mean of the processes' yield factors (1 − scrap −
 //     rework when those are given, else the stored YieldFactor) over the
 //     processes whose yield is known: yield_factor, scrap_rate or
-//     rework_rate given (> 0), or yield_factor_given set. A process that
-//     scraps everything counts with yield 0. A process whose scrap_rate + rework_rate is above 1
+//     rework_rate entered (0 included: a yield of 0, or a scrap rate of 0,
+//     is quality data). A process that scraps everything counts with yield
+//     0. A process whose scrap_rate + rework_rate is above 1
 //     (impossible; CheckConsistency reports it) is left out rather than
 //     counted with a negative yield. Omitted when no process has quality
 //     data.
@@ -625,19 +641,19 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 	}
 
 	// Inventory turns over the same stock the lead time counts.
-	if totalStock, ok := c.streamStock(vs); ok && totalStock > 0 && vs.Customer != nil && vs.Customer.Demand > 0 {
-		kpis["inventory_turns"] = c.CalculateInventoryTurns(vs.Customer.Demand, totalStock)
+	if totalStock, ok := c.streamStock(vs); ok && totalStock > 0 && vs.Customer != nil && positive(vs.Customer.Demand) {
+		kpis["inventory_turns"] = c.CalculateInventoryTurns(*vs.Customer.Demand, totalStock)
 	}
 
-	// Average yield factor across processes whose yield is known. A yield
-	// of 0 (everything scrapped) is known when scrap or rework is given.
+	// Average yield factor across processes whose yield is known (a yield
+	// of 0 included).
 	var totalYield float64
 	processCount := 0
 	for _, process := range vs.Processes {
 		if !yieldKnown(process.Parameters) {
 			continue
 		}
-		totalYield += c.ResolveParametersInStream(process.Parameters, vs).YieldFactor
+		totalYield += *c.ResolveParametersInStream(process.Parameters, vs).YieldFactor
 		processCount++
 	}
 	if processCount > 0 {
@@ -648,29 +664,31 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 }
 
 // yieldKnown reports whether a process has usable quality data: a yield
-// factor (above 0, or 0 marked by YieldFactorGiven), or a scrap or rework
-// rate it is computed from. Scrap + rework
-// above 1 is impossible, so such a yield is not known (see
-// defectsImpossible).
+// factor, or a scrap or rework rate it is computed from, entered (0
+// included). Scrap + rework above 1 is impossible, so such a yield is not
+// known (see defectsImpossible).
 func yieldKnown(p ProcessParameters) bool {
 	if defectsImpossible(p) {
 		return false
 	}
-	return p.YieldFactor > 0 || p.YieldFactorGiven || p.ScrapRate > 0 || p.ReworkRate > 0
+	return p.YieldFactor != nil || p.ScrapRate != nil || p.ReworkRate != nil
 }
 
 // defectsImpossible reports whether scrap_rate + rework_rate is above 1
 // (beyond float rounding, see exceeds): more than every part defective.
 func defectsImpossible(p ProcessParameters) bool {
-	return exceeds(p.ScrapRate+p.ReworkRate, 1)
+	return exceeds(num(p.ScrapRate)+num(p.ReworkRate), 1)
 }
 
 // vatImpossible reports whether a resolved process's value adding time
-// exceeds its process time (when given) or its lead time: a part larger
+// exceeds its process time or its lead time (when known): a part larger
 // than its whole. Its flow efficiency is then unknown.
 func vatImpossible(p ProcessParameters) bool {
-	return (p.ProcessTime > 0 && exceeds(p.ValueAddingTime, p.ProcessTime)) ||
-		exceeds(p.ValueAddingTime, p.LeadTime)
+	if p.ValueAddingTime == nil {
+		return false
+	}
+	return (p.ProcessTime != nil && exceeds(*p.ValueAddingTime, *p.ProcessTime)) ||
+		(p.LeadTime != nil && exceeds(*p.ValueAddingTime, *p.LeadTime))
 }
 
 // CalculateImprovementMetrics compares future with current KPIs: for each
@@ -756,10 +774,10 @@ func periodFactor(from, to *Customer) (float64, bool) {
 	return t / f, true
 }
 
-// workingDays returns cust's working days per week (7 when absent).
+// workingDays returns cust's working days per week (7 when not entered).
 func workingDays(cust *Customer) float64 {
-	if cust == nil || cust.WorkingDaysPerWeek == 0 {
+	if cust == nil || cust.WorkingDaysPerWeek == nil {
 		return 7
 	}
-	return cust.WorkingDaysPerWeek
+	return *cust.WorkingDaysPerWeek
 }

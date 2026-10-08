@@ -22,7 +22,7 @@ func TestAnalyzeIdleTimesMixedUnits(t *testing.T) {
 
 func TestAnalyzeFlowNoInfWhenProcessTimeZero(t *testing.T) {
 	a := NewAnalyzer()
-	vs := &ValueStream{Processes: []Process{{Name: "P", Parameters: ProcessParameters{WaitingTime: 10}}}}
+	vs := &ValueStream{Processes: []Process{{Name: "P", Parameters: ProcessParameters{WaitingTime: F(10)}}}}
 	got, err := a.AnalyzeFlow(vs)
 	if err != nil {
 		t.Fatal(err)
@@ -69,8 +69,8 @@ func TestContinuousFlowPrincipleNormalizesUnits(t *testing.T) {
 	// In minutes: idle 1 + 1 = 2, process 10 + 1 = 11 -> ratio 0.18 (< 0.5).
 	// Summing raw numbers would give 61 / 70 = 0.87 and the wrong answer.
 	vs := &ValueStream{Processes: []Process{
-		{Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: 10, IdleTime: 1}},
-		{Parameters: ProcessParameters{TimeUnit: TimeUnitSeconds, ProcessTime: 60, IdleTime: 60}},
+		{Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: F(10), IdleTime: F(1)}},
+		{Parameters: ProcessParameters{TimeUnit: TimeUnitSeconds, ProcessTime: F(60), IdleTime: F(60)}},
 	}}
 	if !NewDesigner().checkContinuousFlowPrinciple(vs) {
 		t.Error("expected continuous flow principle to be detected")
@@ -81,10 +81,10 @@ func TestContinuousFlowPrincipleNormalizesUnits(t *testing.T) {
 // p1 CT 2 min, p2 CT 180 s = 3 min (mixed units), p3 has no cycle time.
 func loadStream() *ValueStream {
 	return &ValueStream{
-		Customer: &Customer{ID: "c", Demand: 200, DemandPeriod: DemandPeriodDay, AvailableTime: 480},
+		Customer: &Customer{ID: "c", Demand: F(200), DemandPeriod: DemandPeriodDay, AvailableTime: F(480)},
 		Processes: []Process{
-			{ID: "p1", Name: "Cut", Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, CycleTime: 2}},
-			{ID: "p2", Name: "Weld", Parameters: ProcessParameters{TimeUnit: TimeUnitSeconds, CycleTime: 180}},
+			{ID: "p1", Name: "Cut", Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, CycleTime: F(2)}},
+			{ID: "p2", Name: "Weld", Parameters: ProcessParameters{TimeUnit: TimeUnitSeconds, CycleTime: F(180)}},
 			{ID: "p3", Name: "Pack", Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes}},
 		},
 	}
@@ -125,8 +125,8 @@ func TestCalculateProcessLoadMissingInputs(t *testing.T) {
 	cases := map[string]func(*Customer){
 		"no period":         func(c *Customer) { c.DemandPeriod = "" },
 		"unknown period":    func(c *Customer) { c.DemandPeriod = "fortnight" },
-		"no available time": func(c *Customer) { c.AvailableTime = 0 },
-		"no demand":         func(c *Customer) { c.Demand = 0 },
+		"no available time": func(c *Customer) { c.AvailableTime = nil },
+		"no demand":         func(c *Customer) { c.Demand = nil },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -181,9 +181,9 @@ func TestAnalyzeCurrentStateNotesMissingLoadInputs(t *testing.T) {
 // bottleneck.
 func TestProcessLoadCountsResources(t *testing.T) {
 	vs := &ValueStream{
-		Customer: &Customer{ID: "c", Demand: 300, DemandPeriod: DemandPeriodDay, AvailableTime: 480},
+		Customer: &Customer{ID: "c", Demand: F(300), DemandPeriod: DemandPeriodDay, AvailableTime: F(480)},
 		Processes: []Process{{ID: "p", Name: "Press", Parameters: ProcessParameters{
-			TimeUnit: TimeUnitMinutes, CycleTime: 2, ResourceCount: 2,
+			TimeUnit: TimeUnitMinutes, CycleTime: F(2), ResourceCount: I(2),
 		}}},
 	}
 	a := NewAnalyzer()
@@ -200,7 +200,7 @@ func TestProcessLoadCountsResources(t *testing.T) {
 		t.Errorf("bottlenecks = %+v, want none", b)
 	}
 	// Resource count 0 or below counts as one resource.
-	vs.Processes[0].Parameters.ResourceCount = 0
+	vs.Processes[0].Parameters.ResourceCount = nil
 	if c, u, _ := a.CalculateProcessLoad(vs.Processes[0], vs); !approx(c, 240) || !approx(u, 1.25) {
 		t.Errorf("no resource count: load = (%v, %v), want (240, 1.25)", c, u)
 	}

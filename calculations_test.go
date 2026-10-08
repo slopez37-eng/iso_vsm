@@ -24,12 +24,12 @@ func TestScalarFormulas(t *testing.T) {
 	}{
 		// A.2: PT = PRT + ST + HT + WTp + AT = 10 + 2 + 1 + 3 + 4
 		{"process time A.2", c.CalculateProcessTime(ProcessParameters{
-			ProcessingTime: 10, SetupTime: 2, HandlingTime: 1, WaitingTimeProcess: 3, AncillaryTime: 4,
-			ProcessTime: 999, // stored value is not read by the component formula
+			ProcessingTime: F(10), SetupTime: F(2), HandlingTime: F(1), WaitingTimeProcess: F(3), AncillaryTime: F(4),
+			ProcessTime: F(999), // stored value is not read by the component formula
 		}), 20},
 		// A.3: LT = VAT + NVAT + NNVAT = 5 + 3 + 2
 		{"lead time A.3", c.CalculateLeadTime(ProcessParameters{
-			ValueAddingTime: 5, NonValueAddingTime: 3, NecessaryNonValueAddingTime: 2,
+			ValueAddingTime: F(5), NonValueAddingTime: F(3), NecessaryNonValueAddingTime: F(2),
 		}), 10},
 		// A.5: PRT = CT × (PQ ÷ #RES) = 2 × (10 ÷ 4)
 		{"processing time A.5", c.CalculateProcessingTime(2, 10, 4), 5},
@@ -38,11 +38,11 @@ func TestScalarFormulas(t *testing.T) {
 		{"repetitive process time A.6", c.CalculateRepetitiveProcessTime(5, 2, 3), 11},
 		// A.2 rearranged: HT = PT − (PRT + ST + WTp + AT) = 30 − (20 + 3 + 2 + 1)
 		{"handling time from A.2", c.CalculateHandlingTime(ProcessParameters{
-			ProcessTime: 30, ProcessingTime: 20, SetupTime: 3, WaitingTimeProcess: 2, AncillaryTime: 1,
-			HandlingTime: 99, Downtime: 50, // neither feeds the result
+			ProcessTime: F(30), ProcessingTime: F(20), SetupTime: F(3), WaitingTimeProcess: F(2), AncillaryTime: F(1),
+			HandlingTime: F(99), Downtime: F(50), // neither feeds the result
 		}), 4},
 		{"handling time inconsistent inputs go negative", c.CalculateHandlingTime(ProcessParameters{
-			ProcessTime: 10, ProcessingTime: 12,
+			ProcessTime: F(10), ProcessingTime: F(12),
 		}), -2},
 		// A.10: TT = RT × #TRep
 		{"transport repetition time A.10", c.CalculateTransportRepetitionTime(2.5, 4), 10},
@@ -176,22 +176,22 @@ func TestReferenceTimeUnitAndNormalize(t *testing.T) {
 	}
 
 	p := ProcessParameters{
-		TimeUnit: TimeUnitMinutes, ProcessTime: 2, IdleTime: 3, ValueAddingTime: 1,
-		TimeToRepair: 0.5, ScrapRate: 0.1, StockQuantity: 7,
+		TimeUnit: TimeUnitMinutes, ProcessTime: F(2), IdleTime: F(3), ValueAddingTime: F(1),
+		TimeToRepair: F(0.5), ScrapRate: F(0.1), StockQuantity: F(7),
 	}
 	n := c.normalizeTimes(p, TimeUnitSeconds)
-	if n.ProcessTime != 120 || n.IdleTime != 180 || n.ValueAddingTime != 60 || n.TimeToRepair != 30 {
+	if num(n.ProcessTime) != 120 || num(n.IdleTime) != 180 || num(n.ValueAddingTime) != 60 || num(n.TimeToRepair) != 30 {
 		t.Errorf("time fields not converted: %+v", n)
 	}
-	if n.ScrapRate != 0.1 || n.StockQuantity != 7 {
+	if num(n.ScrapRate) != 0.1 || num(n.StockQuantity) != 7 {
 		t.Errorf("non-time fields must not change: %+v", n)
 	}
 	if n.TimeUnit != TimeUnitSeconds {
 		t.Errorf("TimeUnit = %q, want seconds", n.TimeUnit)
 	}
 	// Empty source unit: assumed already in the reference unit.
-	if got := c.normalizeTimes(ProcessParameters{ProcessTime: 2}, TimeUnitSeconds); got.ProcessTime != 2 {
-		t.Errorf("empty unit converted: %v", got.ProcessTime)
+	if got := c.normalizeTimes(ProcessParameters{ProcessTime: F(2)}, TimeUnitSeconds); num(got.ProcessTime) != 2 {
+		t.Errorf("empty unit converted: %v", num(got.ProcessTime))
 	}
 }
 
@@ -200,11 +200,11 @@ func TestAggregatesUseComponentsOverStoredTotals(t *testing.T) {
 	procs := []Process{
 		// Stored PT 10 contradicts setup 4 + handling 2: the parts win
 		// (PT 6). Stored IT 5 contradicts WT 100: the parts win (IT 100).
-		{Parameters: ProcessParameters{ProcessTime: 10, SetupTime: 4, HandlingTime: 2, IdleTime: 5, WaitingTime: 100,
-			ValueAddingTime: 6}},
+		{Parameters: ProcessParameters{ProcessTime: F(10), SetupTime: F(4), HandlingTime: F(2), IdleTime: F(5), WaitingTime: F(100),
+			ValueAddingTime: F(6)}},
 		// No stored PT/IT: A.2 components and TT + WT + ST_T.
-		{Parameters: ProcessParameters{ProcessingTime: 3, SetupTime: 1, TransportTime: 2, WaitingTime: 3,
-			StorageTime: 1, ValueAddingTimeProcess: 2}},
+		{Parameters: ProcessParameters{ProcessingTime: F(3), SetupTime: F(1), TransportTime: F(2), WaitingTime: F(3),
+			StorageTime: F(1), ValueAddingTimeProcess: F(2)}},
 	}
 	if got := c.CalculateTotalProcessTime(procs); !approx(got, 10) {
 		t.Errorf("total process time = %v, want 10", got)
@@ -219,24 +219,24 @@ func TestAggregatesUseComponentsOverStoredTotals(t *testing.T) {
 
 func TestValidateProcessParameters(t *testing.T) {
 	c := NewCalculator()
-	if errs := c.ValidateProcessParameters(ProcessParameters{ProcessTime: 10, ValueAddingTime: 5, YieldFactor: 0.9}); len(errs) != 0 {
+	if errs := c.ValidateProcessParameters(ProcessParameters{ProcessTime: F(10), ValueAddingTime: F(5), YieldFactor: F(0.9)}); len(errs) != 0 {
 		t.Errorf("valid params gave errors: %v", errs)
 	}
-	bad := ProcessParameters{ProcessTime: -1, CycleTime: -1, CustomerDemand: -1, ValueAddingTime: 5,
-		YieldFactor: 2, ScrapRate: -0.1, ReworkRate: 1.5}
-	// Value adding time 5 is within the lead time here (process time -1 is
-	// already an error), so 7: scrap + rework = 1.4 is the 7th.
-	if errs := c.ValidateProcessParameters(bad); len(errs) != 7 {
-		t.Errorf("got %d errors, want 7 (scrap + rework = 1.4 too): %v", len(errs), errs)
+	bad := ProcessParameters{ProcessTime: F(-1), CycleTime: F(-1), CustomerDemand: F(-1), ValueAddingTime: F(5),
+		YieldFactor: F(2), ScrapRate: F(-0.1), ReworkRate: F(1.5)}
+	// The entered process time -1 is an error, and value adding time 5
+	// exceeds it; scrap + rework = 1.4 is the 8th.
+	if errs := c.ValidateProcessParameters(bad); len(errs) != 8 {
+		t.Errorf("got %d errors, want 8 (VAT above process time, scrap + rework = 1.4 too): %v", len(errs), errs)
 	}
 	for name, tc := range map[string]struct {
 		p    ProcessParameters
 		want int
 	}{
-		"VAT above PT":              {ProcessParameters{ProcessTime: 4, ValueAddingTime: 5}, 1},
-		"no PT, VAT above lead":     {ProcessParameters{IdleTime: 10, ValueAddingTime: 20}, 1},
-		"no PT, VAT within lead":    {ProcessParameters{IdleTime: 30, ValueAddingTime: 20}, 0},
-		"defects 1.004 (tolerance)": {ProcessParameters{ScrapRate: 0.6, ReworkRate: 0.404}, 1},
+		"VAT above PT":              {ProcessParameters{ProcessTime: F(4), ValueAddingTime: F(5)}, 1},
+		"no PT, VAT above lead":     {ProcessParameters{IdleTime: F(10), ValueAddingTime: F(20)}, 1},
+		"no PT, VAT within lead":    {ProcessParameters{IdleTime: F(30), ValueAddingTime: F(20)}, 0},
+		"defects 1.004 (tolerance)": {ProcessParameters{ScrapRate: F(0.6), ReworkRate: F(0.404)}, 1},
 	} {
 		if errs := c.ValidateProcessParameters(tc.p); len(errs) != tc.want {
 			t.Errorf("%s: errors = %v, want %d", name, errs, tc.want)
@@ -257,24 +257,24 @@ func mixedUnitStream() *ValueStream {
 		ID:   "vs1",
 		Name: "Mixed units",
 		Customer: &Customer{
-			ID: "c1", Name: "Customer", Demand: 960, AvailableTime: 480, // 480 min / 960 units
-			TaktTime: 0.5, // = AvailableTime ÷ Demand (a different value is a consistency issue)
+			ID: "c1", Name: "Customer", Demand: F(960), AvailableTime: F(480), // 480 min / 960 units
+			TaktTime: F(0.5), // = AvailableTime ÷ Demand (a different value is a consistency issue)
 		},
 		Processes: []Process{
 			{ID: "p1", Name: "Cut", Parameters: ProcessParameters{
-				TimeUnit: TimeUnitMinutes, ProcessTime: 2, ValueAddingTime: 1, IdleTime: 10, YieldFactor: 0.9,
+				TimeUnit: TimeUnitMinutes, ProcessTime: F(2), ValueAddingTime: F(1), IdleTime: F(10), YieldFactor: F(0.9),
 			}},
 			{ID: "p2", Name: "Weld", Parameters: ProcessParameters{
-				TimeUnit: TimeUnitSeconds, ProcessingTime: 30, SetupTime: 30, ValueAddingTimeProcess: 45,
-				TransportTime: 120, WaitingTime: 240,
+				TimeUnit: TimeUnitSeconds, ProcessingTime: F(30), SetupTime: F(30), ValueAddingTimeProcess: F(45),
+				TransportTime: F(120), WaitingTime: F(240),
 			}},
 			{ID: "p3", Name: "Paint", Parameters: ProcessParameters{
-				TimeUnit: TimeUnitHours, ProcessTime: 0.05, ValueAddingTime: 0.025, IdleTime: 0.1, YieldFactor: 0.8,
+				TimeUnit: TimeUnitHours, ProcessTime: F(0.05), ValueAddingTime: F(0.025), IdleTime: F(0.1), YieldFactor: F(0.8),
 			}},
 		},
 		Inventory: []Inventory{
-			{ID: "i1", Name: "Raw", Quantity: 200},
-			{ID: "i2", Name: "WIP", Quantity: 40},
+			{ID: "i1", Name: "Raw", Quantity: F(200)},
+			{ID: "i2", Name: "WIP", Quantity: F(40)},
 		},
 	}
 }
@@ -321,18 +321,18 @@ func TestCalculateKPIsOmitsUndefined(t *testing.T) {
 	}{
 		{
 			name: "demand only gives no takt (old bug returned demand as takt)",
-			vs: &ValueStream{Customer: &Customer{Demand: 460},
-				Processes: []Process{{Parameters: ProcessParameters{ProcessTime: 1}}}},
+			vs: &ValueStream{Customer: &Customer{Demand: F(460)},
+				Processes: []Process{{Parameters: ProcessParameters{ProcessTime: F(1)}}}},
 			absent: []string{"customer_takt"},
 		},
 		{
 			name:    "takt time used when available time missing",
-			vs:      &ValueStream{Customer: &Customer{Demand: 460, TaktTime: 60}},
+			vs:      &ValueStream{Customer: &Customer{Demand: F(460), TaktTime: F(60)}},
 			present: map[string]float64{"customer_takt": 60},
 		},
 		{
 			name: "available time with zero demand falls back to takt time",
-			vs:   &ValueStream{Customer: &Customer{AvailableTime: 27600, TaktTime: 55}},
+			vs:   &ValueStream{Customer: &Customer{AvailableTime: F(27600), TaktTime: F(55)}},
 			present: map[string]float64{
 				"customer_takt": 55,
 			},
@@ -350,13 +350,13 @@ func TestCalculateKPIsOmitsUndefined(t *testing.T) {
 		},
 		{
 			name: "zero demand omits inventory turns",
-			vs: &ValueStream{Customer: &Customer{TaktTime: 1},
-				Inventory: []Inventory{{ID: "i", Quantity: 10}}},
+			vs: &ValueStream{Customer: &Customer{TaktTime: F(1)},
+				Inventory: []Inventory{{ID: "i", Quantity: F(10)}}},
 			absent: []string{"inventory_turns"},
 		},
 		{
 			name:   "no yield factors omits average yield",
-			vs:     &ValueStream{Processes: []Process{{Parameters: ProcessParameters{ProcessTime: 1}}}},
+			vs:     &ValueStream{Processes: []Process{{Parameters: ProcessParameters{ProcessTime: F(1)}}}},
 			absent: []string{"average_yield_factor"},
 		},
 	}
@@ -379,8 +379,8 @@ func TestCalculateKPIsOmitsUndefined(t *testing.T) {
 
 func TestCalculateImprovementMetrics(t *testing.T) {
 	c := NewCalculator()
-	current := &ValueStream{Processes: []Process{{Parameters: ProcessParameters{ProcessTime: 5, IdleTime: 15}}}}
-	future := &ValueStream{Processes: []Process{{Parameters: ProcessParameters{ProcessTime: 5, IdleTime: 5}}}}
+	current := &ValueStream{Processes: []Process{{Parameters: ProcessParameters{ProcessTime: F(5), IdleTime: F(15)}}}}
+	future := &ValueStream{Processes: []Process{{Parameters: ProcessParameters{ProcessTime: F(5), IdleTime: F(5)}}}}
 	m := c.CalculateImprovementMetrics(current, future)
 	if !approx(m["total_lead_time_improvement_ratio"], 0.5) {
 		t.Errorf("ratio = %v, want 0.5", m["total_lead_time_improvement_ratio"])
@@ -447,9 +447,9 @@ func TestAverageYieldCountsKnownZero(t *testing.T) {
 		vs   *ValueStream
 		want float64
 	}{
-		{"one total failure, one perfect", stream(ProcessParameters{ScrapRate: 1}, ProcessParameters{YieldFactor: 1}), 0.5},
-		{"complete failure everywhere", stream(ProcessParameters{ScrapRate: 1}, ProcessParameters{ScrapRate: 0.4, ReworkRate: 0.6}), 0},
-		{"unknown yield left out", stream(ProcessParameters{ScrapRate: 1}, ProcessParameters{ProcessTime: 3}), 0},
+		{"one total failure, one perfect", stream(ProcessParameters{ScrapRate: F(1)}, ProcessParameters{YieldFactor: F(1)}), 0.5},
+		{"complete failure everywhere", stream(ProcessParameters{ScrapRate: F(1)}, ProcessParameters{ScrapRate: F(0.4), ReworkRate: F(0.6)}), 0},
+		{"unknown yield left out", stream(ProcessParameters{ScrapRate: F(1)}, ProcessParameters{ProcessTime: F(3)}), 0},
 	}
 	for _, tt := range cases {
 		got, ok := c.CalculateKPIs(tt.vs)["average_yield_factor"]
@@ -457,7 +457,7 @@ func TestAverageYieldCountsKnownZero(t *testing.T) {
 			t.Errorf("%s: average_yield_factor = %v (present %v), want %v", tt.name, got, ok, tt.want)
 		}
 	}
-	if got, ok := c.CalculateKPIs(stream(ProcessParameters{ProcessTime: 3}))["average_yield_factor"]; ok {
+	if got, ok := c.CalculateKPIs(stream(ProcessParameters{ProcessTime: F(3)}))["average_yield_factor"]; ok {
 		t.Errorf("no quality data: average_yield_factor = %v, want omitted", got)
 	}
 }
@@ -468,16 +468,16 @@ func TestAverageYieldCountsKnownZero(t *testing.T) {
 func TestImprovementMetricsAcrossUnits(t *testing.T) {
 	c := NewCalculator()
 	current := &ValueStream{
-		Customer:  &Customer{ID: "c", Demand: 100, DemandPeriod: DemandPeriodDay, AvailableTime: 480},
-		Processes: []Process{{Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: 20, IdleTime: 40, ValueAddingTime: 10}}},
-		Inventory: []Inventory{{ID: "i", Quantity: 50}},
+		Customer:  &Customer{ID: "c", Demand: F(100), DemandPeriod: DemandPeriodDay, AvailableTime: F(480)},
+		Processes: []Process{{Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: F(20), IdleTime: F(40), ValueAddingTime: F(10)}}},
+		Inventory: []Inventory{{ID: "i", Quantity: F(50)}},
 	}
 	future := &ValueStream{
 		// 700 per week = 100 per day; takt = 56 h ÷ 700 = 0.08 h = 4.8 min,
 		// the current takt.
-		Customer:  &Customer{ID: "c", Demand: 700, DemandPeriod: DemandPeriodWeek, AvailableTime: 56},
-		Processes: []Process{{Parameters: ProcessParameters{TimeUnit: TimeUnitHours, ProcessTime: 0.25, IdleTime: 0.5, ValueAddingTime: 1.0 / 6}}},
-		Inventory: []Inventory{{ID: "i", Quantity: 25}},
+		Customer:  &Customer{ID: "c", Demand: F(700), DemandPeriod: DemandPeriodWeek, AvailableTime: F(56)},
+		Processes: []Process{{Parameters: ProcessParameters{TimeUnit: TimeUnitHours, ProcessTime: F(0.25), IdleTime: F(0.5), ValueAddingTime: F(1.0 / 6)}}},
+		Inventory: []Inventory{{ID: "i", Quantity: F(25)}},
 	}
 	m := c.CalculateImprovementMetrics(current, future)
 	want := map[string]float64{
@@ -500,7 +500,7 @@ func TestImprovementMetricsAcrossUnits(t *testing.T) {
 
 	// Demand per month cannot be put on a daily basis: inventory turns are
 	// not compared.
-	future.Customer = &Customer{ID: "c", Demand: 3000, DemandPeriod: DemandPeriodMonth}
+	future.Customer = &Customer{ID: "c", Demand: F(3000), DemandPeriod: DemandPeriodMonth}
 	if got, ok := c.CalculateImprovementMetrics(current, future)["inventory_turns_improvement_ratio"]; ok {
 		t.Errorf("turns per day vs per month compared: %v", got)
 	}

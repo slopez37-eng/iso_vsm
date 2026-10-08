@@ -211,7 +211,7 @@ const consistencyNoteFormat = "%d stored value(s) disagree with the values compu
 // hasLoadInputs reports whether the customer data needed for utilization is set.
 func (a *Analyzer) hasLoadInputs(vs *ValueStream) bool {
 	c := vs.Customer
-	return c != nil && c.Demand > 0 && c.AvailableTime > 0 && c.DemandPeriod.IsValid()
+	return c != nil && positive(c.Demand) && positive(c.AvailableTime) && c.DemandPeriod.IsValid()
 }
 
 // CalculateProcessLoad returns a process's capacity and utilization for the
@@ -220,7 +220,7 @@ func (a *Analyzer) hasLoadInputs(vs *ValueStream) bool {
 //	capacity    = AvailableTime × #RES ÷ CT          (units per DemandPeriod)
 //	utilization = Demand × CT ÷ (AvailableTime × #RES) (fraction; = CT ÷ (takt × #RES))
 //
-// #RES is the process's ResourceCount (0 or less counts as 1): resources
+// #RES is the process's ResourceCount (not entered, or 0 or less, counts as 1): resources
 // working in parallel multiply capacity, as in processing time = CT × PQ ÷
 // #RES (A.5).
 //
@@ -231,19 +231,21 @@ func (a *Analyzer) hasLoadInputs(vs *ValueStream) bool {
 // above 1 means demand exceeds capacity.
 //
 // ok is false (and nothing is assumed) when the customer, Demand,
-// DemandPeriod, AvailableTime or the process's CycleTime is missing.
+// DemandPeriod, AvailableTime or the process's CycleTime is not entered, or
+// Demand, AvailableTime or CycleTime is 0.
 func (a *Analyzer) CalculateProcessLoad(process Process, vs *ValueStream) (capacity, utilization float64, ok bool) {
 	if vs == nil || !a.hasLoadInputs(vs) {
 		return 0, 0, false
 	}
 	ctx := a.calculator.contextOf(vs)
-	cycleTime := a.calculator.resolvedIn(process.Parameters, ctx).CycleTime
-	if cycleTime <= 0 {
+	ct := a.calculator.resolvedIn(process.Parameters, ctx).CycleTime
+	if !positive(ct) {
 		return 0, 0, false
 	}
-	resources := float64(max(process.Parameters.ResourceCount, 1))
-	available := vs.Customer.AvailableTime * resources
-	return available / cycleTime, vs.Customer.Demand * cycleTime / available, true
+	cycleTime := *ct
+	resources := float64(max(inum(process.Parameters.ResourceCount), 1))
+	available := *vs.Customer.AvailableTime * resources
+	return available / cycleTime, *vs.Customer.Demand * cycleTime / available, true
 }
 
 // AnalyzeIdleTimes analyzes idle times across all processes
@@ -263,17 +265,17 @@ func (a *Analyzer) AnalyzeIdleTimes(vs *ValueStream) (*IdleTimeAnalysis, error) 
 	ctx := a.calculator.contextOf(vs)
 	for _, process := range vs.Processes {
 		params := a.calculator.resolvedIn(process.Parameters, ctx)
-		idleTime := params.IdleTime
-		processTime := params.ProcessTime
+		idleTime := num(params.IdleTime)
+		processTime := num(params.ProcessTime)
 
 		analysis.IdleTimeByProcess[process.ID] = idleTime
 		totalIdleTime += idleTime
 		totalProcessTime += processTime
 
 		// Accumulate breakdown
-		breakdown.TransportTime += params.TransportTime
-		breakdown.WaitingTime += params.WaitingTime
-		breakdown.StorageTime += params.StorageTime
+		breakdown.TransportTime += num(params.TransportTime)
+		breakdown.WaitingTime += num(params.WaitingTime)
+		breakdown.StorageTime += num(params.StorageTime)
 	}
 
 	// Inventory points between processes are waiting time too, as in the
@@ -313,29 +315,29 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 		params := a.calculator.resolvedIn(process.Parameters, ctx)
 
 		// Transportation waste
-		transportWaste := params.TransportTime
+		transportWaste := num(params.TransportTime)
 		analysis.WasteByType["transportation"] += transportWaste
 
 		// Inventory waste (waiting time can indicate inventory issues)
-		inventoryWaste := params.WaitingTime * 0.5 // Assume 50% of waiting is inventory-related
+		inventoryWaste := num(params.WaitingTime) * 0.5 // Assume 50% of waiting is inventory-related
 		analysis.WasteByType["inventory"] += inventoryWaste
 
 		// Motion waste (handling time inefficiencies)
-		motionWaste := params.HandlingTime * 0.3 // Assume 30% of handling time is waste
+		motionWaste := num(params.HandlingTime) * 0.3 // Assume 30% of handling time is waste
 		analysis.WasteByType["motion"] += motionWaste
 
 		// Waiting waste
-		waitingWaste := params.WaitingTime * 0.5 // Remaining waiting time
+		waitingWaste := num(params.WaitingTime) * 0.5 // Remaining waiting time
 		analysis.WasteByType["waiting"] += waitingWaste
 
 		// Over-processing waste (non-value adding activities)
-		overProcessingWaste := params.NonValueAddingTime
+		overProcessingWaste := num(params.NonValueAddingTime)
 		analysis.WasteByType["over_processing"] += overProcessingWaste
 
 		// Defects waste (scrap and rework)
-		defectsWaste := params.ScrapRate + params.ReworkRate
-		if params.ProcessTime > 0 {
-			defectsWaste *= params.ProcessTime
+		defectsWaste := num(params.ScrapRate) + num(params.ReworkRate)
+		if params.ProcessTime != nil {
+			defectsWaste *= *params.ProcessTime
 		}
 		analysis.WasteByType["defects"] += defectsWaste
 
@@ -344,7 +346,7 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 		_, utilization, loadKnown := a.CalculateProcessLoad(process, vs)
 		underUtilized := loadKnown && utilization < 0.7
 		if underUtilized {
-			overProductionWaste := (1 - utilization) * params.OperatingTime
+			overProductionWaste := (1 - utilization) * num(params.OperatingTime)
 			analysis.WasteByType["over_production"] += overProductionWaste
 		}
 
@@ -352,7 +354,7 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 		processWaste := transportWaste + inventoryWaste + motionWaste + waitingWaste +
 			overProcessingWaste + defectsWaste
 		if underUtilized {
-			processWaste += (1 - utilization) * params.OperatingTime
+			processWaste += (1 - utilization) * num(params.OperatingTime)
 		}
 
 		analysis.WasteByProcess[process.ID] = processWaste
@@ -384,7 +386,7 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 
 	for _, params := range resolved {
 		// Look for supermarket indicators (pull system)
-		if params.WaitingTime < params.ProcessTime*0.1 {
+		if num(params.WaitingTime) < num(params.ProcessTime)*0.1 {
 			pullIndicators++
 		} else {
 			pushIndicators++
@@ -407,46 +409,48 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 	// Identify flow interruptions
 	for i, process := range vs.Processes {
 		params := resolved[i]
+		scrap, rework := num(params.ScrapRate), num(params.ReworkRate)
+		processTime, waiting := num(params.ProcessTime), num(params.WaitingTime)
 
 		// Check for quality issues (high scrap/rework rates)
-		if params.ScrapRate > 0.05 || params.ReworkRate > 0.1 {
+		if scrap > 0.05 || rework > 0.1 {
 			analysis.FlowInterruptions = append(analysis.FlowInterruptions, FlowInterruption{
 				Type:        "quality",
 				Location:    process.Name,
-				Frequency:   params.ScrapRate + params.ReworkRate, // Defect share, as a fraction
-				Impact:      params.Downtime,
-				Description: fmt.Sprintf("High defect rate (%.1f%%) causing flow interruptions", (params.ScrapRate+params.ReworkRate)*100),
+				Frequency:   scrap + rework, // Defect share, as a fraction
+				Impact:      num(params.Downtime),
+				Description: fmt.Sprintf("High defect rate (%.1f%%) causing flow interruptions", (scrap+rework)*100),
 			})
 		}
 
 		// Check for capacity bottlenecks
 		if i < len(vs.Processes)-1 {
 			nextProcess := vs.Processes[i+1]
-			next := resolved[i+1]
-			if params.ProcessTime > next.ProcessTime*1.5 {
+			next := num(resolved[i+1].ProcessTime)
+			if processTime > next*1.5 {
 				analysis.FlowInterruptions = append(analysis.FlowInterruptions, FlowInterruption{
 					Type:        "capacity",
 					Location:    fmt.Sprintf("%s → %s", process.Name, nextProcess.Name),
 					Frequency:   1.0, // Continuous
-					Impact:      params.ProcessTime - next.ProcessTime,
+					Impact:      processTime - next,
 					Description: "Capacity mismatch causing bottlenecks",
 				})
 			}
 		}
 
 		// Check for inventory issues (high waiting times)
-		if params.WaitingTime > params.ProcessTime {
+		if waiting > processTime {
 			// Waiting-to-process ratio; with no process time recorded the
 			// ratio is undefined, so report 0 rather than +Inf.
 			frequency := 0.0
-			if params.ProcessTime > 0 {
-				frequency = params.WaitingTime / params.ProcessTime
+			if processTime > 0 {
+				frequency = waiting / processTime
 			}
 			analysis.FlowInterruptions = append(analysis.FlowInterruptions, FlowInterruption{
 				Type:        "inventory",
 				Location:    process.Name,
 				Frequency:   frequency,
-				Impact:      params.WaitingTime,
+				Impact:      waiting,
 				Description: "Excess inventory causing waiting times",
 			})
 		}

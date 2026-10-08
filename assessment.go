@@ -31,20 +31,18 @@ type AssessmentResult struct {
 	// convert history to the current assessment's units first.
 	TimeUnit           TimeUnit     `json:"time_unit,omitempty"`
 	DemandPeriod       DemandPeriod `json:"demand_period,omitempty"`
-	WorkingDaysPerWeek float64      `json:"working_days_per_week,omitempty"`
+	WorkingDaysPerWeek *float64     `json:"working_days_per_week,omitempty"`
 }
 
 // KPIMeasure represents a measured KPI value with metadata
 type KPIMeasure struct {
-	Name   string  `json:"name"`
-	Value  float64 `json:"value"`
-	Unit   string  `json:"unit"`
-	Target float64 `json:"target"`
-	// HasTarget is true when a target was supplied for this KPI (a target
-	// of 0 is a real target); without one, Target is 0 and Status is
-	// StatusUnrated.
-	HasTarget bool    `json:"has_target,omitempty"`
-	Threshold float64 `json:"threshold"`
+	Name  string  `json:"name"`
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit"`
+	// Target is the target supplied for this KPI, nil when none was (a
+	// target of 0 is a real target). Without one, Status is StatusUnrated.
+	Target    *float64 `json:"target,omitempty"`
+	Threshold float64  `json:"threshold"`
 	// Status rates the value against the target in the KPI's better
 	// direction (see determineKPIStatus): StatusExcellent, StatusGood,
 	// StatusWarning, StatusCritical, or StatusUnrated when there is no
@@ -170,7 +168,9 @@ func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64
 		}
 
 		// Set target and unit
-		measure.Target, measure.HasTarget = target, hasTarget
+		if hasTarget {
+			measure.Target = F(target)
+		}
 		measure.Unit = a.getKPIUnit(name)
 		if measure.Unit == "time" && result.TimeUnit != "" {
 			measure.Unit = string(result.TimeUnit)
@@ -449,17 +449,17 @@ func (a *Assessor) calculateTargetAchievement(kpis map[string]KPIMeasure) map[st
 	achievement := make(map[string]float64)
 
 	for name, kpi := range kpis {
-		if kpi.Status == StatusUnrated || !kpi.HasTarget {
+		if kpi.Status == StatusUnrated || kpi.Target == nil {
 			continue
 		}
-		num, den := kpi.Value, kpi.Target
+		top, bottom := kpi.Value, *kpi.Target
 		if GetKPIDirection(name) == LowerIsBetter {
-			num, den = kpi.Target, kpi.Value
+			top, bottom = *kpi.Target, kpi.Value
 		}
-		if den == 0 {
+		if bottom == 0 {
 			achievement[name] = 1
 		} else {
-			achievement[name] = num / den
+			achievement[name] = top / bottom
 		}
 	}
 
@@ -612,7 +612,7 @@ func (a *Assessor) generateActionItems(kpis map[string]KPIMeasure, vs *ValueStre
 			item := ActionItem{
 				ID: fmt.Sprintf("action_%s_%d", name, now.Unix()),
 				Description: fmt.Sprintf("Address critical %s KPI (current: %.2f, target: %.2f)",
-					name, kpi.Value, kpi.Target),
+					name, kpi.Value, num(kpi.Target)),
 				Priority:   1,
 				AssignedTo: "VSM Coordinator",
 				DueDate:    now.AddDate(0, 0, 7), // 1 week
@@ -624,7 +624,7 @@ func (a *Assessor) generateActionItems(kpis map[string]KPIMeasure, vs *ValueStre
 			item := ActionItem{
 				ID: fmt.Sprintf("action_%s_%d", name, now.Unix()),
 				Description: fmt.Sprintf("Improve %s KPI performance (current: %.2f, target: %.2f)",
-					name, kpi.Value, kpi.Target),
+					name, kpi.Value, num(kpi.Target)),
 				Priority:   2,
 				AssignedTo: "Process Owner",
 				DueDate:    now.AddDate(0, 0, 14), // 2 weeks

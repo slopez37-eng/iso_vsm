@@ -53,7 +53,7 @@ const (
 	ruleDefects       = "scrap_rate + rework_rate is the defective share of parts, so it cannot exceed 1"
 	fieldDefects      = "scrap_rate + rework_rate"
 	ruleTakt          = "takt_time = available_time ÷ demand (A.12)"
-	ruleWorkingDays   = "working_days_per_week is between 1 and 7 (absent means 7)"
+	ruleWorkingDays   = "working_days_per_week is between 1 and 7 (not entered means 7)"
 	ruleInvLink       = "an inventory with process_id is that process's stock_quantity (counted once, through the process)"
 	ruleStoredKPI     = "stored KPI = KPI computed from the processes (CalculateKPIs)"
 	fieldClassSum     = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time"
@@ -89,41 +89,48 @@ func consistent(a, b float64) bool {
 // value-stream calculation (CalculateKPIs, CheckConsistency, the analyzer
 // and designer) does.
 //
-// The rule: when a value's parts are given (> 0), the value is computed from
-// them and a stored value is only checked against it. When only the stored
-// value is given (a rough map), it is used as is. Zero means "not given".
-// In order:
+// The rule: a value whose parts are entered is computed from them, and a
+// stored value is only checked against it. When only the stored value is
+// entered (a rough map), it is used as is. "Entered" means not nil: a part
+// entered as 0 is a part (a setup time of 0 adds 0 to the process time but
+// still makes the parts the source of the process time). In the result,
+// every value the model computed is set; values that are neither entered
+// nor computable stay nil. Compare with the input to tell entered from
+// derived values. In order:
 //
 //   - transport_time = transport_repetition_time × transport_repetition_count (A.10)
 //   - waiting_time and range_of_inventory = stock_quantity ÷ customer demand
 //     rate: the standard VSM inventory time (Rother & Shook: inventory ÷
 //     daily demand), as calendar time in params' unit through
-//     Customer.DemandPeriod and Customer.WorkingDaysPerWeek. Only in a
-//     stream whose customer has Demand and a day or week DemandPeriod (see
-//     CalculateCustomerInventoryTime); otherwise the stored values are used
-//     and not checked.
-//   - processing_time = cycle_time × order_quantity ÷ resource_count (A.5)
+//     Customer.DemandPeriod and Customer.WorkingDaysPerWeek. A stock of 0
+//     gives 0. Only in a stream whose customer has a Demand above 0 and a
+//     day or week DemandPeriod (see CalculateCustomerInventoryTime);
+//     otherwise the stored values are used and not checked.
+//   - processing_time = cycle_time × order_quantity ÷ resource_count (A.5),
+//     when all three are entered and resource_count is above 0
 //   - process_time = processing + setup + handling + waiting (process) +
-//     ancillary time (A.2): when any part is given, the sum of the parts,
-//     and a stored process_time that differs in either direction is
-//     reported. When repetition data is set, A.6 (setup + repetition_time ×
-//     repetition_count) gives process_time instead, and A.2 parts beyond
-//     setup_time that add up to something else are reported.
-//   - idle_time = transport + waiting + storage time
-//   - value_adding_time = value_adding_time_process when that is set (A.9);
-//     value adding time above process time, or above lead time when process
-//     time is not given, is impossible and reported (flow efficiency is
-//     then unknown, see CalculateKPIs)
-//   - lead_time = process_time + idle_time; when neither is given, the value
-//     classification VAT + NVAT + NNVAT (A.3); when neither is given, the
-//     stored lead_time
-//   - yield_factor = 1 − (scrap_rate + rework_rate) (A.17); when the sum
-//     of scrap_rate and rework_rate is above 1 (impossible), yield_factor is
-//     left as stored,
-//     the process's yield counts as unknown and the contradiction is
-//     reported. A stored yield_factor is compared when above 0 or marked
-//     by yield_factor_given. Bounds like this one (a share at most 1, a
-//     part at most its whole) allow only float rounding, not
+//     ancillary time (A.2): when any part is entered, the sum of the
+//     entered parts, and a stored process_time that differs in either
+//     direction is reported. When repetition data (repetition_time and
+//     repetition_count) is entered, A.6 (setup + repetition_time ×
+//     repetition_count) gives process_time instead, and entered A.2 parts
+//     beyond setup_time that add up to something else are reported.
+//   - idle_time = transport + waiting + storage time, when any of them is
+//     entered (or computed)
+//   - value_adding_time = value_adding_time_process when that is entered
+//     (A.9); value adding time above process time, or above lead time when
+//     process time is not known, is impossible and reported (flow
+//     efficiency is then unknown, see CalculateKPIs)
+//   - lead_time = process_time + idle_time when either is known; else the
+//     value classification VAT + NVAT + NNVAT (A.3) when any of them is
+//     entered; else the stored lead_time
+//   - yield_factor = 1 − (scrap_rate + rework_rate) (A.17) when either rate
+//     is entered (a rate entered as 0 counts: scrap 0 and nothing else
+//     gives yield 1); when the sum of scrap_rate and rework_rate is above 1
+//     (impossible), yield_factor is left as stored, the process's yield
+//     counts as unknown and the contradiction is reported. A stored
+//     yield_factor (0 included) is compared. Bounds like this one (a share
+//     at most 1, a part at most its whole) allow only float rounding, not
 //     ConsistencyTolerance.
 func (c *Calculator) ResolveParameters(params ProcessParameters) ProcessParameters {
 	p, _ := c.resolveParameters(params, streamContext{})
@@ -184,6 +191,10 @@ func (c *Calculator) resolvedIn(params ProcessParameters, ctx streamContext) Pro
 
 // resolveParameters implements ResolveParameters and also returns the
 // disagreements it found (Element and ID left empty).
+//
+// It never writes through a pointer field of in (the result shares the
+// pointers of the values it did not change); computed values get new
+// pointers.
 func (c *Calculator) resolveParameters(in ProcessParameters, ctx streamContext) (ProcessParameters, []ConsistencyIssue) {
 	p := in
 	var issues []ConsistencyIssue
@@ -195,39 +206,42 @@ func (c *Calculator) resolveParameters(in ProcessParameters, ctx streamContext) 
 		})
 	}
 	const replaced = "%s: stored %g, but its parts give %g; calculations use %[3]g"
-	// derive sets *field to computed, reporting a stored value that disagrees.
-	derive := func(name string, field *float64, computed float64, rule string) {
-		if *field > 0 && !consistent(*field, computed) {
-			report(name, *field, computed, rule, replaced)
+	// derive sets *field to computed, reporting an entered value that
+	// disagrees.
+	derive := func(name string, field **float64, computed float64, rule string) {
+		if *field != nil && !consistent(**field, computed) {
+			report(name, **field, computed, rule, replaced)
 		}
-		*field = computed
+		*field = F(computed)
 	}
 
-	if p.TransportRepetitionTime > 0 && p.TransportRepetitionCount > 0 {
+	if p.TransportRepetitionTime != nil && p.TransportRepetitionCount != nil {
 		derive("transport_time", &p.TransportTime,
-			p.TransportRepetitionTime*float64(p.TransportRepetitionCount), ruleTransport)
+			*p.TransportRepetitionTime*float64(*p.TransportRepetitionCount), ruleTransport)
 	}
-	if rate, ok := ctx.demandRate(in.TimeUnit); ok && p.StockQuantity > 0 {
-		derive("waiting_time", &p.WaitingTime, p.StockQuantity/rate, ruleWaiting)
-		derive("range_of_inventory", &p.RangeOfInventory, p.StockQuantity/rate, ruleRange)
+	if rate, ok := ctx.demandRate(in.TimeUnit); ok && p.StockQuantity != nil {
+		derive("waiting_time", &p.WaitingTime, *p.StockQuantity/rate, ruleWaiting)
+		derive("range_of_inventory", &p.RangeOfInventory, *p.StockQuantity/rate, ruleRange)
 	}
-	if p.CycleTime > 0 && p.OrderQuantity > 0 && p.ResourceCount > 0 {
+	if processingFormula(p) {
 		derive("processing_time", &p.ProcessingTime,
-			p.CycleTime*p.OrderQuantity/float64(p.ResourceCount), ruleProcessing)
+			*p.CycleTime**p.OrderQuantity/float64(*p.ResourceCount), ruleProcessing)
 	}
 
 	// Process time (A.2, A.6).
 	parts := c.CalculateProcessTime(p)
 	given := processPartsGiven(p)
-	if p.RepetitionTime > 0 && p.RepetitionCount > 0 {
+	if p.RepetitionTime != nil && p.RepetitionCount != nil {
 		// A.6 gives process time. Setup time is in both A.6 and A.2, so the
 		// A.2 parts are a second, complete breakdown only when a part other
-		// than setup is given; then they must add up to the same value.
-		a6 := c.CalculateRepetitiveProcessTime(p.SetupTime, p.RepetitionTime, p.RepetitionCount)
-		if p.ProcessTime > 0 && !consistent(p.ProcessTime, a6) {
-			report("process_time", p.ProcessTime, a6, ruleRepetitive, replaced)
+		// than setup is entered; then they must add up to the same value.
+		a6 := c.CalculateRepetitiveProcessTime(num(p.SetupTime), *p.RepetitionTime, *p.RepetitionCount)
+		if p.ProcessTime != nil && !consistent(*p.ProcessTime, a6) {
+			report("process_time", *p.ProcessTime, a6, ruleRepetitive, replaced)
 		}
-		if parts > p.SetupTime && !consistent(parts, a6) {
+		beyondSetup := p.ProcessingTime != nil || p.HandlingTime != nil ||
+			p.WaitingTimeProcess != nil || p.AncillaryTime != nil
+		if beyondSetup && !consistent(parts, a6) {
 			issues = append(issues, ConsistencyIssue{
 				Field: fieldProcessParts, StoredValue: parts, ComputedValue: a6, Unit: unit, Rule: ruleRepetitive,
 				Message: fmt.Sprintf("process time parts (%s) sum to %g, but repetition data gives "+
@@ -235,79 +249,79 @@ func (c *Calculator) resolveParameters(in ProcessParameters, ctx streamContext) 
 					"repetition data; calculations use %[3]g", strings.Join(given, " + "), parts, a6),
 			})
 		}
-		p.ProcessTime = a6
-	} else if parts > 0 {
-		if p.ProcessTime > 0 && !consistent(p.ProcessTime, parts) {
+		p.ProcessTime = F(a6)
+	} else if len(given) > 0 {
+		if p.ProcessTime != nil && !consistent(*p.ProcessTime, parts) {
 			fix := "correct the parts or the stored value"
-			if parts < p.ProcessTime {
+			if parts < *p.ProcessTime {
 				fix = "enter the missing parts, or clear the given parts to use the stored total"
 			}
-			report("process_time", p.ProcessTime, parts, ruleProcessParts,
+			report("process_time", *p.ProcessTime, parts, ruleProcessParts,
 				"%s: stored %g, but its parts sum to %g (only "+strings.Join(given, " + ")+
 					" given) — "+fix+"; calculations use %[3]g")
 		}
-		p.ProcessTime = parts
+		p.ProcessTime = F(parts)
 	}
 
 	// Idle time.
-	if idle := c.CalculateTotalIdleTime(p.TransportTime, p.WaitingTime, p.StorageTime); idle > 0 {
-		derive("idle_time", &p.IdleTime, idle, ruleIdle)
+	if idlePartsGiven(p) {
+		derive("idle_time", &p.IdleTime,
+			c.CalculateTotalIdleTime(num(p.TransportTime), num(p.WaitingTime), num(p.StorageTime)), ruleIdle)
 	}
 
 	// Value adding time (VATp is the per-process value of A.9).
-	if p.ValueAddingTimeProcess > 0 {
-		derive("value_adding_time", &p.ValueAddingTime, p.ValueAddingTimeProcess, ruleVATp)
+	if p.ValueAddingTimeProcess != nil {
+		derive("value_adding_time", &p.ValueAddingTime, *p.ValueAddingTimeProcess, ruleVATp)
 	}
 	p.ValueAddingTimeProcess = p.ValueAddingTime
-	vatAbovePT := p.ProcessTime > 0 && exceeds(p.ValueAddingTime, p.ProcessTime)
+	vatAbovePT := p.ProcessTime != nil && p.ValueAddingTime != nil && exceeds(*p.ValueAddingTime, *p.ProcessTime)
 	if vatAbovePT {
-		report("value_adding_time", p.ValueAddingTime, p.ProcessTime, ruleVATWithinPT,
+		report("value_adding_time", *p.ValueAddingTime, *p.ProcessTime, ruleVATWithinPT,
 			"%s: %g exceeds process_time %g; flow efficiency is treated as unknown")
 	}
 
 	// Lead time: flow (PT + IT) first, else the value classification.
-	flow := p.ProcessTime + p.IdleTime
-	classified := p.NonValueAddingTime > 0 || p.NecessaryNonValueAddingTime > 0
+	flowKnown := p.ProcessTime != nil || p.IdleTime != nil
+	flow := num(p.ProcessTime) + num(p.IdleTime)
+	classified := p.NonValueAddingTime != nil || p.NecessaryNonValueAddingTime != nil
 	class := c.CalculateLeadTime(p)
 	lt, ltRule := p.LeadTime, ruleLeadFlow
 	switch {
-	case flow > 0:
-		lt = flow
+	case flowKnown:
+		lt = F(flow)
 		if classified && !consistent(class, flow) {
 			report(fieldClassSum, class, flow, ruleLeadClass,
 				"%s: %g, but process time + idle time = %g; calculations use %[3]g")
 		}
-	case classified || p.ValueAddingTime > 0:
-		lt, ltRule = class, ruleLeadClass
+	case classified || p.ValueAddingTime != nil:
+		lt, ltRule = F(class), ruleLeadClass
 	}
-	if p.LeadTime > 0 && !consistent(p.LeadTime, lt) {
-		report("lead_time", p.LeadTime, lt, ltRule, replaced)
+	if p.LeadTime != nil && lt != nil && !consistent(*p.LeadTime, *lt) {
+		report("lead_time", *p.LeadTime, *lt, ltRule, replaced)
 	}
 	p.LeadTime = lt
 	// Value adding time is part of the lead time too; this catches it when
-	// process_time is not given (otherwise the check above already has).
-	if !vatAbovePT && exceeds(p.ValueAddingTime, p.LeadTime) {
-		report("value_adding_time", p.ValueAddingTime, p.LeadTime, ruleVATWithinLT,
+	// process_time is not known (otherwise the check above already has).
+	if !vatAbovePT && p.ValueAddingTime != nil && p.LeadTime != nil && exceeds(*p.ValueAddingTime, *p.LeadTime) {
+		report("value_adding_time", *p.ValueAddingTime, *p.LeadTime, ruleVATWithinLT,
 			"%s: %g exceeds lead_time %g; flow efficiency is treated as unknown")
 	}
 
 	// Yield. Scrap + rework above 1 is impossible: the yield is not derived
 	// from them (it would be negative), the process's yield counts as
 	// unknown (see yieldKnown), and the contradiction is reported.
-	if defects := p.ScrapRate + p.ReworkRate; defectsImpossible(p) {
+	if defects := num(p.ScrapRate) + num(p.ReworkRate); defectsImpossible(p) {
 		issues = append(issues, ConsistencyIssue{
 			Field: fieldDefects, StoredValue: defects, ComputedValue: 1, Rule: ruleDefects,
 			Message: fmt.Sprintf("%s = %g is above 1 (more than every part defective); "+
 				"the yield of this process is treated as unknown", fieldDefects, defects),
 		})
-	} else if p.ScrapRate > 0 || p.ReworkRate > 0 {
-		// A stored yield of 0 is compared too when yield_factor_given marks
-		// it as entered.
-		computed := c.CalculateYieldFactor(p.ScrapRate, p.ReworkRate)
-		if (p.YieldFactor > 0 || p.YieldFactorGiven) && !consistent(p.YieldFactor, computed) {
-			report("yield_factor", p.YieldFactor, computed, ruleYield, replaced)
+	} else if p.ScrapRate != nil || p.ReworkRate != nil {
+		computed := c.CalculateYieldFactor(num(p.ScrapRate), num(p.ReworkRate))
+		if p.YieldFactor != nil && !consistent(*p.YieldFactor, computed) {
+			report("yield_factor", *p.YieldFactor, computed, ruleYield, replaced)
 		}
-		p.YieldFactor = computed
+		p.YieldFactor = F(computed)
 	}
 
 	// Rates are fractions, not times.
@@ -319,37 +333,51 @@ func (c *Calculator) resolveParameters(in ProcessParameters, ctx streamContext) 
 	return p, issues
 }
 
+// processingFormula reports whether processing_time is computed from
+// cycle_time × order_quantity ÷ resource_count (A.5): all three entered and
+// resource_count above 0 (it divides).
+func processingFormula(p ProcessParameters) bool {
+	return p.CycleTime != nil && p.OrderQuantity != nil && p.ResourceCount != nil && *p.ResourceCount > 0
+}
+
+// idlePartsGiven reports whether any part of idle time (transport, waiting
+// or storage time) is entered or computed.
+func idlePartsGiven(p ProcessParameters) bool {
+	return p.TransportTime != nil || p.WaitingTime != nil || p.StorageTime != nil
+}
+
 // inventoryRange returns the time inv's quantity lasts at the customer's
 // demand rate, in the reference unit, and false when the rate is unknown or
-// the quantity is 0.
+// the quantity is not entered. A quantity of 0 lasts 0.
 func (s streamContext) inventoryRange(inv Inventory) (float64, bool) {
 	rate, ok := s.demandRate(s.unit)
-	if !ok || inv.Quantity <= 0 {
+	if !ok || inv.Quantity == nil {
 		return 0, false
 	}
-	return inv.Quantity / rate, true
+	return *inv.Quantity / rate, true
 }
 
 // inventoryTime returns the time inv adds to the lead time, in the
 // reference unit: quantity ÷ customer demand rate when both are known,
-// otherwise the stored range.
+// otherwise the stored range (0 when neither is known: an inventory
+// without data adds nothing).
 func (s streamContext) inventoryTime(inv Inventory) float64 {
 	if r, ok := s.inventoryRange(inv); ok {
 		return r
 	}
-	return inv.Range
+	return num(inv.Range)
 }
 
 // stockHolder returns the process whose stock_quantity inv is, when inv
-// names one with process_id and that process has stock_quantity > 0. inv is
-// then counted through the process, not on its own.
+// names one with process_id and that process has stock_quantity entered
+// (0 included). inv is then counted through the process, not on its own.
 func stockHolder(vs *ValueStream, inv Inventory) (*Process, bool) {
 	if inv.ProcessID == "" {
 		return nil, false
 	}
 	for i := range vs.Processes {
 		if p := &vs.Processes[i]; p.ID == inv.ProcessID {
-			return p, p.Parameters.StockQuantity > 0
+			return p, p.Parameters.StockQuantity != nil
 		}
 	}
 	return nil, false
@@ -358,7 +386,7 @@ func stockHolder(vs *ValueStream, inv Inventory) (*Process, bool) {
 // timeThroughProcess reports whether inv's time is already in the lead time
 // through holder, the process whose stock inv is (see stockHolder): the
 // process's resolved waiting_time is known (from stock ÷ demand rate, or
-// stored), or its idle_time is given only as a total, which is taken to
+// stored), or its idle_time is entered only as a total, which is taken to
 // include the wait. Otherwise, for example stock_quantity without a demand
 // rate and no waiting_time, the process does not account for the time, and
 // the inventory's own time (its range) is the only measure of it: it is
@@ -366,8 +394,8 @@ func stockHolder(vs *ValueStream, inv Inventory) (*Process, bool) {
 // process (see streamStock).
 func (c *Calculator) timeThroughProcess(holder *Process, ctx streamContext) bool {
 	p, _ := c.resolveParameters(holder.Parameters, ctx)
-	idleTotalOnly := p.TransportTime == 0 && p.StorageTime == 0 && p.IdleTime > 0
-	return p.WaitingTime > 0 || idleTotalOnly
+	idleTotalOnly := !idlePartsGiven(p) && p.IdleTime != nil
+	return p.WaitingTime != nil || idleTotalOnly
 }
 
 // inventoryTimes returns, for each inventory of vs counted on its own (not
@@ -394,39 +422,38 @@ func (c *Calculator) inventoryTimes(vs *ValueStream) (map[string]float64, float6
 // (see Inventory.ProcessID) is that stock and adds nothing; every other
 // inventory adds its quantity, or, given by its range alone, range ×
 // customer demand rate. ok is false when an inventory's stock cannot be
-// known (range alone and no demand rate). Every KPI that sums stock uses
-// it, so it is the same stock the lead time counts.
+// known (a range above 0 alone and no demand rate). Every KPI that sums
+// stock uses it, so it is the same stock the lead time counts.
 func (c *Calculator) streamStock(vs *ValueStream) (total float64, ok bool) {
 	ctx := c.contextOf(vs)
 	for _, process := range vs.Processes {
-		if q := process.Parameters.StockQuantity; q > 0 {
-			total += q
-		}
+		total += num(process.Parameters.StockQuantity)
 	}
 	for _, inv := range vs.Inventory {
 		if _, linked := stockHolder(vs, inv); linked {
 			continue
 		}
 		switch {
-		case inv.Quantity > 0:
-			total += inv.Quantity
-		case inv.Range > 0:
+		case inv.Quantity != nil:
+			total += *inv.Quantity
+		case positive(inv.Range):
 			rate, known := ctx.demandRate(ctx.unit)
 			if !known {
 				return 0, false
 			}
-			total += inv.Range * rate
+			total += *inv.Range * rate
 		}
 	}
 	return total, true
 }
 
-// processPartsGiven lists the A.2 process time parts that are given (> 0).
+// processPartsGiven lists the A.2 process time parts that are entered (or
+// computed, for processing_time), 0 included.
 func processPartsGiven(p ProcessParameters) []string {
 	var given []string
 	for _, f := range []struct {
 		name  string
-		value float64
+		value *float64
 	}{
 		{"processing_time", p.ProcessingTime},
 		{"setup_time", p.SetupTime},
@@ -434,7 +461,7 @@ func processPartsGiven(p ProcessParameters) []string {
 		{"waiting_time_process", p.WaitingTimeProcess},
 		{"ancillary_time", p.AncillaryTime},
 	} {
-		if f.value > 0 {
+		if f.value != nil {
 			given = append(given, f.name)
 		}
 	}
@@ -442,16 +469,16 @@ func processPartsGiven(p ProcessParameters) []string {
 }
 
 // customerTakt returns the takt the model uses: AvailableTime ÷ Demand when
-// both are set (both per DemandPeriod, so the period cancels), otherwise the
-// stored TaktTime.
+// both are entered and demand is above 0 (both per DemandPeriod, so the
+// period cancels), otherwise the stored TaktTime when entered.
 func (c *Calculator) customerTakt(cust *Customer) (float64, bool) {
 	switch {
 	case cust == nil:
 		return 0, false
-	case cust.AvailableTime > 0 && cust.Demand > 0:
-		return c.CalculateCustomerTakt(cust.AvailableTime, cust.Demand), true
-	case cust.TaktTime > 0:
-		return cust.TaktTime, true
+	case cust.AvailableTime != nil && positive(cust.Demand):
+		return c.CalculateCustomerTakt(*cust.AvailableTime, *cust.Demand), true
+	case cust.TaktTime != nil:
+		return *cust.TaktTime, true
 	}
 	return 0, false
 }
@@ -482,12 +509,12 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 
 	unit := string(ctx.unit)
 	for _, inv := range vs.Inventory {
-		if want, ok := ctx.inventoryRange(inv); ok && inv.Range > 0 && !consistent(inv.Range, want) {
+		if want, ok := ctx.inventoryRange(inv); ok && inv.Range != nil && !consistent(*inv.Range, want) {
 			issues = append(issues, ConsistencyIssue{
 				Element: "inventory", ID: inv.ID, Field: "range",
-				StoredValue: inv.Range, ComputedValue: want, Unit: unit, Rule: ruleInvRange,
+				StoredValue: *inv.Range, ComputedValue: want, Unit: unit, Rule: ruleInvRange,
 				Message: fmt.Sprintf("inventory %s: range stored %g, but quantity %g ÷ customer demand rate = %g",
-					inv.ID, inv.Range, inv.Quantity, want),
+					inv.ID, *inv.Range, *inv.Quantity, want),
 			})
 		}
 	}
@@ -507,30 +534,31 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 			issue.Field = "process_id"
 			issue.Message = fmt.Sprintf("inventory %s: process_id %q names no process; the inventory is counted on its own",
 				inv.ID, inv.ProcessID)
-		case !linked && inv.Quantity == 0 && inv.Range == 0:
-			// Both empty (e.g. a future state that removed the stock):
-			// nothing to count, nothing contradicts.
+		case !linked && num(inv.Quantity) == 0 && num(inv.Range) == 0:
+			// Empty (nothing entered, or 0): nothing to count, nothing
+			// contradicts.
 			continue
 		case !linked:
 			issue.Field = "process_id"
 			issue.Message = fmt.Sprintf("inventory %s: linked to process %s, which has no stock_quantity; "+
 				"the inventory is counted on its own", inv.ID, inv.ProcessID)
-		case inv.Quantity > 0 && !consistent(inv.Quantity, holder.Parameters.StockQuantity):
-			issue.Field, issue.StoredValue, issue.ComputedValue = "quantity", inv.Quantity, holder.Parameters.StockQuantity
+		case inv.Quantity != nil && !consistent(*inv.Quantity, *holder.Parameters.StockQuantity):
+			stock := *holder.Parameters.StockQuantity
+			issue.Field, issue.StoredValue, issue.ComputedValue = "quantity", *inv.Quantity, stock
 			issue.Message = fmt.Sprintf("inventory %s: quantity %g, but it is the stock of process %s, "+
-				"whose stock_quantity is %g; calculations count the process's stock", inv.ID, inv.Quantity,
-				inv.ProcessID, holder.Parameters.StockQuantity)
-		case inv.Range > 0 && !rangeChecked(inv) && c.timeThroughProcess(holder, ctx):
+				"whose stock_quantity is %g; calculations count the process's stock", inv.ID, *inv.Quantity,
+				inv.ProcessID, stock)
+		case inv.Range != nil && !rangeChecked(inv) && c.timeThroughProcess(holder, ctx):
 			// The range is not checked against quantity ÷ demand rate, so
 			// check it against the process's waiting time, the same time.
 			waiting := c.resolvedIn(holder.Parameters, ctx).WaitingTime
-			if waiting == 0 || consistent(inv.Range, waiting) {
+			if waiting == nil || consistent(*inv.Range, *waiting) {
 				continue
 			}
-			issue.Field, issue.StoredValue, issue.ComputedValue, issue.Unit = "range", inv.Range, waiting, unit
+			issue.Field, issue.StoredValue, issue.ComputedValue, issue.Unit = "range", *inv.Range, *waiting, unit
 			issue.Message = fmt.Sprintf("inventory %s: range %g, but it is the stock of process %s, "+
-				"whose waiting_time is %g; calculations count the process's waiting time", inv.ID, inv.Range,
-				inv.ProcessID, waiting)
+				"whose waiting_time is %g; calculations count the process's waiting time", inv.ID, *inv.Range,
+				inv.ProcessID, *waiting)
 		default:
 			continue
 		}
@@ -540,19 +568,19 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 	if cust := vs.Customer; cust != nil && !workingDaysValid(cust.WorkingDaysPerWeek) {
 		issues = append(issues, ConsistencyIssue{
 			Element: "customer", ID: cust.ID, Field: "working_days_per_week",
-			StoredValue: cust.WorkingDaysPerWeek, ComputedValue: 7, Rule: ruleWorkingDays,
+			StoredValue: *cust.WorkingDaysPerWeek, ComputedValue: 7, Rule: ruleWorkingDays,
 			Message: fmt.Sprintf("customer %s: working_days_per_week %g is outside 1–7; "+
-				"inventory times are not derived from demand", cust.ID, cust.WorkingDaysPerWeek),
+				"inventory times are not derived from demand", cust.ID, *cust.WorkingDaysPerWeek),
 		})
 	}
 
-	if cust := vs.Customer; cust != nil && cust.TaktTime > 0 && cust.AvailableTime > 0 && cust.Demand > 0 {
-		if takt, _ := c.customerTakt(cust); !consistent(cust.TaktTime, takt) {
+	if cust := vs.Customer; cust != nil && cust.TaktTime != nil && cust.AvailableTime != nil && positive(cust.Demand) {
+		if takt, _ := c.customerTakt(cust); !consistent(*cust.TaktTime, takt) {
 			issues = append(issues, ConsistencyIssue{
 				Element: "customer", ID: cust.ID, Field: "takt_time",
-				StoredValue: cust.TaktTime, ComputedValue: takt, Unit: unit, Rule: ruleTakt,
+				StoredValue: *cust.TaktTime, ComputedValue: takt, Unit: unit, Rule: ruleTakt,
 				Message: fmt.Sprintf("customer %s: takt_time stored %g, but available_time ÷ demand = %g; calculations use %[3]g",
-					cust.ID, cust.TaktTime, takt),
+					cust.ID, *cust.TaktTime, takt),
 			})
 		}
 	}
