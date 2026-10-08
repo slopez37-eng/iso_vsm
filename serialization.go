@@ -31,7 +31,11 @@ import (
 // that yield stays 0 (the flag itself is no longer part of the model).
 // Non-zero values load unchanged, so a legacy file gives the same results
 // as before. In an assessment result, "working_days_per_week": 0 becomes
-// not entered and a KPI target counts only when "has_target" is true.
+// not entered, and a KPI target that is not 0 is kept. A KPI target of 0 is
+// ambiguous in a legacy file: the original format (which had no
+// "has_target") wrote 0 both for "no target" and for a real target of 0,
+// so a 0 counts as entered only when "has_target": true marks it (as files
+// from the intermediate format do), and is otherwise not entered.
 //
 // A value stream nested in a project or design result follows its own
 // "format_version"; without one, the container's. Files are always written
@@ -223,8 +227,9 @@ func (result AssessmentResult) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON reads result in the current or the legacy format (see
-// FormatVersion): in a legacy file, working_days_per_week 0 is not entered
-// and a KPI target counts only with "has_target": true.
+// FormatVersion): in a legacy file, working_days_per_week 0 is not entered,
+// a KPI target that is not 0 is kept, and a target of 0 counts only with
+// "has_target": true (see FormatVersion).
 func (result *AssessmentResult) UnmarshalJSON(data []byte) error {
 	type plain AssessmentResult
 	var w struct {
@@ -250,7 +255,7 @@ func (result *AssessmentResult) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	for name, m := range result.KPIs {
-		if !legacy.KPIs[name].HasTarget {
+		if m.Target != nil && *m.Target == 0 && !legacy.KPIs[name].HasTarget {
 			m.Target = nil
 			result.KPIs[name] = m
 		}

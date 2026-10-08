@@ -380,7 +380,7 @@ func TestNestedStreamsFollowFormatVersion(t *testing.T) {
 }
 
 // Legacy assessment results: working_days_per_week 0 is not entered, and a
-// target counts only with has_target.
+// target of 0 counts only with has_target.
 func TestLegacyAssessmentResult(t *testing.T) {
 	legacy := `{"value_stream_id": "vs", "working_days_per_week": 0, "kpis": {
 	  "total_lead_time": {"name": "total_lead_time", "value": 10, "target": 0, "has_target": true},
@@ -408,5 +408,44 @@ func TestLegacyAssessmentResult(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"format_version": 2`) || !reflect.DeepEqual(back.KPIs, got.KPIs) {
 		t.Errorf("assessment save → load: %s", data)
+	}
+}
+
+// An assessment result as main wrote it (no format_version, no
+// has_target; written by main's SerializeAssessmentResult): a target that
+// is not 0 is kept, a target of 0 is not entered (main wrote 0 for "no
+// target" too).
+func TestMainFormatAssessmentKeepsTargets(t *testing.T) {
+	main := `{
+  "value_stream_id": "vs",
+  "assessment_date": "2025-01-02T00:00:00Z",
+  "kpis": {
+    "total_lead_time": {
+      "name": "total_lead_time", "value": 120, "unit": "time", "target": 100, "threshold": 0,
+      "status": "warning", "trend": "stable", "measured_at": "2025-01-02T00:00:00Z", "description": ""
+    },
+    "value_added_ratio": {
+      "name": "value_added_ratio", "value": 0.2, "unit": "%", "target": 0, "threshold": 0,
+      "status": "excellent", "trend": "stable", "measured_at": "2025-01-02T00:00:00Z", "description": ""
+    }
+  },
+  "performance_index": 0, "target_achievement": null, "trends": null, "action_items": null,
+  "pdca_status": {
+    "plan": {"status": "", "completed_at": "0001-01-01T00:00:00Z"},
+    "do": {"status": "", "completed_at": "0001-01-01T00:00:00Z"},
+    "check": {"status": "", "completed_at": "0001-01-01T00:00:00Z"},
+    "act": {"status": "", "completed_at": "0001-01-01T00:00:00Z"}
+  },
+  "recommendations": null
+}`
+	got, err := NewSerializer().DeserializeAssessmentResult([]byte(main))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tgt := got.KPIs["total_lead_time"].Target; tgt == nil || *tgt != 100 {
+		t.Errorf("main-format target 100 = %v, want kept", tgt)
+	}
+	if tgt := got.KPIs["value_added_ratio"].Target; tgt != nil {
+		t.Errorf("main-format target 0 = %v, want not entered", *tgt)
 	}
 }
