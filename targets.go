@@ -490,54 +490,99 @@ func (c *Calculator) trimDerived(input, out ProcessParameters, ctx streamContext
 }
 
 // applyInventoryTargets returns inv with targets applied (own overrides
-// def). When the customer demand rate is known, range = quantity ÷ demand
-// rate (see Calculator.CalculateCustomerInventoryTime): a quantity target moves a
-// stored range with it, a range target sets the quantity, and targeting both
-// is an error unless they agree.
+// def). Targets start from the current values as the model resolves them:
+// when the customer demand rate is known and quantity is given, the current
+// range is quantity ÷ demand rate (see
+// Calculator.CalculateCustomerInventoryTime), whatever range is stored.
+//
+//   - Demand rate known: a range target sets the quantity (range × rate), a
+//     quantity target moves the range with it, and targeting both is an error
+//     unless they agree. The stored form is kept: the range is stored only
+//     where the current state stored one (it is computed from the quantity
+//     otherwise), and an inventory given by its range alone (quantity 0)
+//     keeps only a range, its quantity being range × rate.
+//   - Demand rate unknown: range is proportional to quantity at any constant
+//     demand rate, so when both are given a target on one scales the other
+//     by the same factor; targeting both is an error unless the factors
+//     agree. When only one is given, the target sets it alone.
 func (c *Calculator) applyInventoryTargets(inv Inventory, own, def *InventoryTargets, ctx streamContext) (Inventory, error) {
-	out := inv
-	targeted := map[string]bool{}
-	fields := []struct {
-		name string
-		get  func(*InventoryTargets) *Target
-		val  *float64
-	}{
-		{"quantity", func(t *InventoryTargets) *Target { return t.Quantity }, &out.Quantity},
-		{"range", func(t *InventoryTargets) *Target { return t.Range }, &out.Range},
-	}
-	for _, f := range fields {
-		var t *Target
+	pickInv := func(get func(*InventoryTargets) *Target) *Target {
 		if own != nil {
-			t = f.get(own)
+			if t := get(own); t != nil {
+				return t
+			}
 		}
-		if t == nil && def != nil {
-			t = f.get(def)
+		if def != nil {
+			return get(def)
 		}
-		if t == nil {
-			continue
-		}
-		v, err := applyField(f.name, t, *f.val, false)
-		if err != nil {
+		return nil
+	}
+	qt := pickInv(func(t *InventoryTargets) *Target { return t.Quantity })
+	rt := pickInv(func(t *InventoryTargets) *Target { return t.Range })
+	if qt == nil && rt == nil {
+		return inv, nil
+	}
+
+	// Current values as resolved. With the demand rate known, an inventory
+	// given by its range alone has quantity range × rate.
+	rate, rateKnown := ctx.demandRate(ctx.unit)
+	q0, r0 := inv.Quantity, ctx.inventoryTime(inv)
+	if rateKnown && q0 == 0 {
+		q0 = r0 * rate
+	}
+	q, r := q0, r0
+	var err error
+	if qt != nil {
+		if q, err = applyField("quantity", qt, q0, false); err != nil {
 			return inv, err
 		}
-		*f.val = v
-		targeted[f.name] = true
 	}
-	rate, ok := ctx.demandRate(ctx.unit)
-	if !ok {
+	if rt != nil {
+		if r, err = applyField("range", rt, r0, false); err != nil {
+			return inv, err
+		}
+	}
+
+	out := inv
+	if rateKnown {
+		switch {
+		case qt != nil && rt != nil:
+			if !consistent(r, q/rate) {
+				return inv, fmt.Errorf("quantity and range: range = quantity ÷ customer demand rate "+
+					"= %g, not %g; set one of them", q/rate, r)
+			}
+		case rt != nil:
+			q = r * rate
+		default:
+			r = q / rate
+		}
+		// Keep the stored form: an inventory given by range alone stays so.
+		if inv.Quantity > 0 {
+			out.Quantity = q
+			if inv.Range > 0 {
+				out.Range = r
+			}
+		} else {
+			out.Range = r
+		}
 		return out, nil
 	}
-	switch {
-	case targeted["quantity"] && targeted["range"]:
-		if !consistent(out.Range, out.Quantity/rate) {
-			return inv, fmt.Errorf("quantity and range: range = quantity ÷ customer demand rate "+
-				"= %g, not %g; set one of them", out.Quantity/rate, out.Range)
+
+	// Demand rate unknown.
+	if q0 > 0 && r0 > 0 {
+		switch {
+		case qt != nil && rt != nil:
+			if !consistent(q/q0, r/r0) {
+				return inv, fmt.Errorf("quantity and range: range moves with quantity (×%g), "+
+					"but the range target moves it ×%g; set one of them", q/q0, r/r0)
+			}
+		case rt != nil:
+			q = q0 * r / r0
+		default:
+			r = r0 * q / q0
 		}
-	case targeted["range"]:
-		out.Quantity = out.Range * rate
-	case targeted["quantity"] && inv.Range > 0:
-		out.Range = out.Quantity / rate
 	}
+	out.Quantity, out.Range = q, r
 	return out, nil
 }
 

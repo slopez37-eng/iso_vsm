@@ -567,3 +567,64 @@ func TestZeroYieldTargetKept(t *testing.T) {
 		t.Errorf("after round trip average_yield_factor = %v, want 0.5", got)
 	}
 }
+
+// Inventory range targets start from the range resolved from quantity and
+// demand, not from a stored range that is absent or contradicts it.
+func TestInventoryRangeTargetUsesResolvedRange(t *testing.T) {
+	stream := func(storedRange float64) *ValueStream {
+		return &ValueStream{ID: "vs", Name: "r",
+			Customer: &Customer{ID: "c", Demand: 100, DemandPeriod: DemandPeriodDay},
+			Processes: []Process{{ID: "p", Name: "p", Parameters: ProcessParameters{
+				ProcessTime: 0.01, TimeUnit: TimeUnitDays}}},
+			Inventory: []Inventory{{ID: "i", Name: "i", Quantity: 200, Range: storedRange}},
+		}
+	}
+	targets := &FutureStateTargets{InventoryDefault: &InventoryTargets{Range: ReductionTarget(50)}}
+	for name, stored := range map[string]float64{"range omitted": 0, "range contradicts (5 days)": 5} {
+		future, err := NewDesigner().DesignFutureStateFromTargets(stream(stored), targets)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		inv := future.Inventory[0]
+		if !approx(inv.Quantity, 100) {
+			t.Errorf("%s: quantity = %v, want 100", name, inv.Quantity)
+		}
+		if r := NewCalculator().contextOf(future).inventoryTime(inv); !approx(r, 1) {
+			t.Errorf("%s: range = %v days, want 1", name, r)
+		}
+		if issues := CheckConsistency(future); len(issues) != 0 {
+			t.Errorf("%s: future issues %+v", name, issues)
+		}
+	}
+
+	// Demand rate unknown: quantity and range still move together (range ∝
+	// quantity at any constant demand rate).
+	vs := stream(2)
+	vs.Customer = nil
+	future, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
+		InventoryDefault: &InventoryTargets{Quantity: ReductionTarget(25)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv := future.Inventory[0]; !approx(inv.Quantity, 150) || !approx(inv.Range, 1.5) {
+		t.Errorf("rate unknown: inventory = %+v, want quantity 150, range 1.5", inv)
+	}
+}
+
+// An inventory given by range alone (quantity 0), demand rate known: a
+// quantity cut is a cut of the stock that range stands for.
+func TestInventoryRangeOnlyTargets(t *testing.T) {
+	vs := &ValueStream{ID: "vs", Name: "r",
+		Customer:  &Customer{ID: "c", Demand: 100, DemandPeriod: DemandPeriodDay},
+		Processes: []Process{{ID: "p", Name: "p", Parameters: ProcessParameters{ProcessTime: 0.01, TimeUnit: TimeUnitDays}}},
+		Inventory: []Inventory{{ID: "i", Name: "i", Range: 2}},
+	}
+	future, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
+		InventoryDefault: &InventoryTargets{Quantity: ReductionTarget(50)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv := future.Inventory[0]; inv.Quantity != 0 || !approx(inv.Range, 1) {
+		t.Errorf("inventory = %+v, want range 1 (quantity left unstored)", inv)
+	}
+}
