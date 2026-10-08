@@ -206,8 +206,9 @@ type ValueStream struct {
 
 	// ConsistencyIssues lists stored values that disagree with the values
 	// computed from their parts (see CheckConsistency). It is output only:
-	// DeserializeValueStream and LoadFromFile fill it in on every load, and
-	// calculations ignore it.
+	// DeserializeValueStream, DeserializeVSMProject, DeserializeDesignResult
+	// and LoadFromFile recompute it on every load (a stored list is
+	// replaced), and calculations ignore it.
 	ConsistencyIssues []ConsistencyIssue `json:"consistency_issues,omitempty"`
 
 	// Metadata

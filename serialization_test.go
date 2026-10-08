@@ -1,6 +1,7 @@
 package vsm
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -89,5 +90,75 @@ func TestExportUsesComputedKPIsAndListsIssues(t *testing.T) {
 	}
 	if strings.Contains(out, "total_lead_time: 20") {
 		t.Errorf("map text prints the stale stored lead time:\n%s", out)
+	}
+}
+
+// TestDeserializeVSMProjectRefreshesIssues: a project load reports each
+// state's consistency issues like a value stream load does, and does not
+// keep a stale issues list from the file.
+func TestDeserializeVSMProjectRefreshesIssues(t *testing.T) {
+	stream := func(id string, processTime float64) ValueStream {
+		return ValueStream{ID: id, Name: id, Processes: []Process{{ID: "p", Name: "P",
+			Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: processTime, ProcessingTime: 5}}},
+			// A stale list, as if written by an older run.
+			ConsistencyIssues: []ConsistencyIssue{{Element: "process", ID: "gone", Field: "idle_time", Message: "stale"}},
+		}
+	}
+	future, ideal := stream("future", 5), stream("ideal", 9)
+	project := &VSMProject{ID: "proj", Name: "Project", CurrentState: stream("current", 20),
+		FutureState: &future, IdealState: &ideal}
+	data, err := json.Marshal(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := NewSerializer().DeserializeVSMProject(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(name string, vs *ValueStream, wantStored float64) {
+		if wantStored == 0 {
+			if len(vs.ConsistencyIssues) != 0 {
+				t.Errorf("%s: issues = %+v, want none", name, vs.ConsistencyIssues)
+			}
+			return
+		}
+		if len(vs.ConsistencyIssues) != 1 || vs.ConsistencyIssues[0].Field != "process_time" ||
+			vs.ConsistencyIssues[0].StoredValue != wantStored {
+			t.Errorf("%s: issues = %+v, want one process_time issue (stored %v)", name, vs.ConsistencyIssues, wantStored)
+		}
+	}
+	check("current", &back.CurrentState, 20)
+	check("future", back.FutureState, 0)
+	check("ideal", back.IdealState, 9)
+}
+
+// TestProjectAndDesignFileLoadsRefreshIssues: the file and design-result
+// load paths also replace stale issue lists.
+func TestProjectAndDesignFileLoadsRefreshIssues(t *testing.T) {
+	stale := []ConsistencyIssue{{Element: "process", ID: "gone", Message: "stale"}}
+	vs := ValueStream{ID: "vs", Name: "VS", ConsistencyIssues: stale, Processes: []Process{{ID: "p", Name: "P",
+		Parameters: ProcessParameters{ProcessTime: 20, ProcessingTime: 5}}}}
+	s := NewSerializer()
+
+	path := t.TempDir() + "/project.json"
+	if err := s.SaveToFile(&VSMProject{ID: "proj", Name: "P", CurrentState: vs}, path); err != nil {
+		t.Fatal(err)
+	}
+	var project VSMProject
+	if err := s.LoadFromFile(path, &project); err != nil {
+		t.Fatal(err)
+	}
+	if is := project.CurrentState.ConsistencyIssues; len(is) != 1 || is[0].Field != "process_time" {
+		t.Errorf("project file issues = %+v", is)
+	}
+
+	future := vs
+	data, _ := json.Marshal(&DesignResult{ValueStreamID: "vs", FutureState: &future})
+	design, err := s.DeserializeDesignResult(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if is := design.FutureState.ConsistencyIssues; len(is) != 1 || is[0].Field != "process_time" {
+		t.Errorf("design result issues = %+v", is)
 	}
 }

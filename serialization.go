@@ -75,7 +75,9 @@ func (s *Serializer) SerializeVSMProject(project *VSMProject) ([]byte, error) {
 	return json.MarshalIndent(project, "", "  ")
 }
 
-// DeserializeVSMProject deserializes a VSM project from JSON
+// DeserializeVSMProject deserializes a VSM project from JSON. The
+// ConsistencyIssues of the current, future and ideal states are recomputed
+// (see CheckConsistency); any list stored in the JSON is replaced.
 func (s *Serializer) DeserializeVSMProject(data []byte) (*VSMProject, error) {
 	var project VSMProject
 	if err := json.Unmarshal(data, &project); err != nil {
@@ -87,7 +89,24 @@ func (s *Serializer) DeserializeVSMProject(data []byte) (*VSMProject, error) {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
+	refreshProjectIssues(&project)
 	return &project, nil
+}
+
+// refreshProjectIssues recomputes the ConsistencyIssues of each state of
+// project.
+func refreshProjectIssues(project *VSMProject) {
+	refreshStreamIssues(&project.CurrentState, project.FutureState, project.IdealState)
+}
+
+// refreshStreamIssues recomputes the ConsistencyIssues of each non-nil
+// stream.
+func refreshStreamIssues(streams ...*ValueStream) {
+	for _, vs := range streams {
+		if vs != nil {
+			vs.ConsistencyIssues = CheckConsistency(vs)
+		}
+	}
 }
 
 // SerializeAnalysisResult serializes analysis results to JSON
@@ -115,12 +134,15 @@ func (s *Serializer) SerializeDesignResult(result *DesignResult) ([]byte, error)
 	return json.MarshalIndent(result, "", "  ")
 }
 
-// DeserializeDesignResult deserializes design results from JSON
+// DeserializeDesignResult deserializes design results from JSON. The
+// ConsistencyIssues of its future and ideal states are recomputed (see
+// CheckConsistency).
 func (s *Serializer) DeserializeDesignResult(data []byte) (*DesignResult, error) {
 	var result DesignResult
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal design result: %w", err)
 	}
+	refreshStreamIssues(result.FutureState, result.IdealState)
 	return &result, nil
 }
 
@@ -173,8 +195,8 @@ func (s *Serializer) SaveToFile(data interface{}, filename string) error {
 }
 
 // LoadFromFile loads any serializable object from a JSON file. When target
-// is a *ValueStream or *VSMProject, the ConsistencyIssues of each value
-// stream are filled in (see CheckConsistency).
+// is a *ValueStream, *VSMProject or *DesignResult, the ConsistencyIssues of
+// each value stream in it are recomputed (see CheckConsistency).
 func (s *Serializer) LoadFromFile(filename string, target interface{}) error {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -189,11 +211,9 @@ func (s *Serializer) LoadFromFile(filename string, target interface{}) error {
 	case *ValueStream:
 		t.ConsistencyIssues = CheckConsistency(t)
 	case *VSMProject:
-		for _, vs := range []*ValueStream{&t.CurrentState, t.FutureState, t.IdealState} {
-			if vs != nil {
-				vs.ConsistencyIssues = CheckConsistency(vs)
-			}
-		}
+		refreshProjectIssues(t)
+	case *DesignResult:
+		refreshStreamIssues(t.FutureState, t.IdealState)
 	}
 	return nil
 }
