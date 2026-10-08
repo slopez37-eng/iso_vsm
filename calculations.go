@@ -30,7 +30,7 @@ func (c *Calculator) CalculateDowntime(tbf, ttr []float64) (float64, error) {
 // PT = PRT + ST + HT + WTp + AT
 func (c *Calculator) CalculateProcessTime(params ProcessParameters) float64 {
 	return params.ProcessingTime + params.SetupTime + params.HandlingTime +
-		   params.WaitingTimeProcess + params.AncillaryTime
+		params.WaitingTimeProcess + params.AncillaryTime
 }
 
 // CalculateLeadTime calculates total lead time according to formula (A.3)
@@ -74,7 +74,7 @@ func (c *Calculator) CalculateStockQuantity(processTime float64, processQuantity
 // HT = PT - (ST + HT_previous + WTp + AT + DT)
 func (c *Calculator) CalculateHandlingTime(params ProcessParameters) float64 {
 	return params.ProcessTime - (params.SetupTime + params.HandlingTime +
-		   params.WaitingTimeProcess + params.AncillaryTime + params.Downtime)
+		params.WaitingTimeProcess + params.AncillaryTime + params.Downtime)
 }
 
 // CalculateValueAddingTime calculates value adding time according to formula (A.9)

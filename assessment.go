@@ -9,39 +9,39 @@ import (
 
 // AssessmentResult contains the results of value stream assessment
 type AssessmentResult struct {
-	ValueStreamID     string                 `json:"value_stream_id"`
-	AssessmentDate    time.Time              `json:"assessment_date"`
-	KPIs              map[string]KPIMeasure  `json:"kpis"`
-	PerformanceIndex  float64                `json:"performance_index"`
-	TargetAchievement map[string]float64     `json:"target_achievement"`
-	Trends            []TrendAnalysis        `json:"trends"`
-	ActionItems       []ActionItem           `json:"action_items"`
-	PDCAStatus        PDCAStatus             `json:"pdca_status"`
-	Recommendations   []string               `json:"recommendations"`
+	ValueStreamID     string                `json:"value_stream_id"`
+	AssessmentDate    time.Time             `json:"assessment_date"`
+	KPIs              map[string]KPIMeasure `json:"kpis"`
+	PerformanceIndex  float64               `json:"performance_index"`
+	TargetAchievement map[string]float64    `json:"target_achievement"`
+	Trends            []TrendAnalysis       `json:"trends"`
+	ActionItems       []ActionItem          `json:"action_items"`
+	PDCAStatus        PDCAStatus            `json:"pdca_status"`
+	Recommendations   []string              `json:"recommendations"`
 }
 
 // KPIMeasure represents a measured KPI value with metadata
 type KPIMeasure struct {
-	Name         string    `json:"name"`
-	Value        float64   `json:"value"`
-	Unit         string    `json:"unit"`
-	Target       float64   `json:"target"`
-	Threshold    float64   `json:"threshold"`
-	Status       string    `json:"status"` // "excellent", "good", "warning", "critical"
-	Trend        string    `json:"trend"`  // "improving", "stable", "declining"
-	MeasuredAt   time.Time `json:"measured_at"`
-	Description  string    `json:"description"`
+	Name        string    `json:"name"`
+	Value       float64   `json:"value"`
+	Unit        string    `json:"unit"`
+	Target      float64   `json:"target"`
+	Threshold   float64   `json:"threshold"`
+	Status      string    `json:"status"` // "excellent", "good", "warning", "critical"
+	Trend       string    `json:"trend"`  // "improving", "stable", "declining"
+	MeasuredAt  time.Time `json:"measured_at"`
+	Description string    `json:"description"`
 }
 
 // TrendAnalysis represents trend analysis for a KPI
 type TrendAnalysis struct {
-	KPIName       string      `json:"kpi_name"`
-	Period        string      `json:"period"`        // "daily", "weekly", "monthly"
-	DataPoints    []DataPoint `json:"data_points"`
-	Slope         float64     `json:"slope"`
-	Correlation   float64     `json:"correlation"`
-	Forecast      float64     `json:"forecast"`      // Next period prediction
-	Confidence    float64     `json:"confidence"`    // Prediction confidence (0-1)
+	KPIName     string      `json:"kpi_name"`
+	Period      string      `json:"period"` // "daily", "weekly", "monthly"
+	DataPoints  []DataPoint `json:"data_points"`
+	Slope       float64     `json:"slope"`
+	Correlation float64     `json:"correlation"`
+	Forecast    float64     `json:"forecast"`   // Next period prediction
+	Confidence  float64     `json:"confidence"` // Prediction confidence (0-1)
 }
 
 // DataPoint represents a single data point in trend analysis
@@ -57,21 +57,21 @@ type ActionItem struct {
 	Priority    int       `json:"priority"` // 1=urgent, 2=high, 3=medium, 4=low
 	AssignedTo  string    `json:"assigned_to"`
 	DueDate     time.Time `json:"due_date"`
-	Status      string    `json:"status"`   // "open", "in_progress", "completed", "overdue"
+	Status      string    `json:"status"` // "open", "in_progress", "completed", "overdue"
 	CreatedAt   time.Time `json:"created_at"`
 }
 
 // PDCAStatus represents the status of PDCA cycle phases
 type PDCAStatus struct {
-	Plan   PDCAPhase `json:"plan"`
-	Do     PDCAPhase `json:"do"`
-	Check  PDCAPhase `json:"check"`
-	Act    PDCAPhase `json:"act"`
+	Plan  PDCAPhase `json:"plan"`
+	Do    PDCAPhase `json:"do"`
+	Check PDCAPhase `json:"check"`
+	Act   PDCAPhase `json:"act"`
 }
 
 // PDCAPhase represents a phase in the PDCA cycle
 type PDCAPhase struct {
-	Status      string    `json:"status"`       // "completed", "in_progress", "pending"
+	Status      string    `json:"status"` // "completed", "in_progress", "pending"
 	CompletedAt time.Time `json:"completed_at,omitempty"`
 	Notes       string    `json:"notes,omitempty"`
 }
@@ -382,7 +382,7 @@ func (a *Assessor) analyzeTrends(history []AssessmentResult, periods int) []Tren
 			// Simple forecast (linear extrapolation)
 			if len(dataPoints) > 0 {
 				lastValue := dataPoints[len(dataPoints)-1].Value
-				trend.Forecast = lastValue + trend.Slope*7 // 7 days ahead
+				trend.Forecast = lastValue + trend.Slope*7        // 7 days ahead
 				trend.Confidence = math.Max(0, trend.Correlation) // Use correlation as confidence proxy
 			}
 
@@ -447,7 +447,7 @@ func (a *Assessor) calculateCorrelation(dataPoints []DataPoint) float64 {
 	}
 
 	numerator := n*sumXY - sumX*sumY
-	denominator := math.Sqrt((n*sumXX-sumX*sumX)*(n*sumYY-sumY*sumY))
+	denominator := math.Sqrt((n*sumXX - sumX*sumX) * (n*sumYY - sumY*sumY))
 
 	if denominator == 0 {
 		return 0
@@ -464,26 +464,26 @@ func (a *Assessor) generateActionItems(kpis map[string]KPIMeasure, vs *ValueStre
 	for name, kpi := range kpis {
 		if kpi.Status == "critical" {
 			item := ActionItem{
-				ID:          fmt.Sprintf("action_%s_%d", name, now.Unix()),
+				ID: fmt.Sprintf("action_%s_%d", name, now.Unix()),
 				Description: fmt.Sprintf("Address critical %s KPI (current: %.2f, target: %.2f)",
 					name, kpi.Value, kpi.Target),
-				Priority:    1,
-				AssignedTo:  "VSM Coordinator",
-				DueDate:     now.AddDate(0, 0, 7), // 1 week
-				Status:      "open",
-				CreatedAt:   now,
+				Priority:   1,
+				AssignedTo: "VSM Coordinator",
+				DueDate:    now.AddDate(0, 0, 7), // 1 week
+				Status:     "open",
+				CreatedAt:  now,
 			}
 			items = append(items, item)
 		} else if kpi.Status == "warning" {
 			item := ActionItem{
-				ID:          fmt.Sprintf("action_%s_%d", name, now.Unix()),
+				ID: fmt.Sprintf("action_%s_%d", name, now.Unix()),
 				Description: fmt.Sprintf("Improve %s KPI performance (current: %.2f, target: %.2f)",
 					name, kpi.Value, kpi.Target),
-				Priority:    2,
-				AssignedTo:  "Process Owner",
-				DueDate:     now.AddDate(0, 0, 14), // 2 weeks
-				Status:      "open",
-				CreatedAt:   now,
+				Priority:   2,
+				AssignedTo: "Process Owner",
+				DueDate:    now.AddDate(0, 0, 14), // 2 weeks
+				Status:     "open",
+				CreatedAt:  now,
 			}
 			items = append(items, item)
 		}

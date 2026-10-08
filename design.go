@@ -8,24 +8,24 @@ import (
 
 // DesignResult contains the results of the value stream design phase
 type DesignResult struct {
-	ValueStreamID       string               `json:"value_stream_id"`
-	ImprovementPotentials []ImprovementPotential `json:"improvement_potentials"`
-	IdealState          *ValueStream         `json:"ideal_state"`
-	FutureState         *ValueStream         `json:"future_state"`
-	DesignPrinciples    []DesignPrinciple    `json:"design_principles"`
+	ValueStreamID          string                  `json:"value_stream_id"`
+	ImprovementPotentials  []ImprovementPotential  `json:"improvement_potentials"`
+	IdealState             *ValueStream            `json:"ideal_state"`
+	FutureState            *ValueStream            `json:"future_state"`
+	DesignPrinciples       []DesignPrinciple       `json:"design_principles"`
 	ContinuousImprovements []ContinuousImprovement `json:"continuous_improvements"`
-	DesignedAt          time.Time            `json:"designed_at"`
+	DesignedAt             time.Time               `json:"designed_at"`
 }
 
 // ImprovementPotential represents a potential improvement in the value stream
 type ImprovementPotential struct {
 	ID          string  `json:"id"`
-	Type        string  `json:"type"`        // "bottleneck", "waste", "flow", "quality", etc.
-	Location    string  `json:"location"`    // Process or area where improvement applies
+	Type        string  `json:"type"`     // "bottleneck", "waste", "flow", "quality", etc.
+	Location    string  `json:"location"` // Process or area where improvement applies
 	Description string  `json:"description"`
-	Priority    int     `json:"priority"`    // 1=high, 2=medium, 3=low
-	Impact      float64 `json:"impact"`      // Estimated improvement impact (0-1)
-	Effort      float64 `json:"effort"`      // Estimated effort required (0-1)
+	Priority    int     `json:"priority"` // 1=high, 2=medium, 3=low
+	Impact      float64 `json:"impact"`   // Estimated improvement impact (0-1)
+	Effort      float64 `json:"effort"`   // Estimated effort required (0-1)
 }
 
 // DesignPrinciple represents the 8 VSM design principles from Rother & Shook
@@ -42,9 +42,9 @@ type ContinuousImprovement struct {
 	ID          string    `json:"id"`
 	ProcessID   string    `json:"process_id"`
 	Description string    `json:"description"`
-	Type        string    `json:"type"`        // "kaizen", "quick_win", "major_change"
+	Type        string    `json:"type"` // "kaizen", "quick_win", "major_change"
 	Priority    int       `json:"priority"`
-	Status      string    `json:"status"`      // "identified", "planned", "implemented"
+	Status      string    `json:"status"` // "identified", "planned", "implemented"
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -329,11 +329,11 @@ func (d *Designer) DesignFutureStateFromIdeal(ideal, current *ValueStream) (*Val
 			Description: "FIFO lane between processes",
 		},
 		{
-			ID:          "kanban_1",
-			Type:        "kanban",
-			Capacity:    5,
+			ID:             "kanban_1",
+			Type:           "kanban",
+			Capacity:       5,
 			ControlTickets: []string{"ticket_1", "ticket_2", "ticket_3", "ticket_4", "ticket_5"},
-			Description: "Kanban control system",
+			Description:    "Kanban control system",
 		},
 	}
 
@@ -497,28 +497,28 @@ func (d *Designer) IdentifyContinuousImprovements(vs *ValueStream, analysis *Ana
 	// Generate improvements based on bottlenecks
 	for _, bottleneck := range analysis.Bottlenecks {
 		improvements = append(improvements, ContinuousImprovement{
-			ID:          fmt.Sprintf("ci_bottleneck_%s", bottleneck.ProcessID),
-			ProcessID:   bottleneck.ProcessID,
+			ID:        fmt.Sprintf("ci_bottleneck_%s", bottleneck.ProcessID),
+			ProcessID: bottleneck.ProcessID,
 			Description: fmt.Sprintf("Optimize bottleneck process '%s' to reduce utilization from %.1f%%",
 				bottleneck.ProcessName, bottleneck.Utilization*100),
-			Type:        "kaizen",
-			Priority:    1,
-			Status:      "identified",
-			CreatedAt:   now,
+			Type:      "kaizen",
+			Priority:  1,
+			Status:    "identified",
+			CreatedAt: now,
 		})
 	}
 
 	// Generate improvements based on waste
 	if analysis.WasteAnalysis.TotalWaste > 0 {
 		improvements = append(improvements, ContinuousImprovement{
-			ID:          "ci_waste_reduction",
-			ProcessID:   "", // System-wide
+			ID:        "ci_waste_reduction",
+			ProcessID: "", // System-wide
 			Description: fmt.Sprintf("Implement 5S and standard work to reduce waste by %.1f%%",
 				analysis.WasteAnalysis.WasteReductionPotential/analysis.WasteAnalysis.TotalWaste*100),
-			Type:        "major_change",
-			Priority:    2,
-			Status:      "identified",
-			CreatedAt:   now,
+			Type:      "major_change",
+			Priority:  2,
+			Status:    "identified",
+			CreatedAt: now,
 		})
 	}
 

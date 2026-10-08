@@ -9,14 +9,14 @@ import (
 
 // AnalysisResult contains the results of value stream analysis
 type AnalysisResult struct {
-	ValueStreamID      string             `json:"value_stream_id"`
-	Bottlenecks        []BottleneckInfo   `json:"bottlenecks"`
-	IdleTimeAnalysis   IdleTimeAnalysis   `json:"idle_time_analysis"`
-	WasteAnalysis      WasteAnalysis      `json:"waste_analysis"`
-	FlowAnalysis       FlowAnalysis       `json:"flow_analysis"`
-	KPIs               map[string]float64 `json:"kpis"`
-	Recommendations    []string           `json:"recommendations"`
-	AnalyzedAt         time.Time          `json:"analyzed_at"`
+	ValueStreamID    string             `json:"value_stream_id"`
+	Bottlenecks      []BottleneckInfo   `json:"bottlenecks"`
+	IdleTimeAnalysis IdleTimeAnalysis   `json:"idle_time_analysis"`
+	WasteAnalysis    WasteAnalysis      `json:"waste_analysis"`
+	FlowAnalysis     FlowAnalysis       `json:"flow_analysis"`
+	KPIs             map[string]float64 `json:"kpis"`
+	Recommendations  []string           `json:"recommendations"`
+	AnalyzedAt       time.Time          `json:"analyzed_at"`
 }
 
 // BottleneckInfo contains information about a bottleneck process
@@ -31,10 +31,10 @@ type BottleneckInfo struct {
 
 // IdleTimeAnalysis contains analysis of idle times across the value stream
 type IdleTimeAnalysis struct {
-	TotalIdleTime     float64            `json:"total_idle_time"`
-	IdleTimeByProcess map[string]float64 `json:"idle_time_by_process"`
-	IdleTimeBreakdown IdleTimeBreakdown  `json:"idle_time_breakdown"`
-	IdleTimeEfficiency float64           `json:"idle_time_efficiency"` // Percentage of productive time
+	TotalIdleTime      float64            `json:"total_idle_time"`
+	IdleTimeByProcess  map[string]float64 `json:"idle_time_by_process"`
+	IdleTimeBreakdown  IdleTimeBreakdown  `json:"idle_time_breakdown"`
+	IdleTimeEfficiency float64            `json:"idle_time_efficiency"` // Percentage of productive time
 }
 
 // IdleTimeBreakdown breaks down idle time by category
@@ -46,26 +46,26 @@ type IdleTimeBreakdown struct {
 
 // WasteAnalysis contains analysis of different types of waste (Muda)
 type WasteAnalysis struct {
-	TotalWaste         float64             `json:"total_waste"`
-	WasteByType        map[string]float64  `json:"waste_by_type"`        // 7 types of waste
-	WasteByProcess     map[string]float64  `json:"waste_by_process"`
-	WasteReductionPotential float64        `json:"waste_reduction_potential"`
+	TotalWaste              float64            `json:"total_waste"`
+	WasteByType             map[string]float64 `json:"waste_by_type"` // 7 types of waste
+	WasteByProcess          map[string]float64 `json:"waste_by_process"`
+	WasteReductionPotential float64            `json:"waste_reduction_potential"`
 }
 
 // FlowAnalysis contains analysis of product and information flow
 type FlowAnalysis struct {
-	FlowType           FlowType           `json:"flow_type"`            // Push or Pull
-	FlowEfficiency     float64            `json:"flow_efficiency"`
-	FlowInterruptions  []FlowInterruption `json:"flow_interruptions"`
-	InformationFlowQuality float64        `json:"information_flow_quality"`
+	FlowType               FlowType           `json:"flow_type"` // Push or Pull
+	FlowEfficiency         float64            `json:"flow_efficiency"`
+	FlowInterruptions      []FlowInterruption `json:"flow_interruptions"`
+	InformationFlowQuality float64            `json:"information_flow_quality"`
 }
 
 // FlowInterruption represents an interruption in the flow
 type FlowInterruption struct {
-	Type        string  `json:"type"`        // "stockout", "quality", "capacity", etc.
-	Location    string  `json:"location"`    // Process or connection point
-	Frequency   float64 `json:"frequency"`   // How often it occurs
-	Impact      float64 `json:"impact"`      // Time or cost impact
+	Type        string  `json:"type"`      // "stockout", "quality", "capacity", etc.
+	Location    string  `json:"location"`  // Process or connection point
+	Frequency   float64 `json:"frequency"` // How often it occurs
+	Impact      float64 `json:"impact"`    // Time or cost impact
 	Description string  `json:"description"`
 }
 
@@ -297,7 +297,7 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 
 		// Total waste for this process
 		processWaste := transportWaste + inventoryWaste + motionWaste + waitingWaste +
-					   overProcessingWaste + defectsWaste
+			overProcessingWaste + defectsWaste
 		if utilization < 0.7 {
 			processWaste += (1 - utilization) * params.OperatingTime
 		}

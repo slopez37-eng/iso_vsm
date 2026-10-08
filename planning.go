@@ -9,36 +9,36 @@ import (
 
 // PlanningResult contains the results of the value stream planning phase
 type PlanningResult struct {
-	ValueStreamID         string                `json:"value_stream_id"`
-	CatalogueOfMeasures   *CatalogueOfMeasures  `json:"catalogue_of_measures"`
-	WorkshopPlan          *WorkshopPlan         `json:"workshop_plan"`
-	ImplementationPlan    *ImplementationPlan   `json:"implementation_plan"`
-	RiskAssessment        []Risk                 `json:"risk_assessment"`
-	PlannedAt             time.Time             `json:"planned_at"`
+	ValueStreamID       string               `json:"value_stream_id"`
+	CatalogueOfMeasures *CatalogueOfMeasures `json:"catalogue_of_measures"`
+	WorkshopPlan        *WorkshopPlan        `json:"workshop_plan"`
+	ImplementationPlan  *ImplementationPlan  `json:"implementation_plan"`
+	RiskAssessment      []Risk               `json:"risk_assessment"`
+	PlannedAt           time.Time            `json:"planned_at"`
 }
 
 // WorkshopPlan represents the plan for a value stream workshop
 type WorkshopPlan struct {
-	ID          string              `json:"id"`
-	Title       string              `json:"title"`
-	Date        time.Time           `json:"date"`
-	Duration    time.Duration       `json:"duration"`
+	ID           string                `json:"id"`
+	Title        string                `json:"title"`
+	Date         time.Time             `json:"date"`
+	Duration     time.Duration         `json:"duration"`
 	Participants []WorkshopParticipant `json:"participants"`
-	Agenda      []WorkshopAgendaItem `json:"agenda"`
-	Goals       []string            `json:"goals"`
-	Materials   []string            `json:"materials"`
-	Status      string              `json:"status"` // "planned", "in_progress", "completed", "cancelled"
-	CreatedAt   time.Time           `json:"created_at"`
+	Agenda       []WorkshopAgendaItem  `json:"agenda"`
+	Goals        []string              `json:"goals"`
+	Materials    []string              `json:"materials"`
+	Status       string                `json:"status"` // "planned", "in_progress", "completed", "cancelled"
+	CreatedAt    time.Time             `json:"created_at"`
 }
 
 // WorkshopParticipant represents a participant in the workshop
 type WorkshopParticipant struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Role     string `json:"role"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Role       string `json:"role"`
 	Department string `json:"department"`
-	Required bool   `json:"required"`
-	Confirmed bool  `json:"confirmed"`
+	Required   bool   `json:"required"`
+	Confirmed  bool   `json:"confirmed"`
 }
 
 // WorkshopAgendaItem represents an item in the workshop agenda
@@ -54,13 +54,13 @@ type WorkshopAgendaItem struct {
 
 // ImplementationPlan represents the implementation plan for measures
 type ImplementationPlan struct {
-	ID              string                    `json:"id"`
-	Phases          []ImplementationPhase     `json:"phases"`
-	Milestones      []Milestone               `json:"milestones"`
+	ID                   string                `json:"id"`
+	Phases               []ImplementationPhase `json:"phases"`
+	Milestones           []Milestone           `json:"milestones"`
 	ResourceRequirements []ResourceRequirement `json:"resource_requirements"`
-	Timeline        Timeline                  `json:"timeline"`
-	Status          string                    `json:"status"`
-	CreatedAt       time.Time                 `json:"created_at"`
+	Timeline             Timeline              `json:"timeline"`
+	Status               string                `json:"status"`
+	CreatedAt            time.Time             `json:"created_at"`
 }
 
 // ImplementationPhase represents a phase in the implementation
@@ -87,20 +87,20 @@ type Milestone struct {
 // ResourceRequirement represents resources needed for implementation
 type ResourceRequirement struct {
 	ID          string  `json:"id"`
-	Type        string  `json:"type"`        // "personnel", "equipment", "budget", "training"
+	Type        string  `json:"type"` // "personnel", "equipment", "budget", "training"
 	Description string  `json:"description"`
 	Quantity    float64 `json:"quantity"`
-	Timeframe   string  `json:"timeframe"`   // "immediate", "short_term", "long_term"
-	Status      string  `json:"status"`      // "planned", "allocated", "available"
+	Timeframe   string  `json:"timeframe"` // "immediate", "short_term", "long_term"
+	Status      string  `json:"status"`    // "planned", "allocated", "available"
 }
 
 // Timeline represents the overall implementation timeline
 type Timeline struct {
-	StartDate     time.Time `json:"start_date"`
-	EndDate       time.Time `json:"end_date"`
+	StartDate     time.Time     `json:"start_date"`
+	EndDate       time.Time     `json:"end_date"`
 	Duration      time.Duration `json:"duration"`
-	CriticalPath  []string   `json:"critical_path"`  // IDs of critical measures
-	KeyMilestones []string   `json:"key_milestones"` // IDs of key milestones
+	CriticalPath  []string      `json:"critical_path"`  // IDs of critical measures
+	KeyMilestones []string      `json:"key_milestones"` // IDs of key milestones
 }
 
 // Risk represents a risk in the implementation
@@ -327,7 +327,7 @@ func (p *Planner) PlanWorkshop(design *DesignResult, project *VSMProject) (*Work
 		ID:        fmt.Sprintf("workshop_%s", design.ValueStreamID),
 		Title:     fmt.Sprintf("Value Stream Workshop: %s", project.Name),
 		Date:      time.Now().AddDate(0, 0, 14), // 2 weeks from now
-		Duration:  time.Duration(8) * time.Hour,  // 8 hours
+		Duration:  time.Duration(8) * time.Hour, // 8 hours
 		Status:    "planned",
 		CreatedAt: time.Now(),
 		Goals: []string{
@@ -553,7 +553,7 @@ func (p *Planner) CreateImplementationPlan(catalogue *CatalogueOfMeasures) (*Imp
 	plan.Timeline = Timeline{
 		StartDate:    now.AddDate(0, 0, 7),
 		EndDate:      now.AddDate(0, 6, 0),
-		Duration:     time.Duration(24 * 30 * 6) * time.Hour, // 6 months in hours
+		Duration:     time.Duration(24*30*6) * time.Hour, // 6 months in hours
 		CriticalPath: highPriority,
 		KeyMilestones: []string{
 			"milestone_quick_wins",
