@@ -50,17 +50,17 @@ func createVSMProject() *vsm.VSMProject {
 	customer := &vsm.Customer{
 		ID:          "customer_1",
 		Name:        "Restaurant Chain",
-		Demand:      200, // 200 burgers per day
+		Demand:      200,   // 200 burgers per day
 		TaktTime:    115.2, // minutes per burger (assuming 8 hour day)
 		Description: "Main customer for burger products",
 	}
 
 	// Create supplier
 	supplier := &vsm.Supplier{
-		ID:          "supplier_1",
-		Name:        "Food Ingredients Supplier",
+		ID:           "supplier_1",
+		Name:         "Food Ingredients Supplier",
 		DeliveryTime: 2 * 24 * 60, // 2 days in minutes
-		Description: "Supplier of burger ingredients",
+		Description:  "Supplier of burger ingredients",
 	}
 
 	// Create processes for burger production
@@ -70,18 +70,18 @@ func createVSMProject() *vsm.VSMProject {
 			Name: "Receive Ingredients",
 			Type: vsm.ProcessTypeMaterial,
 			Parameters: vsm.ProcessParameters{
-				ProcessTime:              30,    // 30 minutes
-				CycleTime:                30,    // 30 minutes
-				SetupTime:                15,    // 15 minutes
-				EmployeeCount:            1,     // 1 employee
-				ResourceCount:            1,     // 1 workstation
-				TimeUnit:                 vsm.TimeUnitMinutes,
-				ValueAddingTime:          25,    // 25 minutes value-adding
-				NonValueAddingTime:       5,     // 5 minutes non-value-adding
-				NecessaryNonValueAddingTime: 0,     // No necessary non-value-adding time
-				YieldFactor:              0.98,  // 98% yield
-				ScrapRate:                0.02,  // 2% scrap
-				ReworkRate:               0.00,  // 0% rework
+				ProcessTime:                 30, // 30 minutes
+				CycleTime:                   30, // 30 minutes
+				SetupTime:                   15, // 15 minutes
+				EmployeeCount:               1,  // 1 employee
+				ResourceCount:               1,  // 1 workstation
+				TimeUnit:                    vsm.TimeUnitMinutes,
+				ValueAddingTime:             25,   // 25 minutes value-adding
+				NonValueAddingTime:          5,    // 5 minutes non-value-adding
+				NecessaryNonValueAddingTime: 0,    // No necessary non-value-adding time
+				YieldFactor:                 0.98, // 98% yield
+				ScrapRate:                   0.02, // 2% scrap
+				ReworkRate:                  0.00, // 0% rework
 			},
 			Description: "Receive and inspect incoming ingredients",
 		},
@@ -90,18 +90,18 @@ func createVSMProject() *vsm.VSMProject {
 			Name: "Prepare Patties",
 			Type: vsm.ProcessTypeMaterial,
 			Parameters: vsm.ProcessParameters{
-				ProcessTime:              45,    // 45 minutes
-				CycleTime:                2.5,   // 2.5 minutes per patty
-				SetupTime:                10,    // 10 minutes
-				EmployeeCount:            2,     // 2 employees
-				ResourceCount:            1,     // 1 patty machine
-				TimeUnit:                 vsm.TimeUnitMinutes,
-				ValueAddingTime:          40,    // 40 minutes value-adding
-				NonValueAddingTime:       5,     // 5 minutes non-value-adding
-				NecessaryNonValueAddingTime: 0,     // No necessary non-value-adding time
-				YieldFactor:              0.95,  // 95% yield
-				ScrapRate:                0.03,  // 3% scrap
-				ReworkRate:               0.02,  // 2% rework
+				ProcessTime:                 45,  // 45 minutes
+				CycleTime:                   2.5, // 2.5 minutes per patty
+				SetupTime:                   10,  // 10 minutes
+				EmployeeCount:               2,   // 2 employees
+				ResourceCount:               1,   // 1 patty machine
+				TimeUnit:                    vsm.TimeUnitMinutes,
+				ValueAddingTime:             40,   // 40 minutes value-adding
+				NonValueAddingTime:          5,    // 5 minutes non-value-adding
+				NecessaryNonValueAddingTime: 0,    // No necessary non-value-adding time
+				YieldFactor:                 0.95, // 95% yield
+				ScrapRate:                   0.03, // 3% scrap
+				ReworkRate:                  0.02, // 2% rework
 			},
 			Description: "Mix and form burger patties",
 		},
@@ -110,18 +110,18 @@ func createVSMProject() *vsm.VSMProject {
 			Name: "Grill Patties",
 			Type: vsm.ProcessTypeMaterial,
 			Parameters: vsm.ProcessParameters{
-				ProcessTime:              60,    // 60 minutes
-				CycleTime:                5,     // 5 minutes per patty
-				SetupTime:                5,     // 5 minutes
-				EmployeeCount:            1,     // 1 grill operator
-				ResourceCount:            1,     // 1 grill
-				TimeUnit:                 vsm.TimeUnitMinutes,
-				ValueAddingTime:          55,    // 55 minutes value-adding
-				NonValueAddingTime:       5,     // 5 minutes non-value-adding
-				NecessaryNonValueAddingTime: 0,     // No necessary non-value-adding time
-				YieldFactor:              0.97,  // 97% yield
-				ScrapRate:                0.02,  // 2% scrap
-				ReworkRate:               0.01,  // 1% rework
+				ProcessTime:                 60, // 60 minutes
+				CycleTime:                   5,  // 5 minutes per patty
+				SetupTime:                   5,  // 5 minutes
+				EmployeeCount:               1,  // 1 grill operator
+				ResourceCount:               1,  // 1 grill
+				TimeUnit:                    vsm.TimeUnitMinutes,
+				ValueAddingTime:             55,   // 55 minutes value-adding
+				NonValueAddingTime:          5,    // 5 minutes non-value-adding
+				NecessaryNonValueAddingTime: 0,    // No necessary non-value-adding time
+				YieldFactor:                 0.97, // 97% yield
+				ScrapRate:                   0.02, // 2% scrap
+				ReworkRate:                  0.01, // 1% rework
 			},
 			Description: "Grill burger patties to perfection",
 		},
@@ -130,18 +130,18 @@ func createVSMProject() *vsm.VSMProject {
 			Name: "Assemble Burgers",
 			Type: vsm.ProcessTypeMaterial,
 			Parameters: vsm.ProcessParameters{
-				ProcessTime:              30,    // 30 minutes
-				CycleTime:                1.5,   // 1.5 minutes per burger
-				SetupTime:                5,     // 5 minutes
-				EmployeeCount:            3,     // 3 assembly workers
-				ResourceCount:            1,     // 1 assembly station
-				TimeUnit:                 vsm.TimeUnitMinutes,
-				ValueAddingTime:          28,    // 28 minutes value-adding
-				NonValueAddingTime:       2,     // 2 minutes non-value-adding
-				NecessaryNonValueAddingTime: 0,     // No necessary non-value-adding time
-				YieldFactor:              0.99,  // 99% yield
-				ScrapRate:                0.01,  // 1% scrap
-				ReworkRate:               0.00,  // 0% rework
+				ProcessTime:                 30,  // 30 minutes
+				CycleTime:                   1.5, // 1.5 minutes per burger
+				SetupTime:                   5,   // 5 minutes
+				EmployeeCount:               3,   // 3 assembly workers
+				ResourceCount:               1,   // 1 assembly station
+				TimeUnit:                    vsm.TimeUnitMinutes,
+				ValueAddingTime:             28,   // 28 minutes value-adding
+				NonValueAddingTime:          2,    // 2 minutes non-value-adding
+				NecessaryNonValueAddingTime: 0,    // No necessary non-value-adding time
+				YieldFactor:                 0.99, // 99% yield
+				ScrapRate:                   0.01, // 1% scrap
+				ReworkRate:                  0.00, // 0% rework
 			},
 			Description: "Assemble complete burgers with toppings",
 		},
@@ -150,18 +150,18 @@ func createVSMProject() *vsm.VSMProject {
 			Name: "Package and Ship",
 			Type: vsm.ProcessTypeMaterial,
 			Parameters: vsm.ProcessParameters{
-				ProcessTime:              45,    // 45 minutes
-				CycleTime:                2,     // 2 minutes per order
-				SetupTime:                10,    // 10 minutes
-				EmployeeCount:            2,     // 2 packaging workers
-				ResourceCount:            1,     // 1 packaging station
-				TimeUnit:                 vsm.TimeUnitMinutes,
-				ValueAddingTime:          40,    // 40 minutes value-adding
-				NonValueAddingTime:       5,     // 5 minutes non-value-adding
-				NecessaryNonValueAddingTime: 0,     // No necessary non-value-adding time
-				YieldFactor:              0.98,  // 98% yield
-				ScrapRate:                0.02,  // 2% scrap
-				ReworkRate:               0.00,  // 0% rework
+				ProcessTime:                 45, // 45 minutes
+				CycleTime:                   2,  // 2 minutes per order
+				SetupTime:                   10, // 10 minutes
+				EmployeeCount:               2,  // 2 packaging workers
+				ResourceCount:               1,  // 1 packaging station
+				TimeUnit:                    vsm.TimeUnitMinutes,
+				ValueAddingTime:             40,   // 40 minutes value-adding
+				NonValueAddingTime:          5,    // 5 minutes non-value-adding
+				NecessaryNonValueAddingTime: 0,    // No necessary non-value-adding time
+				YieldFactor:                 0.98, // 98% yield
+				ScrapRate:                   0.02, // 2% scrap
+				ReworkRate:                  0.00, // 0% rework
 			},
 			Description: "Package burgers and prepare for shipping",
 		},
@@ -172,7 +172,7 @@ func createVSMProject() *vsm.VSMProject {
 		{
 			ID:          "inventory_1",
 			Name:        "Raw Ingredients",
-			Quantity:    1000, // kg
+			Quantity:    1000,        // kg
 			Range:       2 * 24 * 60, // 2 days in minutes
 			Type:        "warehouse",
 			Description: "Raw ingredients warehouse",
@@ -180,7 +180,7 @@ func createVSMProject() *vsm.VSMProject {
 		{
 			ID:          "inventory_2",
 			Name:        "Finished Patties",
-			Quantity:    50, // patties
+			Quantity:    50,     // patties
 			Range:       4 * 60, // 4 hours in minutes
 			Type:        "supermarket",
 			Description: "Grilled patties supermarket",
@@ -209,9 +209,9 @@ func createVSMProject() *vsm.VSMProject {
 
 	// Create VSM project
 	project := &vsm.VSMProject{
-		ID:          "project_burger_production",
-		Name:        "Burger Production VSM Project",
-		Description: "Complete VSM analysis and improvement project for burger production",
+		ID:           "project_burger_production",
+		Name:         "Burger Production VSM Project",
+		Description:  "Complete VSM analysis and improvement project for burger production",
 		CurrentState: *currentState,
 		CurrentPhase: vsm.PhaseAnalysis,
 		Status:       "active",
@@ -267,10 +267,10 @@ func assessPerformance(project *vsm.VSMProject) *vsm.AssessmentResult {
 
 	// Define KPI targets
 	targets := map[string]float64{
-		"value_added_ratio":    0.25,  // Target 25% value-added time
-		"process_efficiency":   0.50,  // Target 50% process efficiency
-		"inventory_turns":      6.0,   // Target 6 inventory turns
-		"average_yield_factor": 0.95,  // Target 95% yield
+		"value_added_ratio":    0.25, // Target 25% value-added time
+		"process_efficiency":   0.50, // Target 50% process efficiency
+		"inventory_turns":      6.0,  // Target 6 inventory turns
+		"average_yield_factor": 0.95, // Target 95% yield
 	}
 
 	// Assess current performance
