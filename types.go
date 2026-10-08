@@ -108,11 +108,15 @@ type Process struct {
 
 // Customer represents the end customer in the value stream
 type Customer struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	Demand      float64 `json:"demand"`    // Customer demand per period
-	TaktTime    float64 `json:"takt_time"` // Customer takt time
-	Description string  `json:"description,omitempty"`
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Demand   float64 `json:"demand"`    // Customer demand per period
+	TaktTime float64 `json:"takt_time"` // Customer takt time
+	// AvailableTime is the available operating time per demand period, in the
+	// value stream's reference time unit (see Calculator.ReferenceTimeUnit).
+	// Optional: when set together with Demand, takt = AvailableTime / Demand.
+	AvailableTime float64 `json:"available_time,omitempty"`
+	Description   string  `json:"description,omitempty"`
 }
 
 // Supplier represents a supplier in the value stream
