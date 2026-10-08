@@ -228,8 +228,9 @@ func (result AssessmentResult) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON reads result in the current or the legacy format (see
 // FormatVersion): in a legacy file, working_days_per_week 0 is not entered,
-// a KPI target that is not 0 is kept, and a target of 0 counts only with
-// "has_target": true (see FormatVersion).
+// a KPI target that is not 0 is kept, a target of 0 counts only with
+// "has_target": true (see FormatVersion), and a KPI threshold of 0 or equal
+// to the old built-in default for that KPI is dropped (not set).
 func (result *AssessmentResult) UnmarshalJSON(data []byte) error {
 	type plain AssessmentResult
 	var w struct {
@@ -255,12 +256,33 @@ func (result *AssessmentResult) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	for name, m := range result.KPIs {
+		changed := false
 		if m.Target != nil && *m.Target == 0 && !legacy.KPIs[name].HasTarget {
 			m.Target = nil
+			changed = true
+		}
+		// The legacy threshold was a built-in default, not an entered
+		// value: 0 is not set, and so is a value equal to the old default.
+		// Any other nonzero threshold is kept as written.
+		if m.Threshold != nil && (*m.Threshold == 0 || *m.Threshold == legacyDefaultThreshold[name]) {
+			m.Threshold = nil
+			changed = true
+		}
+		if changed {
 			result.KPIs[name] = m
 		}
 	}
 	return nil
+}
+
+// legacyDefaultThreshold holds the built-in thresholds that legacy files
+// carry in "threshold" (they are no longer produced).
+var legacyDefaultThreshold = map[string]float64{
+	"value_added_ratio":    0.25,
+	"process_efficiency":   0.5,
+	"inventory_turns":      4.0,
+	"average_yield_factor": 0.85,
+	"total_lead_time":      100.0,
 }
 
 // Serializer provides JSON serialization/deserialization for VSM objects

@@ -41,8 +41,11 @@ type KPIMeasure struct {
 	Unit  string  `json:"unit"`
 	// Target is the target supplied for this KPI, nil when none was (a
 	// target of 0 is a real target). Without one, Status is StatusUnrated.
-	Target    *float64 `json:"target,omitempty"`
-	Threshold float64  `json:"threshold"`
+	Target *float64 `json:"target,omitempty"`
+	// Threshold is the threshold shown for this KPI: the entered target, in
+	// the KPI's own unit. Nil (omitted) when no target was entered; there
+	// are no built-in reference values.
+	Threshold *float64 `json:"threshold,omitempty"`
 	// Status rates the value against the target in the KPI's better
 	// direction (see determineKPIStatus): StatusExcellent, StatusGood,
 	// StatusWarning, StatusCritical, or StatusUnrated when there is no
@@ -181,7 +184,7 @@ func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64
 
 		// Determine status
 		measure.Status = a.determineKPIStatus(name, value, target, hasTarget)
-		measure.Threshold = a.getKPIThreshold(name)
+		measure.Threshold = measure.Target
 
 		// Analyze trend if history available
 		measure.Direction = GetKPIDirection(name)
@@ -289,22 +292,6 @@ func (a *Assessor) determineKPIStatus(name string, value, target float64, hasTar
 		return StatusWarning
 	}
 	return StatusCritical
-}
-
-// getKPIThreshold returns the threshold value for a KPI
-func (a *Assessor) getKPIThreshold(name string) float64 {
-	thresholds := map[string]float64{
-		"value_added_ratio":    0.25,
-		"process_efficiency":   0.5,
-		"inventory_turns":      4.0,
-		"average_yield_factor": 0.85,
-		"total_lead_time":      100.0, // Time units
-	}
-
-	if threshold, exists := thresholds[name]; exists {
-		return threshold
-	}
-	return 0.0
 }
 
 // trendThreshold is the relative change (5%) below which a KPI is "stable".

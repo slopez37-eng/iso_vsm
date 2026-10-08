@@ -1,6 +1,7 @@
 package vsm
 
 import (
+	"encoding/json"
 	"math"
 	"reflect"
 	"strings"
@@ -353,6 +354,33 @@ func TestTrendRecommendationUnitIndependent(t *testing.T) {
 		if len(minutes) != tc.want || !reflect.DeepEqual(minutes, hours) {
 			t.Errorf("lead time %g → %g: minutes %v, hours %v; want %d recommendation(s), the same in both",
 				tc.from, tc.to, minutes, hours, tc.want)
+		}
+	}
+}
+
+// The threshold shown for a KPI is its entered target; without a target it
+// is not set and is left out of the JSON.
+func TestKPIThresholdIsTheEnteredTarget(t *testing.T) {
+	got, err := NewAssessor().AssessValueStream(mixedUnitStream(), map[string]float64{"total_lead_time": 50}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := got.KPIs["total_lead_time"]; m.Threshold == nil || *m.Threshold != 50 {
+		t.Errorf("threshold with target 50 = %v, want 50", m.Threshold)
+	}
+	for name, m := range got.KPIs {
+		if name == "total_lead_time" {
+			continue
+		}
+		if m.Threshold != nil {
+			t.Errorf("%s without target: threshold %v, want not set", name, *m.Threshold)
+		}
+		data, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), `"threshold"`) {
+			t.Errorf("%s: threshold in JSON without target: %s", name, data)
 		}
 	}
 }

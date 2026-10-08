@@ -515,3 +515,35 @@ func TestUnsupportedTimeUnitLoads(t *testing.T) {
 		t.Error("Validator accepted time_unit \"min\"")
 	}
 }
+
+// A legacy assessment file's "threshold" was a built-in default: 0 and the
+// old default for that KPI load as not set; any other value is kept.
+func TestLegacyAssessmentThreshold(t *testing.T) {
+	legacy := `{"value_stream_id": "vs", "assessment_date": "2025-01-02T00:00:00Z", "kpis": {
+	  "total_lead_time": {"name": "total_lead_time", "value": 120, "target": 100, "threshold": 100},
+	  "inventory_turns": {"name": "inventory_turns", "value": 3, "target": 6, "threshold": 0},
+	  "value_added_ratio": {"name": "value_added_ratio", "value": 0.2, "target": 0.3, "threshold": 0.4}}}`
+	got, err := NewSerializer().DeserializeAssessmentResult([]byte(legacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th := got.KPIs["total_lead_time"].Threshold; th != nil {
+		t.Errorf("legacy threshold equal to the old default = %v, want not set", *th)
+	}
+	if th := got.KPIs["inventory_turns"].Threshold; th != nil {
+		t.Errorf("legacy threshold 0 = %v, want not set", *th)
+	}
+	if th := got.KPIs["value_added_ratio"].Threshold; th == nil || *th != 0.4 {
+		t.Errorf("legacy threshold 0.4 = %v, want kept", th)
+	}
+	// Current format: nothing is dropped.
+	v2 := `{"format_version": 2, "value_stream_id": "vs", "kpis": {
+	  "total_lead_time": {"name": "total_lead_time", "value": 120, "target": 100, "threshold": 100}}}`
+	cur, err := NewSerializer().DeserializeAssessmentResult([]byte(v2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th := cur.KPIs["total_lead_time"].Threshold; th == nil || *th != 100 {
+		t.Errorf("current-format threshold = %v, want kept", th)
+	}
+}
