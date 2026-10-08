@@ -2,6 +2,7 @@ package vsm
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -447,5 +448,70 @@ func TestMainFormatAssessmentKeepsTargets(t *testing.T) {
 	}
 	if tgt := got.KPIs["value_added_ratio"].Target; tgt != nil {
 		t.Errorf("main-format target 0 = %v, want not entered", *tgt)
+	}
+}
+
+// A file whose process has a time_unit the model cannot convert (here
+// "min", which main accepted and saved) still loads and saves, in the
+// legacy and the current format: the unit is kept as entered, reported as
+// a contradiction, and that process's times count as unknown in the stream
+// totals. The Validator itself still rejects the unit.
+func TestUnsupportedTimeUnitLoads(t *testing.T) {
+	legacy := strings.Replace(legacyStream,
+		`"process_time": 10, "yield_factor": 0, "time_unit": "minutes"`,
+		`"process_time": 10, "yield_factor": 0, "time_unit": "min"`, 1)
+	if !strings.Contains(legacy, `"min"`) {
+		t.Fatal("fixture not changed")
+	}
+	v2 := `{"format_version": 2, "id": "vs", "name": "New", "processes": [
+	  {"id": "p1", "name": "A", "parameters": {"process_time": 5, "value_adding_time": 1, "time_unit": "minutes"}},
+	  {"id": "p3", "name": "B", "parameters": {"process_time": 10, "value_adding_time": 2, "time_unit": "min"}}]}`
+	s := NewSerializer()
+	dir := t.TempDir()
+	for name, data := range map[string]string{"legacy": legacy, "format 2": v2} {
+		t.Run(name, func(t *testing.T) {
+			check := func(how string, vs *ValueStream, issues []ConsistencyIssue) {
+				t.Helper()
+				if u := vs.Processes[len(vs.Processes)-1].Parameters.TimeUnit; u != "min" {
+					t.Errorf("%s: time_unit %q, want %q kept as entered", how, u, "min")
+				}
+				if issue, ok := findIssue(issues, "process", "p3", "time_unit"); !ok || issue.Kind != IssueContradiction {
+					t.Errorf("%s: issues %+v, want a time_unit contradiction on p3", how, issues)
+				}
+				if lt, ok := NewCalculator().CalculateKPIs(vs)["total_lead_time"]; ok {
+					t.Errorf("%s: total_lead_time %v, want not computed", how, lt)
+				}
+			}
+			vs, issues, err := s.DeserializeValueStreamWithIssues([]byte(data))
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			check("deserialize", vs, issues)
+			project, err := s.DeserializeVSMProject([]byte(`{"id": "pr", "name": "Pr", "current_state": ` + data + `}`))
+			if err != nil {
+				t.Fatalf("project load: %v", err)
+			}
+			check("project", &project.CurrentState, project.CurrentState.ConsistencyIssues)
+			out, err := s.SerializeValueStream(vs)
+			if err != nil {
+				t.Fatalf("save: %v", err)
+			}
+			file := filepath.Join(dir, strings.ReplaceAll(name, " ", "_")+".json")
+			if err := os.WriteFile(file, out, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			back, issues, err := s.LoadValueStreamFromFile(file)
+			if err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			check("reload", back, issues)
+			if _, err := s.SerializeVSMProject(project); err != nil {
+				t.Errorf("project save: %v", err)
+			}
+		})
+	}
+	vs, _ := s.DeserializeValueStream([]byte(v2))
+	if err := NewValidator().ValidateValueStream(vs); err == nil {
+		t.Error("Validator accepted time_unit \"min\"")
 	}
 }

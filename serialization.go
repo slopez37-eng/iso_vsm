@@ -282,7 +282,7 @@ func (s *Serializer) SerializeValueStream(vs *ValueStream) ([]byte, error) {
 	}
 
 	// Validate before serialization
-	if err := s.validator.ValidateValueStream(vs); err != nil {
+	if err := s.validator.validateValueStream(vs, false); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -292,7 +292,8 @@ func (s *Serializer) SerializeValueStream(vs *ValueStream) ([]byte, error) {
 // DeserializeValueStream deserializes a value stream from JSON. Stored values
 // that disagree with the values computed from their parts are listed in the
 // result's ConsistencyIssues (see CheckConsistency); they do not fail the
-// load.
+// load. Nor does a time_unit the model cannot convert (Validator rejects
+// it): it is kept as entered and reported (see validateValueStream).
 func (s *Serializer) DeserializeValueStream(data []byte) (*ValueStream, error) {
 	vs, _, err := s.DeserializeValueStreamWithIssues(data)
 	return vs, err
@@ -308,7 +309,7 @@ func (s *Serializer) DeserializeValueStreamWithIssues(data []byte) (*ValueStream
 	}
 
 	// Validate after deserialization
-	if err := s.validator.ValidateValueStream(&vs); err != nil {
+	if err := s.validator.validateValueStream(&vs, false); err != nil {
 		return nil, nil, fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -323,7 +324,7 @@ func (s *Serializer) SerializeVSMProject(project *VSMProject) ([]byte, error) {
 	}
 
 	// Validate before serialization
-	if err := s.validator.ValidateVSMProject(project); err != nil {
+	if err := s.validator.validateVSMProject(project, false); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -340,7 +341,7 @@ func (s *Serializer) DeserializeVSMProject(data []byte) (*VSMProject, error) {
 	}
 
 	// Validate after deserialization
-	if err := s.validator.ValidateVSMProject(&project); err != nil {
+	if err := s.validator.validateVSMProject(&project, false); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -705,8 +706,18 @@ func NewValidator() *Validator {
 	return &Validator{}
 }
 
-// ValidateValueStream validates a value stream
+// ValidateValueStream validates a value stream. A process time_unit the
+// model cannot convert (see ValidateProcess) is an error.
 func (v *Validator) ValidateValueStream(vs *ValueStream) error {
+	return v.validateValueStream(vs, true)
+}
+
+// validateValueStream is ValidateValueStream; with checkUnits false an
+// unsupported time_unit is not an error. The Serializer loads and saves
+// such streams (main's format accepted any unit string): the unit is kept
+// as entered, CheckConsistency reports it as a contradiction, and the
+// process's times count as unknown in the stream totals.
+func (v *Validator) validateValueStream(vs *ValueStream, checkUnits bool) error {
 	if vs == nil {
 		return errors.New("value stream cannot be nil")
 	}
@@ -725,7 +736,7 @@ func (v *Validator) ValidateValueStream(vs *ValueStream) error {
 
 	// Validate processes
 	for i, process := range vs.Processes {
-		if err := v.ValidateProcess(&process); err != nil {
+		if err := v.validateProcess(&process, checkUnits); err != nil {
 			return fmt.Errorf("process %d validation failed: %w", i, err)
 		}
 	}
@@ -745,8 +756,15 @@ func (v *Validator) ValidateValueStream(vs *ValueStream) error {
 	return nil
 }
 
-// ValidateProcess validates a process
+// ValidateProcess validates a process. A time_unit that is not supported
+// (see isKnownTimeUnit; empty is the stream's reference unit) is an error.
 func (v *Validator) ValidateProcess(process *Process) error {
+	return v.validateProcess(process, true)
+}
+
+// validateProcess is ValidateProcess; with checkUnits false the time_unit
+// is not checked (see validateValueStream).
+func (v *Validator) validateProcess(process *Process, checkUnits bool) error {
 	if process.ID == "" {
 		return errors.New("process ID cannot be empty")
 	}
@@ -763,7 +781,7 @@ func (v *Validator) ValidateProcess(process *Process) error {
 		return errors.New("cycle time cannot be negative")
 	}
 
-	if u := process.Parameters.TimeUnit; !unitSupported(u) {
+	if u := process.Parameters.TimeUnit; checkUnits && !unitSupported(u) {
 		return fmt.Errorf("time unit %q is not supported (use seconds, minutes, hours, days or weeks, "+
 			"or leave it empty for the stream's reference unit)", u)
 	}
@@ -788,8 +806,14 @@ func (v *Validator) ValidateInventory(inv *Inventory) error {
 	return nil
 }
 
-// ValidateVSMProject validates a VSM project
+// ValidateVSMProject validates a VSM project (see ValidateValueStream).
 func (v *Validator) ValidateVSMProject(project *VSMProject) error {
+	return v.validateVSMProject(project, true)
+}
+
+// validateVSMProject is ValidateVSMProject; checkUnits as for
+// validateValueStream.
+func (v *Validator) validateVSMProject(project *VSMProject, checkUnits bool) error {
 	if project == nil {
 		return errors.New("VSM project cannot be nil")
 	}
@@ -802,18 +826,18 @@ func (v *Validator) ValidateVSMProject(project *VSMProject) error {
 		return errors.New("project name cannot be empty")
 	}
 
-	if err := v.ValidateValueStream(&project.CurrentState); err != nil {
+	if err := v.validateValueStream(&project.CurrentState, checkUnits); err != nil {
 		return fmt.Errorf("current state validation failed: %w", err)
 	}
 
 	if project.FutureState != nil {
-		if err := v.ValidateValueStream(project.FutureState); err != nil {
+		if err := v.validateValueStream(project.FutureState, checkUnits); err != nil {
 			return fmt.Errorf("future state validation failed: %w", err)
 		}
 	}
 
 	if project.IdealState != nil {
-		if err := v.ValidateValueStream(project.IdealState); err != nil {
+		if err := v.validateValueStream(project.IdealState, checkUnits); err != nil {
 			return fmt.Errorf("ideal state validation failed: %w", err)
 		}
 	}
