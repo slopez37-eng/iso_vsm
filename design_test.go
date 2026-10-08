@@ -447,3 +447,66 @@ func TestTargetsStrictProcessTime(t *testing.T) {
 		t.Errorf("repetitive future PT = %v, want 7", pt)
 	}
 }
+
+// TestZeroTargetsRecomputeLeadTime: a target of 0 is a real target, not
+// "not given": the lead time follows the resulting flow, and process time
+// cannot drop below a known value adding time.
+func TestZeroTargetsRecomputeLeadTime(t *testing.T) {
+	stream := func(p ProcessParameters) *ValueStream {
+		p.TimeUnit = TimeUnitMinutes
+		return &ValueStream{ID: "vs", Name: "Zero", Processes: []Process{{ID: "p", Name: "P", Parameters: p}}}
+	}
+	cases := []struct {
+		name    string
+		current ProcessParameters
+		targets ProcessTargets
+		lead    float64
+		nvat    float64
+	}{
+		{"zero process time", ProcessParameters{ProcessTime: 10, LeadTime: 10},
+			ProcessTargets{ProcessTime: AbsoluteTarget(0)}, 0, 0},
+		{"zero process and idle time", ProcessParameters{ProcessTime: 10, IdleTime: 5, LeadTime: 15},
+			ProcessTargets{ProcessTime: AbsoluteTarget(0), IdleTime: AbsoluteTarget(0)}, 0, 0},
+		{"zero process time, classified", ProcessParameters{ProcessTime: 10, IdleTime: 5, NonValueAddingTime: 15},
+			ProcessTargets{ProcessTime: AbsoluteTarget(0)}, 5, 5},
+		{"zero process and idle time, classified", ProcessParameters{ProcessTime: 10, IdleTime: 5, NonValueAddingTime: 15},
+			ProcessTargets{ProcessTime: AbsoluteTarget(0), IdleTime: AbsoluteTarget(0)}, 0, 0},
+	}
+	c := NewCalculator()
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			current := stream(tt.current)
+			if issues := CheckConsistency(current); len(issues) != 0 {
+				t.Fatalf("current inconsistent: %+v", issues)
+			}
+			future, err := NewDesigner().DesignFutureStateFromTargets(current, &FutureStateTargets{Default: &tt.targets})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if issues := CheckConsistency(future); len(issues) != 0 {
+				t.Errorf("future issues: %+v", issues)
+			}
+			got := c.ResolveParametersInStream(future.Processes[0].Parameters, future)
+			if got.ProcessTime != 0 || !approx(got.LeadTime, tt.lead) || !approx(got.NonValueAddingTime, tt.nvat) {
+				t.Errorf("PT %v LT %v NVAT %v, want 0, %v, %v", got.ProcessTime, got.LeadTime, got.NonValueAddingTime, tt.lead, tt.nvat)
+			}
+			if lt := future.KPIs["total_lead_time"]; !approx(lt, tt.lead) {
+				t.Errorf("total_lead_time KPI = %v, want %v", lt, tt.lead)
+			}
+		})
+	}
+
+	// Value adding time 4 is part of process time: a process time of 0
+	// (alone or with idle time 0) is rejected.
+	for name, targets := range map[string]ProcessTargets{
+		"zero process time":          {ProcessTime: AbsoluteTarget(0)},
+		"zero process and idle time": {ProcessTime: AbsoluteTarget(0), IdleTime: AbsoluteTarget(0)},
+		"process time −100%":         {ProcessTime: ReductionTarget(100)},
+	} {
+		current := stream(ProcessParameters{ProcessTime: 10, IdleTime: 5, ValueAddingTime: 4})
+		if _, err := NewDesigner().DesignFutureStateFromTargets(current, &FutureStateTargets{Default: &targets}); err == nil ||
+			!strings.Contains(err.Error(), "value_adding_time") {
+			t.Errorf("%s with value adding time 4: err = %v, want a value_adding_time error", name, err)
+		}
+	}
+}

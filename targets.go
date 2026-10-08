@@ -68,6 +68,11 @@ func (t *Target) apply(current float64) (float64, error) {
 //     non_value_adding_time, then necessary_non_value_adding_time, unless
 //     they have their own targets; value_adding_time never changes. Targets
 //     that leave VAT + NVAT + NNVAT different from the lead time are an error.
+//   - A target of 0 is applied as 0 (it is not read as "not given"): the
+//     lead time becomes the resulting process + idle time, even when that is
+//     0. Process time can never drop below the value adding time, so a
+//     target that would do so (for example 0 with value adding time set) is
+//     an error.
 //
 // Targets that cannot be met consistently return an error naming the
 // conflict, rather than producing a map that contradicts itself.
@@ -260,6 +265,10 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 	// the total alone.
 	repetitive := cur.RepetitionTime > 0 && cur.RepetitionCount > 0
 	hasParts := c.CalculateProcessTime(cur) > 0
+	// A target of 0 is a real value, not "not given": remember which totals
+	// were targeted so a zero result still sets the lead time.
+	ptTargeted := get(func(t *ProcessTargets) *Target { return t.ProcessTime }) != nil
+	itTargeted := get(func(t *ProcessTargets) *Target { return t.IdleTime }) != nil
 	if t := get(func(t *ProcessTargets) *Target { return t.ProcessTime }); t != nil {
 		v, err := applyField("process_time", t, cur.ProcessTime, false)
 		if err != nil {
@@ -368,17 +377,21 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		p.YieldFactor = c.CalculateYieldFactor(p.ScrapRate, p.ReworkRate)
 	}
 
-	// Lead time and its value classification.
+	// Lead time and its value classification. The lead time is the flow
+	// (process + idle time) whenever the current lead time came from it or
+	// a target set part of it, even when the result is 0.
 	flow := p.ProcessTime + p.IdleTime
-	if flow > 0 && p.ProcessTime > 0 && p.ValueAddingTime > p.ProcessTime &&
+	flowSet := cur.ProcessTime > 0 || cur.IdleTime > 0 || ptTargeted || itTargeted
+	ptKnown := cur.ProcessTime > 0 || p.ProcessTime > 0 || ptTargeted
+	if ptKnown && p.ValueAddingTime > p.ProcessTime &&
 		!consistent(p.ValueAddingTime, p.ProcessTime) && !hasIssue(curIssues, "value_adding_time") {
-		return params, fmt.Errorf("process_time: the targets give %g, below value_adding_time %g",
-			p.ProcessTime, p.ValueAddingTime)
+		return params, fmt.Errorf("process_time: the targets give %g, below value_adding_time %g "+
+			"(value adding time is part of process time)", p.ProcessTime, p.ValueAddingTime)
 	}
 	classified := cur.NonValueAddingTime > 0 || cur.NecessaryNonValueAddingTime > 0 ||
 		p.NonValueAddingTime > 0 || p.NecessaryNonValueAddingTime > 0
 	switch {
-	case flow > 0 && classified:
+	case flowSet && classified:
 		// The lead-time change not already explained by NVAT/NNVAT targets
 		// is taken from the untargeted categories. Targets that explain
 		// more than the change, or the opposite, are left for the check
@@ -410,7 +423,7 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 				"(untargeted NVAT/NNVAT follow lead time automatically)", flow, class)
 		}
 		p.LeadTime = flow
-	case flow > 0:
+	case flowSet:
 		p.LeadTime = flow
 	case classified || p.ValueAddingTime > 0:
 		p.LeadTime = c.CalculateLeadTime(p)
