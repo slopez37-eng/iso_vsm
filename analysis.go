@@ -43,10 +43,14 @@ type BottleneckInfo struct {
 
 // IdleTimeAnalysis contains analysis of idle times across the value stream
 type IdleTimeAnalysis struct {
-	TotalIdleTime      float64            `json:"total_idle_time"`
-	IdleTimeByProcess  map[string]float64 `json:"idle_time_by_process"`
-	IdleTimeBreakdown  IdleTimeBreakdown  `json:"idle_time_breakdown"`
-	IdleTimeEfficiency float64            `json:"idle_time_efficiency"` // Share of productive time, as a fraction (0-1)
+	TotalIdleTime     float64            `json:"total_idle_time"`
+	IdleTimeByProcess map[string]float64 `json:"idle_time_by_process"`
+	// IdleTimeByInventory is the waiting time of each inventory point counted
+	// on its own (see Inventory.ProcessID), keyed by inventory ID. It is part
+	// of TotalIdleTime and of IdleTimeBreakdown.WaitingTime.
+	IdleTimeByInventory map[string]float64 `json:"idle_time_by_inventory,omitempty"`
+	IdleTimeBreakdown   IdleTimeBreakdown  `json:"idle_time_breakdown"`
+	IdleTimeEfficiency  float64            `json:"idle_time_efficiency"` // Share of productive time, as a fraction (0-1)
 }
 
 // IdleTimeBreakdown breaks down idle time by category
@@ -271,6 +275,15 @@ func (a *Analyzer) AnalyzeIdleTimes(vs *ValueStream) (*IdleTimeAnalysis, error) 
 		breakdown.WaitingTime += params.WaitingTime
 		breakdown.StorageTime += params.StorageTime
 	}
+
+	// Inventory points between processes are waiting time too, as in the
+	// lead time (see Calculator.CalculateKPIs).
+	byInventory, inventoryTime := a.calculator.inventoryTimes(vs)
+	if len(byInventory) > 0 {
+		analysis.IdleTimeByInventory = byInventory
+	}
+	totalIdleTime += inventoryTime
+	breakdown.WaitingTime += inventoryTime
 
 	analysis.TotalIdleTime = totalIdleTime
 	analysis.IdleTimeBreakdown = breakdown

@@ -466,13 +466,15 @@ func TestImprovementMetricsAcrossUnits(t *testing.T) {
 	}
 	m := c.CalculateImprovementMetrics(current, future)
 	want := map[string]float64{
-		"total_lead_time_improvement_ratio":           0.75, // 60 min → 45 min
-		"total_lead_time_improvement_percent":         -25,
+		// Lead time includes the inventory points: 60 min + 50 ÷ 100 per day
+		// (720 min) → 45 min + 25 ÷ 100 per day (360 min).
+		"total_lead_time_improvement_ratio":           405.0 / 780,
+		"total_lead_time_improvement_percent":         (405.0 - 780) / 780 * 100,
 		"total_value_adding_time_improvement_ratio":   1, // 10 min both
 		"customer_takt_improvement_ratio":             1, // 4.8 min both
 		"inventory_turns_improvement_ratio":           2, // 2 per day → 28 per week = 4 per day
 		"inventory_turns_improvement_percent":         100,
-		"value_added_ratio_improvement_ratio":         (10.0 / 45) / (10.0 / 60),
+		"value_added_ratio_improvement_ratio":         (10.0 / 405) / (10.0 / 780),
 		"total_value_adding_time_improvement_percent": 0,
 	}
 	for name, w := range want {

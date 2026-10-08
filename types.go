@@ -171,12 +171,19 @@ type Supplier struct {
 
 // Inventory represents inventory/stock in the value stream
 type Inventory struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	Quantity    float64 `json:"quantity"` // Number of products (same unit as Customer.Demand)
-	Range       float64 `json:"range"`    // Time the quantity lasts at customer demand, in the reference time unit
-	Type        string  `json:"type"`     // "stock", "warehouse", "supermarket", etc.
-	Description string  `json:"description,omitempty"`
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Quantity float64 `json:"quantity"` // Number of products (same unit as Customer.Demand)
+	Range    float64 `json:"range"`    // Time the quantity lasts at customer demand, in the reference time unit
+	Type     string  `json:"type"`     // "stock", "warehouse", "supermarket", etc.
+	// ProcessID (optional) names the process whose stock_quantity is this
+	// same stock. The stock is then counted once in the lead time, through
+	// that process's waiting time, and quantity must equal the process's
+	// stock_quantity (CheckConsistency reports it when not). Without it, the
+	// inventory is a separate stock and its range adds to the lead time.
+	// See Calculator.CalculateKPIs.
+	ProcessID   string `json:"process_id,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // FlowElement represents elements that control product flow

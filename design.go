@@ -396,9 +396,27 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 		if t, ok := targets.Inventory[inv.ID]; ok {
 			own = &t
 		}
-		futureInv, err := d.calculator.applyInventoryTargets(inv, own, targets.InventoryDefault, d.calculator.contextOf(current))
+		def := targets.InventoryDefault
+		if holder, linked := stockHolder(current, inv); linked {
+			// The stock of a process (see Inventory.ProcessID): it follows
+			// the process's future stock_quantity. Stream-wide inventory
+			// defaults do not apply to it.
+			if own != nil {
+				return nil, fmt.Errorf("inventory %s: it is the stock of process %s (process_id); "+
+					"target that process's stock_quantity or waiting_time instead", inv.ID, holder.ID)
+			}
+			own, def = nil, nil
+			if inv.Quantity > 0 {
+				futureStock := futureProcesses[processIndex(current, holder.ID)].Parameters.StockQuantity
+				own = &InventoryTargets{Quantity: AbsoluteTarget(futureStock)}
+			}
+		}
+		futureInv, err := d.calculator.applyInventoryTargets(inv, own, def, d.calculator.contextOf(current))
 		if err != nil {
 			return nil, fmt.Errorf("inventory %s: %w", inv.ID, err)
+		}
+		if i := processIndex(current, inv.ProcessID); i >= 0 {
+			futureInv.ProcessID = futureProcesses[i].ID
 		}
 		future.Inventory = append(future.Inventory, futureInv)
 	}
@@ -429,6 +447,19 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 	future.KPIs = d.calculator.CalculateKPIs(future)
 
 	return future, nil
+}
+
+// processIndex returns the index of the process with ID id in vs, or -1.
+func processIndex(vs *ValueStream, id string) int {
+	if id == "" {
+		return -1
+	}
+	for i, p := range vs.Processes {
+		if p.ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // ApplyDesignPrinciples applies the 8 VSM design principles from Rother & Shook
@@ -552,6 +583,9 @@ func (d *Designer) checkContinuousFlowPrinciple(vs *ValueStream) bool {
 		totalIdle += params.IdleTime
 		totalProcess += params.ProcessTime
 	}
+
+	_, inventory := d.calculator.inventoryTimes(vs)
+	totalIdle += inventory
 
 	if totalProcess > 0 {
 		idleRatio := totalIdle / totalProcess

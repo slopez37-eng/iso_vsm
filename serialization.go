@@ -315,11 +315,11 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		ctx := calc.contextOf(vs)
 		mapStr += "Inventory:\n"
 		for _, inv := range vs.Inventory {
-			invRange := inv.Range
-			if r, ok := ctx.inventoryRange(inv); ok {
-				invRange = r
+			mapStr += fmt.Sprintf("  %s: %.2f units (%.2f %s range)", inv.Name, inv.Quantity, ctx.inventoryTime(inv), timeUnit)
+			if holder, linked := stockHolder(vs, inv); linked {
+				mapStr += fmt.Sprintf(" — stock of process %s, counted in its waiting time", holder.ID)
 			}
-			mapStr += fmt.Sprintf("  %s: %.2f units (%.2f %s range)\n", inv.Name, inv.Quantity, invRange, timeUnit)
+			mapStr += "\n"
 		}
 		mapStr += "\n"
 	}

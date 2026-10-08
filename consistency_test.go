@@ -376,7 +376,8 @@ func TestInventoryTimeIsStockOverDemand(t *testing.T) {
 			Processes: []Process{{ID: "p", Parameters: ProcessParameters{
 				TimeUnit: TimeUnitSeconds, ProcessTime: 60, CycleTime: 60, StockQuantity: 240, WaitingTime: stored,
 			}}},
-			Inventory: []Inventory{{ID: "i", Quantity: 240, Range: twoDays}},
+			// The same stock as the process's stock_quantity: counted once.
+			Inventory: []Inventory{{ID: "i", Quantity: 240, Range: twoDays, ProcessID: "p"}},
 		}
 	}
 	c := NewCalculator()
@@ -545,5 +546,101 @@ func TestWorkingDaysPerWeek(t *testing.T) {
 	}
 	if err := NewValidator().ValidateValueStream(&bad); err == nil {
 		t.Errorf("validator accepted working_days_per_week = 8")
+	}
+}
+
+// invStream is one 10-minute process (all value adding) and 200 units of
+// stock at a customer demand of 100 per day (2 days = 2880 min of cover).
+func invStream() *ValueStream {
+	return &ValueStream{ID: "vs", Name: "inv",
+		Customer: &Customer{ID: "c", Demand: 100, DemandPeriod: DemandPeriodDay},
+		Processes: []Process{{ID: "p", Name: "p", Parameters: ProcessParameters{
+			ProcessTime: 10, ValueAddingTime: 10, TimeUnit: TimeUnitMinutes}}},
+		Inventory: []Inventory{{ID: "i", Name: "i", Quantity: 200}},
+	}
+}
+
+// An inventory point only in ValueStream.Inventory is part of the lead time
+// (standard VSM: lead time = process times + inventory times).
+func TestLeadTimeIncludesInventoryPoints(t *testing.T) {
+	c := NewCalculator()
+	vs := invStream()
+	kpis := c.CalculateKPIs(vs)
+	if lt := kpis["total_lead_time"]; !approx(lt, 2890) {
+		t.Errorf("total_lead_time = %v min, want 10 + 2880", lt)
+	}
+	if v := kpis["value_added_ratio"]; !approx(v, 10.0/2890) {
+		t.Errorf("value_added_ratio = %v, want %v", v, 10.0/2890)
+	}
+	idle, _ := NewAnalyzer().AnalyzeIdleTimes(vs)
+	if !approx(idle.TotalIdleTime, 2880) || !approx(idle.IdleTimeByInventory["i"], 2880) {
+		t.Errorf("idle = %v (by inventory %v), want 2880", idle.TotalIdleTime, idle.IdleTimeByInventory)
+	}
+	// Rate unknown: the stored range (reference unit) is used.
+	vs.Customer = nil
+	vs.Inventory[0].Range = 600
+	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 610) {
+		t.Errorf("rate unknown: total_lead_time = %v, want 10 + stored range 600", lt)
+	}
+	// Cutting the inventory in the future state cuts the lead time.
+	future, err := NewDesigner().DesignFutureStateFromTargets(invStream(), &FutureStateTargets{
+		InventoryDefault: &InventoryTargets{Quantity: ReductionTarget(50)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lt := future.KPIs["total_lead_time"]; !approx(lt, 10+1440) {
+		t.Errorf("future total_lead_time = %v, want 1450", lt)
+	}
+}
+
+// When an inventory is the same stock as a process's stock_quantity
+// (process_id links them), it is counted once, through the process.
+func TestLinkedInventoryNotDoubleCounted(t *testing.T) {
+	c := NewCalculator()
+	vs := invStream()
+	vs.Processes[0].Parameters.StockQuantity = 200
+	vs.Inventory[0].ProcessID = "p"
+	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 2890) {
+		t.Errorf("linked: total_lead_time = %v, want 2890 (stock counted once)", lt)
+	}
+	if issues := CheckConsistency(vs); len(issues) != 0 {
+		t.Errorf("linked and equal: issues %+v", issues)
+	}
+	// Without the link both are counted: they are two different stocks.
+	vs.Inventory[0].ProcessID = ""
+	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 10+2*2880) {
+		t.Errorf("unlinked: total_lead_time = %v, want two stocks", lt)
+	}
+	// A link that disagrees with the process's stock is reported.
+	vs.Inventory[0].ProcessID = "p"
+	vs.Inventory[0].Quantity = 150
+	issues := CheckConsistency(vs)
+	if len(issues) != 1 || issues[0].Element != "inventory" || issues[0].Field != "quantity" || issues[0].ComputedValue != 200 {
+		t.Errorf("issues = %+v, want one inventory quantity issue (process has 200)", issues)
+	}
+	// A future stock target on the process moves the linked inventory too.
+	vs.Inventory[0].Quantity = 200
+	future, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
+		Default: &ProcessTargets{StockQuantity: ReductionTarget(50)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv := future.Inventory[0]; inv.ProcessID != "p_future" || !approx(inv.Quantity, 100) {
+		t.Errorf("future inventory = %+v, want 100 linked to p_future", inv)
+	}
+	if issues := CheckConsistency(future); len(issues) != 0 {
+		t.Errorf("future issues: %+v", issues)
+	}
+	if lt := future.KPIs["total_lead_time"]; !approx(lt, 10+1440) {
+		t.Errorf("future total_lead_time = %v, want 1450", lt)
+	}
+	// Targeting the linked inventory directly is an error.
+	_, err = NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
+		Inventory: map[string]InventoryTargets{"i": {Quantity: ReductionTarget(50)}},
+	})
+	if err == nil {
+		t.Errorf("target on linked inventory accepted")
 	}
 }

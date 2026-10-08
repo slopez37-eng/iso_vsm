@@ -53,6 +53,7 @@ const (
 	fieldDefects      = "scrap_rate + rework_rate"
 	ruleTakt          = "takt_time = available_time ÷ demand (A.12)"
 	ruleWorkingDays   = "working_days_per_week is between 1 and 7 (absent means 7)"
+	ruleInvLink       = "an inventory with process_id is that process's stock_quantity (counted once, through the process)"
 	ruleStoredKPI     = "stored KPI = KPI computed from the processes (CalculateKPIs)"
 	fieldClassSum     = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time"
 	fieldProcessParts = "processing_time + setup_time + handling_time + waiting_time_process + ancillary_time"
@@ -297,6 +298,50 @@ func (s streamContext) inventoryRange(inv Inventory) (float64, bool) {
 	return inv.Quantity / rate, true
 }
 
+// inventoryTime returns the time inv adds to the lead time, in the
+// reference unit: quantity ÷ customer demand rate when both are known,
+// otherwise the stored range.
+func (s streamContext) inventoryTime(inv Inventory) float64 {
+	if r, ok := s.inventoryRange(inv); ok {
+		return r
+	}
+	return inv.Range
+}
+
+// stockHolder returns the process whose stock_quantity inv is, when inv
+// names one with process_id and that process has stock_quantity > 0. inv is
+// then counted through the process, not on its own.
+func stockHolder(vs *ValueStream, inv Inventory) (*Process, bool) {
+	if inv.ProcessID == "" {
+		return nil, false
+	}
+	for i := range vs.Processes {
+		if p := &vs.Processes[i]; p.ID == inv.ProcessID {
+			return p, p.Parameters.StockQuantity > 0
+		}
+	}
+	return nil, false
+}
+
+// inventoryTimes returns, for each inventory of vs counted on its own (not
+// through a linked process, see Inventory.ProcessID), the time it adds to
+// the lead time in the reference unit, keyed by inventory ID, and their
+// sum.
+func (c *Calculator) inventoryTimes(vs *ValueStream) (map[string]float64, float64) {
+	ctx := c.contextOf(vs)
+	times := map[string]float64{}
+	var total float64
+	for _, inv := range vs.Inventory {
+		if _, linked := stockHolder(vs, inv); linked {
+			continue
+		}
+		t := ctx.inventoryTime(inv)
+		times[inv.ID] += t
+		total += t
+	}
+	return times, total
+}
+
 // processPartsGiven lists the A.2 process time parts that are given (> 0).
 func processPartsGiven(p ProcessParameters) []string {
 	var given []string
@@ -366,6 +411,32 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 					inv.ID, inv.Range, inv.Quantity, want),
 			})
 		}
+	}
+
+	for _, inv := range vs.Inventory {
+		if inv.ProcessID == "" {
+			continue
+		}
+		holder, linked := stockHolder(vs, inv)
+		issue := ConsistencyIssue{Element: "inventory", ID: inv.ID, Rule: ruleInvLink}
+		switch {
+		case holder == nil:
+			issue.Field = "process_id"
+			issue.Message = fmt.Sprintf("inventory %s: process_id %q names no process; the inventory is counted on its own",
+				inv.ID, inv.ProcessID)
+		case !linked:
+			issue.Field = "process_id"
+			issue.Message = fmt.Sprintf("inventory %s: linked to process %s, which has no stock_quantity; "+
+				"the inventory is counted on its own", inv.ID, inv.ProcessID)
+		case inv.Quantity > 0 && !consistent(inv.Quantity, holder.Parameters.StockQuantity):
+			issue.Field, issue.StoredValue, issue.ComputedValue = "quantity", inv.Quantity, holder.Parameters.StockQuantity
+			issue.Message = fmt.Sprintf("inventory %s: quantity %g, but it is the stock of process %s, "+
+				"whose stock_quantity is %g; calculations count the process's stock", inv.ID, inv.Quantity,
+				inv.ProcessID, holder.Parameters.StockQuantity)
+		default:
+			continue
+		}
+		issues = append(issues, issue)
 	}
 
 	if cust := vs.Customer; cust != nil && !workingDaysValid(cust.WorkingDaysPerWeek) {

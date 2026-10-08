@@ -110,9 +110,10 @@ func TestDesignFutureStateFromTargets(t *testing.T) {
 		}
 	}
 
-	// KPIs come from the calculator: lead time = (7 + 20) + (8 + 5) = 40.
-	if lt := future.KPIs["total_lead_time"]; !approx(lt, 40) {
-		t.Errorf("future lead time = %v, want 40", lt)
+	// KPIs come from the calculator: lead time = (7 + 20) + (8 + 5) = 40
+	// for the processes + 2160 for the inventory.
+	if lt := future.KPIs["total_lead_time"]; !approx(lt, 2200) {
+		t.Errorf("future lead time = %v, want 2200", lt)
 	}
 	if !reflect.DeepEqual(future.KPIs, NewCalculator().CalculateKPIs(future)) {
 		t.Error("future KPIs do not match the calculator")
@@ -130,17 +131,18 @@ func TestDesignFutureStateWithTargetsMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Idle 0 everywhere: lead time = process time only = 10 + 8 = 18; the
-	// idle components are zeroed too so they cannot creep back in.
-	if lt := got.FutureState.KPIs["total_lead_time"]; !approx(lt, 18) {
-		t.Errorf("future lead time = %v, want 18", lt)
+	// Idle 0 everywhere: process lead time = process time only = 10 + 8 =
+	// 18, plus the untargeted inventory (2880); the idle components are
+	// zeroed too so they cannot creep back in.
+	if lt := got.FutureState.KPIs["total_lead_time"]; !approx(lt, 18+2880) {
+		t.Errorf("future lead time = %v, want 2898", lt)
 	}
 	if p2 := got.FutureState.Processes[1].Parameters; p2.WaitingTime != 0 {
 		t.Errorf("p2 waiting = %v, want 0", p2.WaitingTime)
 	}
-	// Current lead time = (10 + 30) + (8 + 40) = 88.
-	if r := got.ImprovementMetrics["total_lead_time_improvement_ratio"]; !approx(r, 18.0/88) {
-		t.Errorf("lead time ratio = %v, want %v", r, 18.0/88)
+	// Current lead time = (10 + 30) + (8 + 40) + 2880 = 2968.
+	if r := got.ImprovementMetrics["total_lead_time_improvement_ratio"]; !approx(r, 2898.0/2968) {
+		t.Errorf("lead time ratio = %v, want %v", r, 2898.0/2968)
 	}
 }
 

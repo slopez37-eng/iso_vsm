@@ -97,7 +97,8 @@ func (c *Calculator) CalculateTotalProcessTime(processes []Process) float64 {
 
 // streamTotals returns vs's total process time, lead time and value adding
 // time in its reference unit, each process resolved in the stream (see
-// ResolveParametersInStream).
+// ResolveParametersInStream). The lead time also includes the time of every
+// inventory point counted on its own (see inventoryTimes).
 func (c *Calculator) streamTotals(vs *ValueStream) (processTime, leadTime, valueAdding float64) {
 	ctx := c.contextOf(vs)
 	for _, process := range vs.Processes {
@@ -106,7 +107,8 @@ func (c *Calculator) streamTotals(vs *ValueStream) (processTime, leadTime, value
 		leadTime += p.LeadTime
 		valueAdding += p.ValueAddingTime
 	}
-	return processTime, leadTime, valueAdding
+	_, inventory := c.inventoryTimes(vs)
+	return processTime, leadTime + inventory, valueAdding
 }
 
 // CalculateProcessingTime calculates processing time according to formula (A.5)
@@ -397,7 +399,9 @@ func (c *Calculator) CalculateProcessLeadTime(processTime, idleTime float64) flo
 //
 // Without the customer, waiting time cannot be derived from stock_quantity
 // (see ResolveParameters), so stored waiting times are used. CalculateKPIs
-// resolves in the stream and does derive it.
+// resolves in the stream and does derive it, and also adds the inventory
+// points of ValueStream.Inventory, which this process-only sum does not
+// see.
 func (c *Calculator) CalculateOverallLeadTime(processes []Process) float64 {
 	_, lt, _ := c.streamTotals(&ValueStream{Processes: processes})
 	return lt
@@ -547,8 +551,14 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 //     DemandPeriod is not required here); otherwise Customer.TaktTime when
 //     set; otherwise omitted.
 //   - total_lead_time, total_value_adding_time: omitted when there are no
-//     processes. Lead time = Σ(process time + idle time); see
-//     CalculateOverallLeadTime.
+//     processes. Lead time = Σ(process time + idle time) over the processes
+//     (see CalculateOverallLeadTime) + the time of each inventory point in
+//     vs.Inventory: quantity ÷ customer demand rate (see
+//     CalculateCustomerInventoryTime), or its stored range when the rate is
+//     not known. No stock is counted twice: an inventory whose process_id
+//     names a process with stock_quantity is that process's stock, already
+//     in its waiting time, so it adds nothing more (see Inventory.ProcessID).
+//     Inventory time is waiting, never value adding.
 //   - value_added_ratio (flow efficiency) = value adding time ÷ lead time,
 //     and process_efficiency = process time ÷ lead time (share of lead time
 //     spent in processes, including non-value-adding process time):
