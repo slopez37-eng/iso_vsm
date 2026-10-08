@@ -3,6 +3,7 @@ package vsm
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -28,15 +29,25 @@ type DesignResult struct {
 	DesignedAt        time.Time          `json:"designed_at"`
 }
 
-// ImprovementPotential represents a potential improvement in the value stream
+// ImprovementPotential represents a potential improvement in the value stream.
+//
+// Its ID is stable (built from what the analysis found, e.g.
+// "bottleneck_<process ID>", "waste_<type>", "flow_push_to_pull"), so
+// ratings can be entered against it (see MeasureInput). Impact and effort
+// are never estimated: they are the user's ratings, and without both the
+// potential is not prioritised (Priority 0, PriorityNote says so).
 type ImprovementPotential struct {
-	ID          string  `json:"id"`
-	Type        string  `json:"type"`     // "bottleneck", "waste", "flow", "quality", etc.
-	Location    string  `json:"location"` // Process or area where improvement applies
-	Description string  `json:"description"`
-	Priority    int     `json:"priority"` // 1=high, 2=medium, 3=low
-	Impact      float64 `json:"impact"`   // Estimated improvement impact (0-1)
-	Effort      float64 `json:"effort"`   // Estimated effort required (0-1)
+	ID          string `json:"id"`
+	Type        string `json:"type"`     // "bottleneck", "waste", "flow", "quality", etc.
+	Location    string `json:"location"` // Process or area where improvement applies
+	ProcessID   string `json:"process_id,omitempty"`
+	Description string `json:"description"`
+	// Priority is 1=high, 2=medium, 3=low from the ratings (see
+	// RatingPriority); 0 (omitted) = not prioritised.
+	Priority     int    `json:"priority,omitempty"`
+	ImpactRating *int   `json:"impact_rating,omitempty"` // entered, 1 (lowest) to 5 (highest)
+	EffortRating *int   `json:"effort_rating,omitempty"` // entered, 1 (lowest) to 5 (highest)
+	PriorityNote string `json:"priority_note,omitempty"`
 }
 
 // DesignPrinciple represents the 8 VSM design principles from Rother & Shook
@@ -48,15 +59,20 @@ type DesignPrinciple struct {
 	Status      string `json:"status"` // "not_applicable", "planned", "implemented"
 }
 
-// ContinuousImprovement represents continuous improvement flashes
+// ContinuousImprovement represents continuous improvement flashes. Like
+// ImprovementPotential, its priority comes only from entered ratings
+// (keyed by its stable ID, e.g. "ci_bottleneck_<process ID>").
 type ContinuousImprovement struct {
-	ID          string    `json:"id"`
-	ProcessID   string    `json:"process_id"`
-	Description string    `json:"description"`
-	Type        string    `json:"type"` // "kaizen", "quick_win", "major_change"
-	Priority    int       `json:"priority"`
-	Status      string    `json:"status"` // "identified", "planned", "implemented"
-	CreatedAt   time.Time `json:"created_at"`
+	ID           string    `json:"id"`
+	ProcessID    string    `json:"process_id"`
+	Description  string    `json:"description"`
+	Type         string    `json:"type"`               // "kaizen", "quick_win", "major_change"
+	Priority     int       `json:"priority,omitempty"` // 1-3 from ratings; 0 = not prioritised
+	ImpactRating *int      `json:"impact_rating,omitempty"`
+	EffortRating *int      `json:"effort_rating,omitempty"`
+	PriorityNote string    `json:"priority_note,omitempty"`
+	Status       string    `json:"status"` // "identified", "planned", "implemented"
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // Designer provides methods for designing improved value streams
@@ -93,8 +109,26 @@ func (d *Designer) DesignFutureState(current *ValueStream, analysis *AnalysisRes
 // DesignFutureStateWithTargets performs the complete design phase, building
 // the future state from the caller's targets (see DesignFutureStateFromTargets)
 // and computing its KPIs with the calculator. With nil targets it behaves
-// like DesignFutureState.
+// like DesignFutureState. Improvement potentials are not prioritised (see
+// DesignFutureStateWithInputs).
 func (d *Designer) DesignFutureStateWithTargets(current *ValueStream, analysis *AnalysisResult, targets *FutureStateTargets) (*DesignResult, error) {
+	return d.DesignFutureStateWithInputs(current, analysis, targets, nil)
+}
+
+// notPrioritisedNote is reported when some potentials or continuous
+// improvements have no impact and effort ratings.
+const notPrioritisedNote = "%d of %d improvement potentials and continuous improvements are not " +
+	"prioritised: their impact and effort ratings (1 to 5) were not entered. They keep the order " +
+	"the analysis found them in; enter ratings by ID (MeasureInput) to prioritise them."
+
+// DesignFutureStateWithInputs is DesignFutureStateWithTargets that also
+// applies the user's impact and effort ratings, keyed by improvement
+// potential or continuous improvement ID (see MeasureInput; only the
+// ratings are used here). Rated items get a priority (see RatingPriority);
+// items without both ratings are not prioritised (Priority 0, with a
+// note). Returns an error for a rating outside 1–5 or an input ID that is
+// neither a potential nor a continuous improvement.
+func (d *Designer) DesignFutureStateWithInputs(current *ValueStream, analysis *AnalysisResult, targets *FutureStateTargets, inputs map[string]MeasureInput) (*DesignResult, error) {
 	if current == nil {
 		return nil, errors.New("current value stream cannot be nil")
 	}
@@ -143,13 +177,52 @@ func (d *Designer) DesignFutureStateWithTargets(current *ValueStream, analysis *
 
 	// Identify continuous improvements
 	improvements := d.IdentifyContinuousImprovements(current, analysis)
+
+	// Apply the user's ratings (validated against both kinds of ID)
+	known := map[string]bool{}
+	for _, p := range potentials {
+		known[p.ID] = true
+	}
+	for _, ci := range improvements {
+		known[ci.ID] = true
+	}
+	if err := validateMeasureInputs(inputs, known, "improvement potential or continuous improvement"); err != nil {
+		return nil, err
+	}
+	for i := range result.ImprovementPotentials {
+		p := &result.ImprovementPotentials[i]
+		p.ImpactRating, p.EffortRating, p.Priority, p.PriorityNote = rate(inputs[p.ID], nil, nil)
+	}
+	prioritizeContinuousImprovements(improvements, inputs)
 	result.ContinuousImprovements = improvements
+
+	unrated, total := 0, len(result.ImprovementPotentials)+len(improvements)
+	for _, p := range result.ImprovementPotentials {
+		if p.Priority == 0 {
+			unrated++
+		}
+	}
+	for _, ci := range improvements {
+		if ci.Priority == 0 {
+			unrated++
+		}
+	}
+	if unrated > 0 {
+		result.Notes = append(result.Notes, fmt.Sprintf(notPrioritisedNote, unrated, total))
+	}
 
 	return result, nil
 }
 
-// IdentifyImprovementPotentials identifies potential improvements based on analysis
+// IdentifyImprovementPotentials identifies potential improvements based on
+// analysis, in a fixed order (bottlenecks, waste types in sorted order,
+// push-to-pull, flow interruptions). They are not prioritised: impact and
+// effort are never estimated (see PrioritizeImprovementPotentials to apply
+// the user's ratings).
 func (d *Designer) IdentifyImprovementPotentials(vs *ValueStream, analysis *AnalysisResult) ([]ImprovementPotential, error) {
+	if analysis == nil {
+		return nil, errors.New("analysis result cannot be nil")
+	}
 	var potentials []ImprovementPotential
 
 	// Based on bottlenecks
@@ -158,24 +231,24 @@ func (d *Designer) IdentifyImprovementPotentials(vs *ValueStream, analysis *Anal
 			ID:          fmt.Sprintf("bottleneck_%s", bottleneck.ProcessID),
 			Type:        "bottleneck",
 			Location:    bottleneck.ProcessName,
+			ProcessID:   bottleneck.ProcessID,
 			Description: fmt.Sprintf("Optimize bottleneck process: %s", bottleneck.Description),
-			Priority:    d.calculatePriorityFromUtilization(bottleneck.Utilization),
-			Impact:      bottleneck.Utilization - 0.7, // Improvement needed to reach 70% utilization
-			Effort:      0.6,                          // Medium effort
 		})
 	}
 
-	// Based on waste analysis
-	for wasteType, amount := range analysis.WasteAnalysis.WasteByType {
-		if amount > 0 {
+	// Based on waste analysis (sorted, so the order is stable)
+	wasteTypes := make([]string, 0, len(analysis.WasteAnalysis.WasteByType))
+	for wasteType := range analysis.WasteAnalysis.WasteByType {
+		wasteTypes = append(wasteTypes, wasteType)
+	}
+	sort.Strings(wasteTypes)
+	for _, wasteType := range wasteTypes {
+		if amount := analysis.WasteAnalysis.WasteByType[wasteType]; amount > 0 {
 			potentials = append(potentials, ImprovementPotential{
 				ID:          fmt.Sprintf("waste_%s", wasteType),
 				Type:        "waste",
 				Location:    "Value Stream",
 				Description: fmt.Sprintf("Reduce %s waste (%.2f time units)", wasteType, amount),
-				Priority:    2,
-				Impact:      d.calculateWasteImpact(wasteType),
-				Effort:      0.4,
 			})
 		}
 	}
@@ -187,9 +260,6 @@ func (d *Designer) IdentifyImprovementPotentials(vs *ValueStream, analysis *Anal
 			Type:        "flow",
 			Location:    "Value Stream",
 			Description: "Transition from push to pull system",
-			Priority:    1,
-			Impact:      0.8,
-			Effort:      0.8,
 		})
 	}
 
@@ -198,64 +268,61 @@ func (d *Designer) IdentifyImprovementPotentials(vs *ValueStream, analysis *Anal
 			ID:          fmt.Sprintf("flow_%s_%s", interruption.Type, interruption.Location),
 			Type:        "flow",
 			Location:    interruption.Location,
+			ProcessID:   processIDOf(vs, interruption.Location),
 			Description: interruption.Description,
-			Priority:    2,
-			Impact:      interruption.Impact / 100, // Normalize impact
-			Effort:      0.5,
 		})
 	}
 
-	// Sort by priority and impact
 	for i := range potentials {
-		potentials[i].Priority = d.calculateOverallPriority(potentials[i])
+		_, _, potentials[i].Priority, potentials[i].PriorityNote = rate(MeasureInput{}, nil, nil)
 	}
-
 	return potentials, nil
 }
 
-// calculatePriorityFromUtilization calculates priority based on utilization
-func (d *Designer) calculatePriorityFromUtilization(utilization float64) int {
-	if utilization > 0.9 {
-		return 1 // High priority
-	} else if utilization > 0.8 {
-		return 2 // Medium priority
+// processIDOf returns the ID of the process of vs whose ID or name is
+// location, or "".
+func processIDOf(vs *ValueStream, location string) string {
+	if vs == nil {
+		return ""
 	}
-	return 3 // Low priority
+	for _, p := range vs.Processes {
+		if p.ID == location || p.Name == location {
+			return p.ID
+		}
+	}
+	return ""
 }
 
-// calculateWasteImpact calculates the impact of reducing specific waste types
-func (d *Designer) calculateWasteImpact(wasteType string) float64 {
-	switch wasteType {
-	case "transportation":
-		return 0.3
-	case "inventory":
-		return 0.4
-	case "waiting":
-		return 0.5
-	case "defects":
-		return 0.6
-	case "over_processing":
-		return 0.4
-	case "over_production":
-		return 0.3
-	case "motion":
-		return 0.2
-	default:
-		return 0.3
+// PrioritizeImprovementPotentials returns a copy of potentials with the
+// user's impact and effort ratings applied (inputs keyed by potential ID;
+// other MeasureInput fields are not used here). A potential with both
+// ratings gets the priority RatingPriority gives; one without stays not
+// prioritised (Priority 0, PriorityNote says which rating is missing). The
+// order is not changed. Returns an error for a rating outside 1–5, or an
+// input whose ID is not one of the potentials.
+func (d *Designer) PrioritizeImprovementPotentials(potentials []ImprovementPotential, inputs map[string]MeasureInput) ([]ImprovementPotential, error) {
+	known := map[string]bool{}
+	for _, p := range potentials {
+		known[p.ID] = true
 	}
+	if err := validateMeasureInputs(inputs, known, "improvement potential"); err != nil {
+		return nil, err
+	}
+	out := append([]ImprovementPotential(nil), potentials...)
+	for i := range out {
+		p := &out[i]
+		p.ImpactRating, p.EffortRating, p.Priority, p.PriorityNote = rate(inputs[p.ID], nil, nil)
+	}
+	return out, nil
 }
 
-// calculateOverallPriority calculates overall priority considering impact and effort
-func (d *Designer) calculateOverallPriority(potential ImprovementPotential) int {
-	// Simple priority calculation: high impact + low effort = high priority
-	score := potential.Impact / potential.Effort
-
-	if score > 1.5 {
-		return 1
-	} else if score > 0.8 {
-		return 2
+// prioritizeContinuousImprovements applies the ratings to improvements as
+// PrioritizeImprovementPotentials does (inputs already validated).
+func prioritizeContinuousImprovements(improvements []ContinuousImprovement, inputs map[string]MeasureInput) {
+	for i := range improvements {
+		ci := &improvements[i]
+		ci.ImpactRating, ci.EffortRating, ci.Priority, ci.PriorityNote = rate(inputs[ci.ID], nil, nil)
 	}
-	return 3
 }
 
 // CreateIdealState creates an ideal (waste-free) value stream state
@@ -702,7 +769,8 @@ func (d *Designer) IdentifyContinuousImprovements(vs *ValueStream, analysis *Ana
 
 	now := time.Now()
 
-	// Generate improvements based on bottlenecks
+	// Generate improvements based on bottlenecks. Priorities come only
+	// from entered ratings (see DesignFutureStateWithInputs): none here.
 	for _, bottleneck := range analysis.Bottlenecks {
 		improvements = append(improvements, ContinuousImprovement{
 			ID:        fmt.Sprintf("ci_bottleneck_%s", bottleneck.ProcessID),
@@ -710,7 +778,6 @@ func (d *Designer) IdentifyContinuousImprovements(vs *ValueStream, analysis *Ana
 			Description: fmt.Sprintf("Optimize bottleneck process '%s' to reduce utilization from %.1f%%",
 				bottleneck.ProcessName, bottleneck.Utilization*100),
 			Type:      "kaizen",
-			Priority:  1,
 			Status:    "identified",
 			CreatedAt: now,
 		})
@@ -724,24 +791,26 @@ func (d *Designer) IdentifyContinuousImprovements(vs *ValueStream, analysis *Ana
 			Description: fmt.Sprintf("Implement 5S and standard work to reduce waste by %.1f%%",
 				*w.WasteReductionPotential / *w.TotalWaste * 100),
 			Type:      "major_change",
-			Priority:  2,
 			Status:    "identified",
 			CreatedAt: now,
 		})
 	}
 
-	// Generate improvements based on flow issues
+	// Generate improvements based on flow issues. The ID names the
+	// location too, so two interruptions of one type get distinct IDs.
 	for _, interruption := range analysis.FlowAnalysis.FlowInterruptions {
 		improvements = append(improvements, ContinuousImprovement{
-			ID:          fmt.Sprintf("ci_flow_%s", interruption.Type),
-			ProcessID:   "", // Location-specific
+			ID:          fmt.Sprintf("ci_flow_%s_%s", interruption.Type, interruption.Location),
+			ProcessID:   processIDOf(vs, interruption.Location),
 			Description: interruption.Description,
 			Type:        "quick_win",
-			Priority:    2,
 			Status:      "identified",
 			CreatedAt:   now,
 		})
 	}
 
+	for i := range improvements {
+		_, _, improvements[i].Priority, improvements[i].PriorityNote = rate(MeasureInput{}, nil, nil)
+	}
 	return improvements
 }

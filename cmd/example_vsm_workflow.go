@@ -246,8 +246,21 @@ func analyzeCurrentState(project *vsm.VSMProject) *vsm.AnalysisResult {
 func designFutureState(project *vsm.VSMProject, analysis *vsm.AnalysisResult) *vsm.DesignResult {
 	designer := vsm.NewDesigner()
 
-	// Design future state improvements
-	designResult, err := designer.DesignFutureState(&project.CurrentState, analysis)
+	// Future-state targets the team expects to reach (example values):
+	// grill setup time down 60%, raw ingredient stock halved.
+	targets := &vsm.FutureStateTargets{
+		Processes: map[string]vsm.ProcessTargets{
+			"process_3": {SetupTime: vsm.ReductionTarget(60)},
+		},
+		Inventory: map[string]vsm.InventoryTargets{
+			"inventory_1": {Quantity: vsm.ReductionTarget(50)},
+		},
+	}
+
+	// Design future state improvements, with the team's impact and effort
+	// ratings (1 = lowest, 5 = highest) for two of the potentials; the
+	// others stay unprioritised.
+	designResult, err := designer.DesignFutureStateWithInputs(&project.CurrentState, analysis, targets, exampleMeasureInputs())
 	if err != nil {
 		log.Fatalf("Failed to design future state: %v", err)
 	}
@@ -255,12 +268,42 @@ func designFutureState(project *vsm.VSMProject, analysis *vsm.AnalysisResult) *v
 	return designResult
 }
 
+// exampleMeasureInputs are example values the team entered for two
+// measures (keyed by measure ID): ratings, money in currency units, a due
+// date and an owner. Measures without inputs are reported as not
+// prioritised and not costed.
+func exampleMeasureInputs() map[string]vsm.MeasureInput {
+	due := time.Now().AddDate(0, 2, 0)
+	return map[string]vsm.MeasureInput{
+		"bottleneck_process_3": {
+			ImpactRating: vsm.I(4), EffortRating: vsm.I(2),
+			Investment: vsm.F(12000), AnnualBenefit: vsm.F(25000), AnnualOperatingCost: vsm.F(1000),
+			DueDate: &due, Responsible: "Grill team lead",
+		},
+		"waste_inventory": {
+			ImpactRating: vsm.I(3), EffortRating: vsm.I(3),
+			Investment: vsm.F(5000), AnnualBenefit: vsm.F(8000), AnnualOperatingCost: vsm.F(500),
+		},
+	}
+}
+
 // planImplementation creates implementation plan
 func planImplementation(design *vsm.DesignResult, project *vsm.VSMProject) *vsm.PlanningResult {
 	planner := vsm.NewPlanner()
 
+	start := time.Now().AddDate(0, 0, 7)
+	workshop := time.Now().AddDate(0, 0, 3)
+	inputs := &vsm.PlanningInputs{
+		Measures:     exampleMeasureInputs(),
+		StartDate:    &start,
+		WorkshopDate: &workshop,
+		Risks: map[string]vsm.RiskInput{
+			"risk_resistance": {Probability: vsm.F(0.5), Impact: vsm.F(0.6)},
+		},
+	}
+
 	// Create implementation plan
-	planningResult, err := planner.PlanImplementation(design, project)
+	planningResult, err := planner.PlanImplementationWithInputs(design, project, inputs)
 	if err != nil {
 		log.Fatalf("Failed to plan implementation: %v", err)
 	}
@@ -369,6 +412,28 @@ func displaySummary(analysis *vsm.AnalysisResult, design *vsm.DesignResult,
 	fmt.Printf("Measures in Catalogue: %d\n", len(planning.CatalogueOfMeasures.Measures))
 	fmt.Printf("Implementation Phases: %d\n", len(planning.ImplementationPlan.Phases))
 	fmt.Printf("Risks Identified: %d\n", len(planning.RiskAssessment))
+	// Priority, payback and goal come only from entered values; the rest
+	// is reported as not prioritised / not estimated.
+	for _, m := range planning.CatalogueOfMeasures.Measures[:min(3, len(planning.CatalogueOfMeasures.Measures))] {
+		priority := "not prioritised"
+		if m.Priority > 0 {
+			priority = fmt.Sprintf("priority %d", m.Priority)
+		}
+		payback := m.Costs.Note
+		switch {
+		case m.Costs.PaybackMonths != nil:
+			payback = fmt.Sprintf("payback %.1f months", *m.Costs.PaybackMonths)
+		case m.Costs.NeverPaysBack:
+			payback = "never pays back"
+		}
+		fmt.Printf("  Measure %s: %s; %s\n    Goal: %s\n", m.ID, priority, payback, m.SMART.Measurable)
+	}
+	if inv := planning.CostTotals.Investment; inv != nil {
+		fmt.Printf("Total Investment: %.0f\n", *inv)
+	} else {
+		fmt.Printf("Total Investment: not estimated (%d measures without costs entered)\n",
+			len(planning.CostTotals.MissingInputs))
+	}
 
 	// Assessment Summary
 	fmt.Printf("Performance Index: %.2f\n", assessment.PerformanceIndex)

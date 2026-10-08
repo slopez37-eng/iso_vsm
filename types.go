@@ -328,35 +328,67 @@ type ValueStream struct {
 	Version   string    `json:"version"`
 }
 
-// ImprovementMeasure represents a measure for improvement in the catalogue
+// ImprovementMeasure represents a measure for improvement in the catalogue.
+//
+// Priority, costs, due date and responsible person come only from what the
+// user entered (see MeasureInput); nothing is estimated. What was not
+// entered stays empty and the notes say so.
 type ImprovementMeasure struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Responsible string    `json:"responsible"`
-	Priority    int       `json:"priority"` // 1=high, 2=medium, 3=low
-	Status      string    `json:"status"`   // "planned", "in_progress", "completed", "cancelled"
-	SMART       SMARTGoal `json:"smart"`    // Specific, Measurable, Accepted, Realistic, Time-related
-	Costs       Costs     `json:"costs,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Responsible string `json:"responsible"` // "TBD" when not entered
+	// Priority is 1=high, 2=medium, 3=low, from the entered impact and
+	// effort ratings (see RatingPriority); 0 (omitted in JSON) means not
+	// prioritised because a rating was not entered (PriorityNote says so).
+	Priority     int    `json:"priority,omitempty"`
+	ImpactRating *int   `json:"impact_rating,omitempty"` // 1 (lowest) to 5 (highest), as entered
+	EffortRating *int   `json:"effort_rating,omitempty"` // 1 (lowest) to 5 (highest), as entered
+	PriorityNote string `json:"priority_note,omitempty"`
+	// ProcessID is the current-state process the measure applies to
+	// (empty for the whole value stream).
+	ProcessID string    `json:"process_id,omitempty"`
+	Status    string    `json:"status"` // "planned", "in_progress", "completed", "cancelled"
+	SMART     SMARTGoal `json:"smart"`  // Specific, Measurable, Accepted, Realistic, Time-related
+	Costs     Costs     `json:"costs"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// SMARTGoal represents SMART criteria for improvement measures
+// SMARTGoal represents SMART criteria for improvement measures.
+// Measurable states the change the future-state targets set (current and
+// target value, computed by the calculator), or that no target is set.
 type SMARTGoal struct {
-	Specific   string    `json:"specific"`
-	Measurable string    `json:"measurable"`
-	Accepted   string    `json:"accepted"`
-	Realistic  string    `json:"realistic"`
-	TimeBound  time.Time `json:"time_bound"`
+	Specific   string `json:"specific"`
+	Measurable string `json:"measurable"`
+	Accepted   string `json:"accepted"`
+	Realistic  string `json:"realistic"`
+	// TimeBound is the entered due date (MeasureInput.DueDate); nil
+	// (omitted) when not entered.
+	TimeBound *time.Time `json:"time_bound,omitempty"`
 }
 
-// Costs represents cost information for improvement measures
+// Costs is the money side of one improvement measure, in the user's
+// currency units. Investment (one-off), AnnualBenefit and
+// AnnualOperatingCost are as entered (see MeasureInput; nil = not
+// entered). The payback is computed from them:
+//   - PaybackMonths set: investment ÷ (annual benefit − annual operating
+//     cost) × 12.
+//   - NeverPaysBack true: all three entered and the annual benefit does
+//     not exceed the annual operating cost.
+//   - neither: not estimated, because an input is missing (Note says
+//     which).
+//
+// Files written before these fields existed held amounts the library made
+// up from fixed base amounts (keys "operational", "benefits",
+// "payback_period"); such costs load as not entered (see UnmarshalJSON).
 type Costs struct {
-	Investment    float64 `json:"investment"`
-	Operational   float64 `json:"operational"`
-	Benefits      float64 `json:"benefits"`
-	PaybackPeriod float64 `json:"payback_period"`
+	Investment          *float64 `json:"investment,omitempty"`
+	AnnualBenefit       *float64 `json:"annual_benefit,omitempty"`
+	AnnualOperatingCost *float64 `json:"annual_operating_cost,omitempty"`
+	PaybackMonths       *float64 `json:"payback_months,omitempty"`
+	NeverPaysBack       bool     `json:"never_pays_back,omitempty"`
+	Note                string   `json:"note,omitempty"`
 }
 
 // CatalogueOfMeasures contains all improvement measures

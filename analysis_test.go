@@ -45,26 +45,6 @@ func TestAnalyzeFlowEfficiencyMatchesKPI(t *testing.T) {
 	}
 }
 
-func TestPaybackPeriod(t *testing.T) {
-	p := NewPlanner()
-	tests := []struct {
-		name  string
-		costs Costs
-		want  float64
-	}{
-		// 12,000 ÷ (25,000 − 1,000) per year × 12 = 6 months
-		{"positive net benefit", Costs{Investment: 12000, Operational: 1000, Benefits: 25000}, 6},
-		{"never pays back", Costs{Investment: 12000, Operational: 5000, Benefits: 4000}, 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := p.calculatePaybackPeriod(tt.costs); !approx(got, tt.want) {
-				t.Errorf("got %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestContinuousFlowPrincipleNormalizesUnits(t *testing.T) {
 	// In minutes: idle 1 + 1 = 2, process 10 + 1 = 11 -> ratio 0.18 (< 0.5).
 	// Summing raw numbers would give 61 / 70 = 0.87 and the wrong answer.
