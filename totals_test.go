@@ -16,6 +16,31 @@ func findIssue(issues []ConsistencyIssue, element, id, field string) (Consistenc
 	return ConsistencyIssue{}, false
 }
 
+// Review finding: a cycle_time target on a process known only by its value
+// classification (VAT 5 + NVAT 5) adds processing time 2 × 10 ÷ 1 = 20.
+// The totals are recomputed from the new part (process and lead time 20)
+// and the untargeted NVAT takes the change (15). Failed before 095cf19
+// (the final consistency check rejected the targets).
+func TestTargetAddsProcessingTimeToClassifiedProcess(t *testing.T) {
+	vs := &ValueStream{ID: "s", Name: "s", Processes: []Process{{ID: "p", Name: "p", Parameters: ProcessParameters{
+		ValueAddingTime: F(5), NonValueAddingTime: F(5), OrderQuantity: F(10), ResourceCount: I(1),
+		TimeUnit: TimeUnitMinutes}}}}
+	future, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
+		Processes: map[string]ProcessTargets{"p": {CycleTime: AbsoluteTarget(2)}}})
+	if err != nil {
+		t.Fatalf("feasible target rejected: %v", err)
+	}
+	r := NewCalculator().ResolveParametersInStream(future.Processes[0].Parameters, future)
+	if !approx(val(r.ProcessingTime), 20) || !approx(val(r.ProcessTime), 20) || !approx(val(r.LeadTime), 20) ||
+		!approx(val(r.NonValueAddingTime), 15) || !approx(val(r.ValueAddingTime), 5) {
+		t.Errorf("future: processing %v, process %v, lead %v, NVAT %v, VAT %v; want 20, 20, 20, 15, 5",
+			val(r.ProcessingTime), val(r.ProcessTime), val(r.LeadTime), val(r.NonValueAddingTime), val(r.ValueAddingTime))
+	}
+	if issues := CheckConsistency(future); len(issues) != 0 {
+		t.Errorf("future issues: %+v", issues)
+	}
+}
+
 // Review finding: an inventory linked to a process whose idle time is given
 // only as a total waits within that idle time. A range longer than the
 // whole idle time contradicts it and is reported; before, it was skipped
