@@ -77,36 +77,71 @@ type IdleTimeBreakdown struct {
 }
 
 // WasteAnalysis contains analysis of different types of waste (Muda), in
-// the reference time unit. Waste is estimated from the times the lead time
+// the reference time unit. Waste is taken from the times the lead time
 // counts (the stream figures, totals.go), so the same stock gives the same
 // waste however it is drawn (process stock, linked or separate inventory).
-// The totals are nil (omitted in JSON) when unknown: when the stream lead
-// time is unknown, or a process with scrap or rework has no known process
-// time (CheckConsistency names the missing value).
+//
+// Measured waste is reported as is: transport time, non-value adding time,
+// the defective share (scrap + rework rate) of process time, and the
+// waiting time (process waiting time plus the time of inventories counted
+// on their own, WaitingAndInventoryWaste). Splits the model cannot measure
+// come from the user (ValueStream.WasteAssumptions) and are not estimated
+// without them: the inventory / waiting split of waiting time, the motion
+// share of handling time, and the reduction potential. Notes names the
+// assumption to enter for each.
+//
+// Nothing is reported (TotalWaste and WaitingAndInventoryWaste nil,
+// WasteByType empty) when the stream lead time is unknown, or a process
+// with scrap or rework has no known process time (CheckConsistency names
+// the missing value).
 type WasteAnalysis struct {
+	// TotalWaste is the sum of the 7 types. nil (omitted in JSON) when
+	// unknown, including when motion or over-production waste is not
+	// estimated (see WasteByType). It does not need the inventory /
+	// waiting split: the two add up to WaitingAndInventoryWaste.
 	TotalWaste *float64 `json:"total_waste,omitempty"`
-	// WasteByType holds the 7 types of waste; empty when TotalWaste is
-	// unknown.
+	// WasteByType holds the 7 types of waste, each only when it is known:
+	// "inventory" and "waiting" need inventory_share_of_waiting (unless
+	// there is no waiting time), "motion" needs waste_share_of_handling
+	// (unless there is no handling time), and "over_production" needs the
+	// operating_time of each process whose utilization is below 0.7.
+	// Empty when the stream figures are unknown.
 	WasteByType map[string]float64 `json:"waste_by_type"`
+	// WaitingAndInventoryWaste is the measured waiting time that inventory
+	// and waiting waste split between them (they add up to it). nil when
+	// the stream figures are unknown.
+	WaitingAndInventoryWaste *float64 `json:"waiting_and_inventory_waste,omitempty"`
 	// WasteByProcess is each process's waste, for the processes whose
 	// waste is known.
 	WasteByProcess map[string]float64 `json:"waste_by_process"`
 	// WasteByInventory is the waste of each inventory point counted on its
-	// own (its time, split between inventory and waiting waste), when known.
-	WasteByInventory        map[string]float64 `json:"waste_by_inventory,omitempty"`
-	WasteReductionPotential *float64           `json:"waste_reduction_potential,omitempty"`
+	// own (its time: inventory plus waiting waste), when known.
+	WasteByInventory map[string]float64 `json:"waste_by_inventory,omitempty"`
+	// WasteReductionPotential is TotalWaste × the user's
+	// reduction_potential (waste_assumptions). nil when either is unknown.
+	WasteReductionPotential *float64 `json:"waste_reduction_potential,omitempty"`
+	// Notes names the user input to enter for waste that is not estimated.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // FlowAnalysis contains analysis of product and information flow
 type FlowAnalysis struct {
-	FlowType FlowType `json:"flow_type"` // Push or Pull
+	// FlowType is push or pull, judged from the processes whose waiting
+	// time and process time are both known (see AnalyzeFlow). Empty
+	// (omitted in JSON) when no process has them: not determined.
+	FlowType FlowType `json:"flow_type,omitempty"`
 	// FlowEfficiency is value adding time ÷ lead time: the
 	// value_added_ratio KPI, with the same validity. nil (omitted in JSON)
 	// when unknown: a total unknown, lead time 0, or a value adding time
 	// larger than its process or lead time.
-	FlowEfficiency         *float64           `json:"flow_efficiency,omitempty"`
-	FlowInterruptions      []FlowInterruption `json:"flow_interruptions"`
-	InformationFlowQuality float64            `json:"information_flow_quality"`
+	FlowEfficiency    *float64           `json:"flow_efficiency,omitempty"`
+	FlowInterruptions []FlowInterruption `json:"flow_interruptions"`
+	// InformationFlowQuality is the user's rating of the information flow
+	// (ValueStream.InformationFlowQuality, 0–1). nil (omitted in JSON) when
+	// not entered or outside 0–1: not estimated.
+	InformationFlowQuality *float64 `json:"information_flow_quality,omitempty"`
+	// Notes explains what is not determined and which input it needs.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // FlowInterruption represents an interruption in the flow
@@ -179,6 +214,8 @@ func (a *Analyzer) AnalyzeCurrentState(vs *ValueStream) (*AnalysisResult, error)
 	if len(vs.Processes) > 0 && !a.hasLoadInputs(vs) {
 		result.Notes = append(result.Notes, missingLoadInputsNote)
 	}
+	result.Notes = append(result.Notes, wasteAnalysis.Notes...)
+	result.Notes = append(result.Notes, flowAnalysis.Notes...)
 
 	result.ConsistencyIssues = CheckConsistency(vs)
 	result.Notes = append(result.Notes, issueNotes(result.ConsistencyIssues)...)
@@ -367,11 +404,20 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 	// 7 Types of Waste according to Lean:
 	// 1. Transportation, 2. Inventory, 3. Motion, 4. Waiting, 5. Over-processing, 6. Over-production, 7. Defects
 
+	// The user's splits (waste_assumptions), when entered and within 0–1.
+	invShare, invShareOK := assumption(vs, func(w *WasteAssumptions) *float64 { return w.InventoryShareOfWaiting })
+	handShare, handShareOK := assumption(vs, func(w *WasteAssumptions) *float64 { return w.WasteShareOfHandling })
+	reduction, reductionOK := assumption(vs, func(w *WasteAssumptions) *float64 { return w.ReductionPotential })
+
 	// The times the lead time counts, in the reference unit (totals.go).
 	f := a.calculator.figures(vs)
 	known := f.leadTime != nil
+	// byType sums the types that need no split; motionKnown and
+	// overProductionKnown are false when a process's part of them is not
+	// estimated.
 	byType := map[string]float64{}
-	var total float64
+	motionKnown, overProductionKnown := true, true
+	var waiting float64 // process waiting time + inventories counted on their own
 	for i, process := range vs.Processes {
 		pf := f.processes[i]
 		params := pf.params
@@ -383,33 +429,44 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 
 		waste := map[string]float64{
 			"transportation": num(params.TransportTime),
-			// Waiting time: half counted as inventory waste, half as waiting.
-			"inventory": num(params.WaitingTime) * 0.5,
-			"waiting":   num(params.WaitingTime) * 0.5,
-			// Motion waste (handling time inefficiencies)
-			"motion": num(params.HandlingTime) * 0.3, // Assume 30% of handling time is waste
 			// Over-processing waste (non-value adding activities)
 			"over_processing": num(params.NonValueAddingTime),
 			// Defects waste: the defective share of the process time.
 			"defects": defectShare * num(params.ProcessTime),
 		}
-		// Over-production waste (excess capacity utilization); only when
-		// utilization can be computed (see CalculateProcessLoad).
-		if _, utilization, loadKnown := a.CalculateProcessLoad(process, vs); loadKnown && utilization < 0.7 {
-			waste["over_production"] = (1 - utilization) * num(params.OperatingTime)
+		processKnown := true
+		// Motion waste: the user's share of the handling time.
+		switch handling := num(params.HandlingTime); {
+		case handling == 0:
+		case handShareOK:
+			waste["motion"] = handling * handShare
+		default:
+			motionKnown, processKnown = false, false
+		}
+		// Over-production waste (unused capacity × operating time); only
+		// when utilization can be computed (see CalculateProcessLoad).
+		if _, utilization, loadKnown := a.CalculateProcessLoad(process, vs); loadKnown && utilization < overProductionUtilization {
+			if params.OperatingTime != nil {
+				waste["over_production"] = (1 - utilization) * *params.OperatingTime
+			} else {
+				overProductionKnown, processKnown = false, false
+			}
 		}
 
-		var processWaste float64
-		for _, kind := range wasteKinds {
-			byType[kind] += waste[kind]
-			processWaste += waste[kind]
+		// Inventory and waiting waste add up to the waiting time, however
+		// it is split.
+		processWaste := num(params.WaitingTime)
+		waiting += processWaste
+		for kind, amount := range waste {
+			byType[kind] += amount
+			processWaste += amount
 		}
-		analysis.WasteByProcess[process.ID] = processWaste
-		total += processWaste
+		if processKnown {
+			analysis.WasteByProcess[process.ID] = processWaste
+		}
 	}
 
-	// Inventory points counted on their own: their time is waiting time,
-	// split like a process's waiting time.
+	// Inventory points counted on their own: their time is waiting time.
 	for i, inf := range f.inventories {
 		if !inf.counted {
 			continue // the stock of a process, in its waiting time
@@ -418,25 +475,81 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 			known = false
 			continue
 		}
-		byType["inventory"] += *inf.time * 0.5
-		byType["waiting"] += *inf.time * 0.5
 		if analysis.WasteByInventory == nil {
 			analysis.WasteByInventory = map[string]float64{}
 		}
 		analysis.WasteByInventory[vs.Inventory[i].ID] += *inf.time
-		total += *inf.time
+		waiting += *inf.time
 	}
 
-	if known {
-		analysis.WasteByType = byType
-		analysis.TotalWaste = F(total)
-		// Estimate waste reduction potential (typically 20-50% can be eliminated)
-		analysis.WasteReductionPotential = F(total * 0.35) // 35% potential reduction
+	if !known {
+		return analysis, nil
+	}
+	analysis.WaitingAndInventoryWaste = F(waiting)
+	total := waiting
+	for _, kind := range []string{"transportation", "over_processing", "defects"} {
+		analysis.WasteByType[kind] = byType[kind]
+		total += byType[kind]
+	}
+	switch {
+	case waiting == 0:
+		analysis.WasteByType["inventory"], analysis.WasteByType["waiting"] = 0, 0
+	case invShareOK:
+		analysis.WasteByType["inventory"] = waiting * invShare
+		analysis.WasteByType["waiting"] = waiting * (1 - invShare)
+	default:
+		analysis.Notes = append(analysis.Notes, noteInventoryShare)
+	}
+	if motionKnown {
+		analysis.WasteByType["motion"] = byType["motion"]
+		total += byType["motion"]
+	} else {
+		analysis.Notes = append(analysis.Notes, noteHandlingShare)
+	}
+	if overProductionKnown {
+		analysis.WasteByType["over_production"] = byType["over_production"]
+		total += byType["over_production"]
+	} else {
+		analysis.Notes = append(analysis.Notes, noteOperatingTime)
+	}
+	if !motionKnown || !overProductionKnown {
+		return analysis, nil
+	}
+	analysis.TotalWaste = F(total)
+	if reductionOK {
+		analysis.WasteReductionPotential = F(total * reduction)
+	} else {
+		analysis.Notes = append(analysis.Notes, noteReduction)
 	}
 	return analysis, nil
 }
 
+// overProductionUtilization is the utilization below which a process's
+// unused share of operating time counts as over-production waste.
+const overProductionUtilization = 0.7
+
+// Notes for waste that is not estimated (WasteAnalysis.Notes).
+var (
+	noteInventoryShare = "Inventory and waiting waste not split: enter " + fieldInventoryShare +
+		" (the share of waiting time that is inventory waste, 0–1); their measured total is " +
+		"waiting_and_inventory_waste"
+	noteHandlingShare = "Motion waste not estimated: enter " + fieldHandlingShare +
+		" (the share of handling time that is waste, 0–1); total_waste is not computed without it"
+	noteOperatingTime = "Over-production waste not estimated: enter operating_time for each process whose " +
+		"utilization is below 0.7; total_waste is not computed without it"
+	noteReduction = "Waste reduction potential not estimated: enter " + fieldReductionPotential +
+		" (the share of total waste you expect to remove, 0–1)"
+)
+
 // AnalyzeFlow analyzes the product and information flow.
+//
+// The flow type is judged from the processes whose waiting time and process
+// time are both known (see knownWaiting): a waiting time below 10% of the
+// process time counts toward pull, otherwise toward push, and the side with
+// more processes wins (a tie is push). A process with either value unknown
+// counts toward neither; with none known the flow type is not determined
+// (empty, with a note). Information flow quality is the user's rating
+// (ValueStream.InformationFlowQuality), not estimated when not entered.
 //
 // A capacity interruption is reported between neighbouring processes when
 // the first one's effective cycle time (CT ÷ #RES, see
@@ -467,20 +580,24 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 	}
 
 	for i, params := range resolved {
-		if !f.processes[i].unitOK {
-			continue
+		waiting, ok := knownWaiting(f.processes[i])
+		if !ok || params.ProcessTime == nil {
+			continue // not known: counts toward neither side
 		}
 		// Look for supermarket indicators (pull system)
-		if num(params.WaitingTime) < num(params.ProcessTime)*0.1 {
+		if waiting < *params.ProcessTime*pullWaitingShare {
 			pullIndicators++
 		} else {
 			pushIndicators++
 		}
 	}
 
-	if pullIndicators > pushIndicators {
+	switch {
+	case pullIndicators+pushIndicators == 0:
+		analysis.Notes = append(analysis.Notes, noteFlowType)
+	case pullIndicators > pushIndicators:
 		analysis.FlowType = FlowTypePull
-	} else {
+	default:
 		analysis.FlowType = FlowTypePush
 	}
 
@@ -546,14 +663,42 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 		}
 	}
 
-	// Analyze information flow quality (simplified)
-	infoFlowQuality := 0.8 // Assume good unless we have data to suggest otherwise
-	if len(vs.FlowElements) == 0 {
-		infoFlowQuality = 0.5 // Poor information flow if no flow controls
+	// Information flow quality: the user's rating, when entered and valid.
+	if q, ok := validFraction(vs.InformationFlowQuality); ok {
+		analysis.InformationFlowQuality = F(q)
+	} else {
+		analysis.Notes = append(analysis.Notes, noteInfoFlowQuality)
 	}
-	analysis.InformationFlowQuality = infoFlowQuality
 
 	return analysis, nil
+}
+
+// pullWaitingShare: a process whose waiting time is below this share of its
+// process time counts as a pull indicator (AnalyzeFlow).
+const pullWaitingShare = 0.1
+
+// Notes for flow results that are not determined (FlowAnalysis.Notes).
+const (
+	noteFlowType = "Push/pull flow type not determined: no process has both waiting_time (or a known idle " +
+		"time of 0) and process_time known"
+	noteInfoFlowQuality = "Information flow quality not estimated: enter " + fieldInfoFlowQuality +
+		" (your rating of the information flow, 0–1)"
+)
+
+// knownWaiting returns the waiting time of a process as the stream counts
+// it, and false when it is unknown: waiting_time entered or derived, or 0
+// when the process's idle time is known to be 0. An idle time given only as
+// a total above 0 does not say how much of it is waiting.
+func knownWaiting(pf processFigures) (float64, bool) {
+	switch {
+	case !pf.unitOK:
+		return 0, false
+	case pf.params.WaitingTime != nil:
+		return *pf.params.WaitingTime, true
+	case pf.idle != nil && *pf.idle == 0:
+		return 0, true
+	}
+	return 0, false
 }
 
 // GenerateRecommendations generates improvement recommendations based on analysis
@@ -579,20 +724,25 @@ func (a *Analyzer) GenerateRecommendations(result *AnalysisResult) []string {
 			"High idle time detected. Consider implementing continuous flow or pull systems")
 	}
 
-	// Waste recommendations (only when the waste is known)
-	if w := result.WasteAnalysis.TotalWaste; w != nil && *w > 0 {
-		if waste, exists := result.WasteAnalysis.WasteByType["inventory"]; exists && waste > 0 {
+	// Waste recommendations (only for the waste types that are known)
+	byType := result.WasteAnalysis.WasteByType
+	if waste, exists := byType["inventory"]; exists && waste > 0 {
+		recommendations = append(recommendations,
+			"Reduce inventory waste by implementing just-in-time delivery")
+	}
+	if waste, exists := byType["waiting"]; exists && waste > 0 {
+		recommendations = append(recommendations,
+			"Reduce waiting time waste by balancing process capacities")
+	}
+	if _, split := byType["inventory"]; !split {
+		if w := result.WasteAnalysis.WaitingAndInventoryWaste; w != nil && *w > 0 {
 			recommendations = append(recommendations,
-				"Reduce inventory waste by implementing just-in-time delivery")
+				"Reduce waiting and inventory time by balancing process capacities and implementing just-in-time delivery")
 		}
-		if waste, exists := result.WasteAnalysis.WasteByType["waiting"]; exists && waste > 0 {
-			recommendations = append(recommendations,
-				"Reduce waiting time waste by balancing process capacities")
-		}
-		if waste, exists := result.WasteAnalysis.WasteByType["defects"]; exists && waste > 0 {
-			recommendations = append(recommendations,
-				"Implement quality improvement measures to reduce defect waste")
-		}
+	}
+	if waste, exists := byType["defects"]; exists && waste > 0 {
+		recommendations = append(recommendations,
+			"Implement quality improvement measures to reduce defect waste")
 	}
 
 	// Flow recommendations

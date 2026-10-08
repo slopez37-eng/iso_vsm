@@ -141,6 +141,7 @@ func createVSMProject() *vsm.VSMProject {
 				ProcessingTime:              vsm.F(25),  // processing; process time = processing + setup (A.2)
 				EmployeeCount:               vsm.F(3),   // 3 assembly workers
 				ResourceCount:               vsm.I(1),   // 1 assembly station
+				OperatingTime:               vsm.F(480), // runs the whole 8 hour shift
 				TimeUnit:                    vsm.TimeUnitMinutes,
 				ValueAddingTime:             vsm.F(28),   // 28 minutes value-adding
 				NonValueAddingTime:          vsm.F(2),    // 2 minutes non-value-adding
@@ -205,9 +206,19 @@ func createVSMProject() *vsm.VSMProject {
 		Supplier:      supplier,
 		Processes:     processes,
 		Inventory:     inventory,
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
-		Version:       "1.0",
+		// The team's own estimates (the model does not guess them): how
+		// waiting time splits into inventory and waiting waste, how much
+		// handling is wasted motion, and how much waste they expect to
+		// remove; and their rating of the information flow.
+		WasteAssumptions: &vsm.WasteAssumptions{
+			InventoryShareOfWaiting: vsm.F(0.6),
+			WasteShareOfHandling:    vsm.F(0.25),
+			ReductionPotential:      vsm.F(0.3),
+		},
+		InformationFlowQuality: vsm.F(0.6),
+		CreatedAt:              time.Now(),
+		UpdatedAt:              time.Now(),
+		Version:                "1.0",
 	}
 
 	// Calculate KPIs for current state
