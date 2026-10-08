@@ -64,6 +64,7 @@ const (
 	ruleTakt          = "takt_time = available_time ÷ demand (A.12)"
 	ruleWorkingDays   = "working_days_per_week is between 1 and 7 (not entered means 7)"
 	ruleInvLink       = "an inventory with process_id is that process's stock_quantity (counted once, through the process)"
+	ruleInvWithinIdle = "an inventory with process_id waits within that process's idle_time, so its range cannot exceed it"
 	ruleTimeUnit      = "time_unit is seconds, minutes, hours, days or weeks (or empty: the reference unit)"
 	ruleStoredKPI     = "stored KPI = KPI computed from the processes (CalculateKPIs)"
 	fieldClassSum     = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time"
@@ -464,7 +465,9 @@ func (c *Calculator) customerTakt(cust *Customer) (float64, bool) {
 // process's own unit. Calculations use the computed values regardless; this
 // makes the disagreements visible. These issues have Kind
 // IssueContradiction, as do impossible or unusable values (scrap + rework
-// above 1, working_days_per_week outside 1–7, an unsupported time_unit).
+// above 1, working_days_per_week outside 1–7, an unsupported time_unit, an
+// inventory linked to a process whose idle time is shorter than the
+// inventory's range).
 //
 // After them come the issues of Kind IssueMissingData: every element on the
 // map whose part of a stream total cannot be determined (a process whose
@@ -532,7 +535,9 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 				inv.ProcessID, stock)
 		case inv.Range != nil && !rangeChecked(inv) && c.timeThroughProcess(holder, ctx):
 			// The range is not checked against quantity ÷ demand rate, so
-			// check it against the process's waiting time, the same time.
+			// check it against the process's waiting time, the same time,
+			// or, when only the idle total is given, against that total,
+			// which includes the wait.
 			p, ok := c.resolvedIn(holder.Parameters, ctx)
 			switch {
 			case !ok:
@@ -545,6 +550,13 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 				issue.Message = fmt.Sprintf("inventory %s: range %g, but it is the stock of process %s, "+
 					"whose waiting_time is %g; calculations count the process's waiting time", inv.ID, *inv.Range,
 					inv.ProcessID, *p.WaitingTime)
+			case p.IdleTime != nil && exceeds(*inv.Range, *p.IdleTime):
+				issue.Field, issue.StoredValue, issue.ComputedValue, issue.Unit = "range", *inv.Range, *p.IdleTime, unit
+				issue.Rule = ruleInvWithinIdle
+				issue.Message = fmt.Sprintf("inventory %s: range %g exceeds idle_time %g of process %s, whose "+
+					"stock it is (the wait in that stock is part of the idle time); correct the range or the "+
+					"idle time; calculations count the process's idle time", inv.ID, *inv.Range, *p.IdleTime,
+					inv.ProcessID)
 			default:
 				continue
 			}

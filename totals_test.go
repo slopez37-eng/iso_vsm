@@ -16,6 +16,55 @@ func findIssue(issues []ConsistencyIssue, element, id, field string) (Consistenc
 	return ConsistencyIssue{}, false
 }
 
+// Review finding: an inventory linked to a process whose idle time is given
+// only as a total waits within that idle time. A range longer than the
+// whole idle time contradicts it and is reported; before, it was skipped
+// (lead time 6 days, no issue).
+func TestLinkedRangeLongerThanIdleTotal(t *testing.T) {
+	stream := func(idle, rangeDays float64) *ValueStream {
+		return &ValueStream{ID: "s", Name: "s", Processes: []Process{{ID: "p", Name: "p", Parameters: ProcessParameters{
+			ProcessTime: F(1), IdleTime: F(idle), StockQuantity: F(100), ValueAddingTime: F(1), TimeUnit: TimeUnitDays}}},
+			Inventory: []Inventory{{ID: "i", Name: "i", Quantity: F(100), Range: F(rangeDays), ProcessID: "p"}}}
+	}
+	vs := stream(5, 10)
+	issues := CheckConsistency(vs)
+	issue, ok := findIssue(issues, "inventory", "i", "range")
+	if !ok || issue.Kind != IssueContradiction || issue.Rule != ruleInvWithinIdle ||
+		issue.StoredValue != 10 || issue.ComputedValue != 5 {
+		t.Fatalf("issues = %+v, want inventory i range 10 above idle 5", issues)
+	}
+	if len(issues) != 1 {
+		t.Errorf("issues = %+v, want only the range issue", issues)
+	}
+	if lt := NewCalculator().CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 6) {
+		t.Errorf("lead time = %v, want 6 (the process's idle time counts)", lt)
+	}
+	// A range within the idle time is consistent.
+	if issues := CheckConsistency(stream(5, 4)); len(issues) != 0 {
+		t.Errorf("range 4 within idle 5: issues %+v", issues)
+	}
+
+	// Targeting the idle time below the range would create the same
+	// contradiction: rejected.
+	_, err := NewDesigner().DesignFutureStateFromTargets(stream(10, 10), &FutureStateTargets{
+		Processes: map[string]ProcessTargets{"p": {IdleTime: AbsoluteTarget(5)}}})
+	if err == nil || !strings.Contains(err.Error(), "inventory i") {
+		t.Errorf("idle 10 → 5 with a 10-day linked range: err = %v, want a rejection naming inventory i", err)
+	}
+	// Halving the stock moves the linked inventory with it.
+	future, err := NewDesigner().DesignFutureStateFromTargets(stream(10, 10), &FutureStateTargets{
+		Processes: map[string]ProcessTargets{"p": {StockQuantity: ReductionTarget(50)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv := future.Inventory[0]; !approx(val(inv.Quantity), 50) || !approx(val(inv.Range), 5) {
+		t.Errorf("future inventory = %v units, %v days; want 50, 5", val(inv.Quantity), val(inv.Range))
+	}
+	if issues := CheckConsistency(future); len(issues) != 0 {
+		t.Errorf("future issues: %+v", issues)
+	}
+}
+
 // Review finding: value adding time 20 in a process time of 10 is
 // impossible, so flow efficiency is unknown in the analysis exactly as in
 // the KPIs (before: FlowEfficiency 2, i.e. 200%), and no efficiency-based

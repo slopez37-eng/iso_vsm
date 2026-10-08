@@ -3,6 +3,7 @@ package vsm
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -354,8 +355,11 @@ func (d *Designer) DesignFutureStateFromIdeal(ideal, current *ValueStream) (*Val
 // current state's (see ProcessParameters.Clone); its Customer and Supplier
 // are the current state's.
 //
-// Returns an error if a target is invalid or names a process or inventory ID
-// that is not in the current state.
+// Returns an error if a target is invalid, names a process or inventory ID
+// that is not in the current state, or would make the future state
+// contradict itself where the current state does not (for example an idle
+// time target below the range of an inventory that is the process's stock;
+// target the process's stock_quantity to move that inventory with it).
 func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *FutureStateTargets) (*ValueStream, error) {
 	if current == nil {
 		return nil, errors.New("current value stream cannot be nil")
@@ -471,10 +475,41 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 		})
 	}
 
+	// Targets that are consistent process by process can still contradict
+	// across elements (an inventory linked to a process, see
+	// Inventory.ProcessID): reject a contradiction the current state does
+	// not have.
+	if err := newContradiction(current, future); err != nil {
+		return nil, err
+	}
+
 	// Calculate future KPIs
 	future.KPIs = d.calculator.CalculateKPIs(future)
 
 	return future, nil
+}
+
+// newContradiction returns an error naming the first contradiction (see
+// CheckConsistency) in future that current does not have. Future process
+// IDs are the current ones + "_future"; inventory IDs are the same.
+func newContradiction(current, future *ValueStream) error {
+	key := func(issue ConsistencyIssue) string {
+		id := issue.ID
+		if issue.Element == "process" {
+			id = strings.TrimSuffix(id, "_future")
+		}
+		return issue.Element + "\x00" + id + "\x00" + issue.Field
+	}
+	had := map[string]bool{}
+	for _, issue := range CheckConsistency(current) {
+		had[key(issue)] = true
+	}
+	for _, issue := range CheckConsistency(future) {
+		if issue.Kind == IssueContradiction && !had[key(issue)] {
+			return fmt.Errorf("these targets would make the value stream inconsistent: %s", issue.Message)
+		}
+	}
+	return nil
 }
 
 // processIndex returns the index of the process with ID id in vs, or -1.
