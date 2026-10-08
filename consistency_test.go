@@ -61,12 +61,14 @@ func TestResolveRelationships(t *testing.T) {
 		{"TT agree", ProcessParameters{TransportTime: 12, TransportRepetitionTime: 4, TransportRepetitionCount: 3}, "transport_time", 12, "", 0},
 		{"TT disagree", ProcessParameters{TransportTime: 10, TransportRepetitionTime: 4, TransportRepetitionCount: 3}, "transport_time", 12, "transport_time", 10},
 		{"TT feeds idle time", ProcessParameters{TransportRepetitionTime: 4, TransportRepetitionCount: 3, WaitingTime: 8}, "idle_time", 20, "", 0},
-		// Waiting time and range of inventory (A.11).
-		{"WT parts only", ProcessParameters{StockQuantity: 50, CycleTime: 2}, "waiting_time", 100, "", 0},
+		// Waiting time and range of inventory: stock ÷ demand rate (0.5 per
+		// minute below), whatever the cycle time.
+		{"WT parts only", ProcessParameters{StockQuantity: 50, CycleTime: 7}, "waiting_time", 100, "", 0},
 		{"WT total only", ProcessParameters{WaitingTime: 30}, "waiting_time", 30, "", 0},
-		{"WT agree", ProcessParameters{WaitingTime: 100, StockQuantity: 50, CycleTime: 2}, "waiting_time", 100, "", 0},
-		{"WT disagree", ProcessParameters{WaitingTime: 30, StockQuantity: 50, CycleTime: 2}, "waiting_time", 100, "waiting_time", 30},
-		{"range disagree", ProcessParameters{RangeOfInventory: 60, StockQuantity: 50, CycleTime: 2}, "range_of_inventory", 100, "range_of_inventory", 60},
+		{"WT agree", ProcessParameters{WaitingTime: 100, StockQuantity: 50, CycleTime: 7}, "waiting_time", 100, "", 0},
+		{"WT disagree", ProcessParameters{WaitingTime: 30, StockQuantity: 50, CycleTime: 7}, "waiting_time", 100, "waiting_time", 30},
+		{"WT not stock × cycle time", ProcessParameters{WaitingTime: 350, StockQuantity: 50, CycleTime: 7}, "waiting_time", 100, "waiting_time", 350},
+		{"range disagree", ProcessParameters{RangeOfInventory: 60, StockQuantity: 50, CycleTime: 7}, "range_of_inventory", 100, "range_of_inventory", 60},
 		// Processing time (A.5).
 		{"PRT parts only", ProcessParameters{CycleTime: 2, OrderQuantity: 10, ResourceCount: 2}, "processing_time", 10, "", 0},
 		{"PRT total only", ProcessParameters{ProcessingTime: 7}, "processing_time", 7, "", 0},
@@ -94,10 +96,12 @@ func TestResolveRelationships(t *testing.T) {
 		{"YF disagree", ProcessParameters{YieldFactor: 0.99, ScrapRate: 0.02, ReworkRate: 0.03}, "yield_factor", 0.95, "yield_factor", 0.99},
 	}
 	c := NewCalculator()
+	// 720 per day = 0.5 per minute.
+	ctx := streamContext{customer: &Customer{Demand: 720, DemandPeriod: DemandPeriodDay}, unit: min}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.params.TimeUnit = min
-			got, issues := c.resolveParameters(tt.params)
+			got, issues := c.resolveParameters(tt.params, ctx)
 			if v := fieldOf(tt.field)(got); !approx(v, tt.want) {
 				t.Errorf("%s = %v, want %v", tt.field, v, tt.want)
 			}
@@ -120,7 +124,7 @@ func TestResolveRelationships(t *testing.T) {
 // TestProcessTimeShortfallMessage: a stored process time larger than its
 // parts is reported in plain terms, naming the parts that were given.
 func TestProcessTimeShortfallMessage(t *testing.T) {
-	_, issues := NewCalculator().resolveParameters(ProcessParameters{ProcessTime: 20, SetupTime: 4})
+	_, issues := NewCalculator().resolveParameters(ProcessParameters{ProcessTime: 20, SetupTime: 4}, streamContext{})
 	if len(issues) != 1 {
 		t.Fatalf("got %+v, want one issue", issues)
 	}
@@ -129,7 +133,7 @@ func TestProcessTimeShortfallMessage(t *testing.T) {
 	if issues[0].Message != want {
 		t.Errorf("message = %q\nwant      %q", issues[0].Message, want)
 	}
-	_, issues = NewCalculator().resolveParameters(ProcessParameters{ProcessTime: 5, ProcessingTime: 6, SetupTime: 2})
+	_, issues = NewCalculator().resolveParameters(ProcessParameters{ProcessTime: 5, ProcessingTime: 6, SetupTime: 2}, streamContext{})
 	if len(issues) != 1 || !strings.Contains(issues[0].Message, "correct the parts or the stored value") ||
 		!strings.Contains(issues[0].Message, "processing_time + setup_time") {
 		t.Errorf("excess issue = %+v", issues)
@@ -179,7 +183,8 @@ func TestCheckConsistencyMixedUnits(t *testing.T) {
 // across the stream, and the value classification of the same time sums to
 // the same lead time, so flow efficiency is the same either way.
 func TestWholeStreamLeadTimeConsistency(t *testing.T) {
-	vs := &ValueStream{ID: "vs", Name: "LT", Processes: []Process{
+	// 720 per day = 0.5 per minute, so 10 in stock wait 20 minutes.
+	vs := &ValueStream{ID: "vs", Name: "LT", Customer: &Customer{ID: "c", Demand: 720, DemandPeriod: DemandPeriodDay}, Processes: []Process{
 		{ID: "p1", Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes,
 			ProcessingTime: 6, SetupTime: 4, StockQuantity: 10, CycleTime: 2, TransportTime: 5,
 			ValueAddingTime: 6, NonValueAddingTime: 25, NecessaryNonValueAddingTime: 4}},
@@ -191,13 +196,13 @@ func TestWholeStreamLeadTimeConsistency(t *testing.T) {
 	}
 	c := NewCalculator()
 	// p1: PT 10 + IT (20 + 5) = 35 min; p2: 1.5 h = 90 min.
-	lt := c.CalculateOverallLeadTime(vs.Processes)
+	lt := c.CalculateKPIs(vs)["total_lead_time"]
 	if !approx(lt, 125) {
 		t.Errorf("lead time = %v, want 125", lt)
 	}
 	var classified float64
 	for _, p := range vs.Processes {
-		r := c.resolvedIn(p.Parameters, TimeUnitMinutes)
+		r := c.resolvedIn(p.Parameters, c.contextOf(vs))
 		classified += c.CalculateLeadTime(r)
 	}
 	if !approx(classified, lt) {
@@ -214,7 +219,7 @@ func TestWholeStreamLeadTimeConsistency(t *testing.T) {
 	if len(issues) != 1 || issues[0].ID != "p2" || issues[0].Field != fieldClassSum {
 		t.Fatalf("issues = %+v", issues)
 	}
-	if got := c.CalculateOverallLeadTime(vs.Processes); !approx(got, 125) {
+	if got := c.CalculateKPIs(vs)["total_lead_time"]; !approx(got, 125) {
 		t.Errorf("lead time = %v, want 125 (flow wins)", got)
 	}
 }
@@ -339,8 +344,9 @@ func TestIdealStateIsConsistent(t *testing.T) {
 	vs := targetStream()
 	vs.Processes = append(vs.Processes, Process{ID: "p3", Name: "Batch", Parameters: ProcessParameters{
 		TimeUnit: TimeUnitMinutes, CycleTime: 2, OrderQuantity: 10, ResourceCount: 1, SetupTime: 5,
-		StockQuantity: 20, TransportRepetitionTime: 3, TransportRepetitionCount: 2,
-		ValueAddingTime: 12, NonValueAddingTime: 59, ScrapRate: 0.1,
+		// 5 in stock at 100 per day wait 72 min: lead time 25 + 6 + 72 = 103.
+		StockQuantity: 5, TransportRepetitionTime: 3, TransportRepetitionCount: 2,
+		ValueAddingTime: 12, NonValueAddingTime: 91, ScrapRate: 0.1,
 	}})
 	if issues := CheckConsistency(vs); len(issues) != 0 {
 		t.Fatalf("test stream inconsistent: %+v", issues)
@@ -355,5 +361,85 @@ func TestIdealStateIsConsistent(t *testing.T) {
 	// Lead time = value adding time only: 5 + 4 + 12.
 	if lt := ideal.KPIs["total_lead_time"]; !approx(lt, 21) {
 		t.Errorf("ideal lead time = %v, want 21", lt)
+	}
+}
+
+// TestInventoryTimeIsStockOverDemand: the waiting time of stock is how long
+// it lasts at the customer's demand (standard VSM inventory time), not stock
+// × cycle time. Here cycle time (60 s) differs from takt (240 s), so the
+// two disagree: 240 in stock at 120 per day last 2 days, not 4 hours.
+func TestInventoryTimeIsStockOverDemand(t *testing.T) {
+	const twoDays = 2 * 86400.0
+	stream := func(stored float64) *ValueStream {
+		return &ValueStream{ID: "vs", Name: "Coverage",
+			Customer: &Customer{ID: "c", Demand: 120, DemandPeriod: DemandPeriodDay, AvailableTime: 28800},
+			Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+				TimeUnit: TimeUnitSeconds, ProcessTime: 60, CycleTime: 60, StockQuantity: 240, WaitingTime: stored,
+			}}},
+			Inventory: []Inventory{{ID: "i", Quantity: 240, Range: twoDays}},
+		}
+	}
+	c := NewCalculator()
+
+	// A correct stored 2-day waiting time is consistent.
+	vs := stream(twoDays)
+	if issues := CheckConsistency(vs); len(issues) != 0 {
+		t.Errorf("correct 2-day waiting time flagged: %+v", issues)
+	}
+	// Not stored: derived as 2 days, and lead time includes it.
+	vs = stream(0)
+	if wt := c.ResolveParametersInStream(vs.Processes[0].Parameters, vs).WaitingTime; !approx(wt, twoDays) {
+		t.Errorf("derived waiting time = %v s, want %v", wt, twoDays)
+	}
+	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 60+twoDays) {
+		t.Errorf("lead time = %v, want %v", lt, 60+twoDays)
+	}
+	// Stock × cycle time (14,400 s) stored as waiting time is a contradiction.
+	vs = stream(240 * 60)
+	issues := CheckConsistency(vs)
+	if len(issues) != 1 || issues[0].Field != "waiting_time" || !approx(issues[0].ComputedValue, twoDays) {
+		t.Errorf("issues = %+v, want one waiting_time issue computing %v", issues, twoDays)
+	}
+	// A wrong inventory range is reported too.
+	vs = stream(twoDays)
+	vs.Inventory[0].Range = 240 * 60
+	issues = CheckConsistency(vs)
+	if len(issues) != 1 || issues[0].Element != "inventory" || !approx(issues[0].ComputedValue, twoDays) {
+		t.Errorf("inventory issues = %+v", issues)
+	}
+
+	// Demand rate unknown (no customer, or a month period with no fixed
+	// length): nothing is derived or flagged.
+	for name, cust := range map[string]*Customer{
+		"no customer":  nil,
+		"month period": {ID: "c", Demand: 2400, DemandPeriod: DemandPeriodMonth},
+		"no period":    {ID: "c", Demand: 120},
+	} {
+		vs = stream(240 * 60)
+		vs.Customer = cust
+		if issues := CheckConsistency(vs); len(issues) != 0 {
+			t.Errorf("%s: issues = %+v", name, issues)
+		}
+		vs = stream(0)
+		vs.Customer = cust
+		if wt := c.ResolveParametersInStream(vs.Processes[0].Parameters, vs).WaitingTime; wt != 0 {
+			t.Errorf("%s: waiting time derived as %v", name, wt)
+		}
+	}
+}
+
+func TestCalculateInventoryTimeAndQuantity(t *testing.T) {
+	c := NewCalculator()
+	if got, ok := c.CalculateInventoryTime(240, 120, DemandPeriodDay, TimeUnitHours); !ok || !approx(got, 48) {
+		t.Errorf("inventory time = %v %v, want 48 h", got, ok)
+	}
+	if got, ok := c.CalculateInventoryTime(70, 35, DemandPeriodWeek, TimeUnitDays); !ok || !approx(got, 14) {
+		t.Errorf("weekly inventory time = %v %v, want 14 days", got, ok)
+	}
+	if got, ok := c.CalculateInventoryQuantity(48, TimeUnitHours, 120, DemandPeriodDay); !ok || !approx(got, 240) {
+		t.Errorf("inventory quantity = %v %v, want 240", got, ok)
+	}
+	if _, ok := c.CalculateInventoryTime(240, 120, DemandPeriodYear, TimeUnitHours); ok {
+		t.Error("year period has no fixed length; want ok = false")
 	}
 }

@@ -91,12 +91,22 @@ func (c *Calculator) CalculateLeadTime(params ProcessParameters) float64 {
 // PT_i is the resolved process time (see ResolveParameters). Each process is
 // converted to ReferenceTimeUnit(processes).
 func (c *Calculator) CalculateTotalProcessTime(processes []Process) float64 {
-	unit := c.ReferenceTimeUnit(processes)
-	var total float64
-	for _, process := range processes {
-		total += c.resolvedIn(process.Parameters, unit).ProcessTime
+	pt, _, _ := c.streamTotals(&ValueStream{Processes: processes})
+	return pt
+}
+
+// streamTotals returns vs's total process time, lead time and value adding
+// time in its reference unit, each process resolved in the stream (see
+// ResolveParametersInStream).
+func (c *Calculator) streamTotals(vs *ValueStream) (processTime, leadTime, valueAdding float64) {
+	ctx := c.contextOf(vs)
+	for _, process := range vs.Processes {
+		p := c.resolvedIn(process.Parameters, ctx)
+		processTime += p.ProcessTime
+		leadTime += p.LeadTime
+		valueAdding += p.ValueAddingTime
 	}
-	return total
+	return processTime, leadTime, valueAdding
 }
 
 // CalculateProcessingTime calculates processing time according to formula (A.5)
@@ -141,12 +151,8 @@ func (c *Calculator) CalculateHandlingTime(params ProcessParameters) float64 {
 // ValueAddingTime (see ResolveParameters). Each process is converted to
 // ReferenceTimeUnit(processes).
 func (c *Calculator) CalculateValueAddingTime(processes []Process) float64 {
-	unit := c.ReferenceTimeUnit(processes)
-	var total float64
-	for _, process := range processes {
-		total += c.resolvedIn(process.Parameters, unit).ValueAddingTime
-	}
-	return total
+	_, _, vat := c.streamTotals(&ValueStream{Processes: processes})
+	return vat
 }
 
 // CalculateTransportRepetitionTime calculates transport repetition time according to formula (A.10)
@@ -155,10 +161,68 @@ func (c *Calculator) CalculateTransportRepetitionTime(transportRepetitionTime fl
 	return transportRepetitionTime * float64(transportRepetitionCount)
 }
 
-// CalculateWaitingTime calculates waiting time according to formula (A.11)
-// WT = SQ × CT
+// CalculateWaitingTime returns stock quantity × cycle time.
+// SQ × CT
+//
+// This is the clearing time: how long the process, at its own cycle time,
+// needs to work through the stock. It is a diagnostic only. The time a part
+// waits in an inventory is set by how fast the customer uses the stock up,
+// not by the cycle time, so the model's waiting_time and range_of_inventory
+// are stock ÷ customer demand rate (see CalculateInventoryTime). The two
+// agree only when the cycle time equals the takt time.
 func (c *Calculator) CalculateWaitingTime(stockQuantity float64, cycleTime float64) float64 {
 	return stockQuantity * cycleTime
+}
+
+// demandPeriodSeconds is the length of a demand period in seconds. Months
+// and years have no fixed length, so they are not listed.
+var demandPeriodSeconds = map[DemandPeriod]float64{
+	DemandPeriodDay:  86400,
+	DemandPeriodWeek: 604800,
+}
+
+// demandRate returns demand (units per period) as units per one unit of
+// time u, and false when it cannot be known (see CalculateInventoryTime).
+func demandRate(demand float64, period DemandPeriod, u TimeUnit) (float64, bool) {
+	seconds, ok := demandPeriodSeconds[period]
+	if !ok || demand <= 0 || !isKnownTimeUnit(u) {
+		return 0, false
+	}
+	return demand / NewCalculator().ConvertTimeUnit(seconds, TimeUnitSeconds, u), true
+}
+
+// CalculateInventoryTime returns how long stockQuantity units last at the
+// customer's demand rate, in unit: the standard VSM inventory time (Rother &
+// Shook: inventory ÷ daily customer demand).
+// IT_inv = SQ ÷ (CD ÷ period length)
+//
+// demand is units per period. The period is converted to unit as calendar
+// time (a day is 24 h, a week 7 days). ok is false, and the time is not
+// known, when demand is 0, unit is unknown, or period is not "day" or
+// "week" (months and years have no fixed length; state demand per day or
+// week instead). The model uses this for waiting_time and
+// range_of_inventory of a process with stock_quantity, and for an
+// inventory's range.
+func (c *Calculator) CalculateInventoryTime(stockQuantity, demand float64, period DemandPeriod, unit TimeUnit) (float64, bool) {
+	rate, ok := demandRate(demand, period, unit)
+	if !ok {
+		return 0, false
+	}
+	return stockQuantity / rate, true
+}
+
+// CalculateInventoryQuantity returns the stock that covers coverageTime (in
+// unit) at the customer's demand rate: the inverse of
+// CalculateInventoryTime.
+// SQ = (CD ÷ period length) × coverage time
+//
+// ok is false under the same conditions as CalculateInventoryTime.
+func (c *Calculator) CalculateInventoryQuantity(coverageTime float64, unit TimeUnit, demand float64, period DemandPeriod) (float64, bool) {
+	rate, ok := demandRate(demand, period, unit)
+	if !ok {
+		return 0, false
+	}
+	return rate * coverageTime, true
 }
 
 // CalculateCustomerTakt calculates customer takt according to formula (A.12)
@@ -250,8 +314,13 @@ func (c *Calculator) CalculateOperatingTime(availableTime, breaks, downtime floa
 	return availableTime - breaks - downtime
 }
 
-// CalculateRangeOfInventory calculates range of inventory in time units
-// RI = SQ × CT (converted to appropriate time unit)
+// CalculateRangeOfInventory returns stock quantity × cycle time, converted
+// from fromUnit to toUnit.
+//
+// Deprecated: despite the name this is the clearing time (see
+// CalculateWaitingTime), not the range of inventory. The range of inventory
+// is how long the stock lasts at the customer's demand rate; use
+// CalculateInventoryTime.
 func (c *Calculator) CalculateRangeOfInventory(stockQuantity, cycleTime float64, fromUnit, toUnit TimeUnit) float64 {
 	baseValue := stockQuantity * cycleTime
 	return c.ConvertTimeUnit(baseValue, fromUnit, toUnit)
@@ -277,13 +346,13 @@ func (c *Calculator) CalculateProcessLeadTime(processTime, idleTime float64) flo
 // has neither does LT_i fall back to its value classification
 // VAT + NVAT + NNVAT (A.3), and then to a stored lead_time. Each process is
 // converted to ReferenceTimeUnit(processes).
+//
+// Without the customer, waiting time cannot be derived from stock_quantity
+// (see ResolveParameters), so stored waiting times are used. CalculateKPIs
+// resolves in the stream and does derive it.
 func (c *Calculator) CalculateOverallLeadTime(processes []Process) float64 {
-	unit := c.ReferenceTimeUnit(processes)
-	var total float64
-	for _, process := range processes {
-		total += c.resolvedIn(process.Parameters, unit).LeadTime
-	}
-	return total
+	_, lt, _ := c.streamTotals(&ValueStream{Processes: processes})
+	return lt
 }
 
 // ReferenceTimeUnit returns the unit that aggregated times and CalculateKPIs
@@ -439,7 +508,8 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 //     rework when those are given, else the stored YieldFactor) that are
 //     known (> 0); omitted when none are.
 //
-// All process values are resolved first (see ResolveParameters), so stored
+// All process values are resolved in the stream first (see
+// ResolveParametersInStream), so stored
 // totals that disagree with their parts do not change the KPIs; see
 // CheckConsistency for those disagreements.
 func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
@@ -455,9 +525,7 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 	}
 
 	if len(vs.Processes) > 0 {
-		totalLeadTime := c.CalculateOverallLeadTime(vs.Processes)
-		totalVAT := c.CalculateValueAddingTime(vs.Processes)
-		totalProcessTime := c.CalculateTotalProcessTime(vs.Processes)
+		totalProcessTime, totalLeadTime, totalVAT := c.streamTotals(vs)
 
 		kpis["total_lead_time"] = totalLeadTime
 		kpis["total_value_adding_time"] = totalVAT
@@ -481,7 +549,7 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 	var totalYield float64
 	processCount := 0
 	for _, process := range vs.Processes {
-		if yf := c.ResolveParameters(process.Parameters).YieldFactor; yf > 0 {
+		if yf := c.ResolveParametersInStream(process.Parameters, vs).YieldFactor; yf > 0 {
 			totalYield += yf
 			processCount++
 		}

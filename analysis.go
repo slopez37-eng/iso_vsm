@@ -228,8 +228,8 @@ func (a *Analyzer) CalculateProcessLoad(process Process, vs *ValueStream) (capac
 	if vs == nil || !a.hasLoadInputs(vs) {
 		return 0, 0, false
 	}
-	unit := a.calculator.ReferenceTimeUnit(vs.Processes)
-	cycleTime := a.calculator.resolvedIn(process.Parameters, unit).CycleTime
+	ctx := a.calculator.contextOf(vs)
+	cycleTime := a.calculator.resolvedIn(process.Parameters, ctx).CycleTime
 	if cycleTime <= 0 {
 		return 0, 0, false
 	}
@@ -251,9 +251,9 @@ func (a *Analyzer) AnalyzeIdleTimes(vs *ValueStream) (*IdleTimeAnalysis, error) 
 	// Express every process in one time unit before summing (see
 	// Calculator.ReferenceTimeUnit), with totals resolved from their parts
 	// (see Calculator.ResolveParameters).
-	unit := a.calculator.ReferenceTimeUnit(vs.Processes)
+	ctx := a.calculator.contextOf(vs)
 	for _, process := range vs.Processes {
-		params := a.calculator.resolvedIn(process.Parameters, unit)
+		params := a.calculator.resolvedIn(process.Parameters, ctx)
 		idleTime := params.IdleTime
 		processTime := params.ProcessTime
 
@@ -290,9 +290,9 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 	// 1. Transportation, 2. Inventory, 3. Motion, 4. Waiting, 5. Over-processing, 6. Over-production, 7. Defects
 
 	// Resolved values in the reference time unit (see Calculator.ResolveParameters).
-	unit := a.calculator.ReferenceTimeUnit(vs.Processes)
+	ctx := a.calculator.contextOf(vs)
 	for _, process := range vs.Processes {
-		params := a.calculator.resolvedIn(process.Parameters, unit)
+		params := a.calculator.resolvedIn(process.Parameters, ctx)
 
 		// Transportation waste
 		transportWaste := params.TransportTime
@@ -358,10 +358,10 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 	pullIndicators := 0
 
 	// Resolved values in the reference time unit (see Calculator.ResolveParameters).
-	unit := a.calculator.ReferenceTimeUnit(vs.Processes)
+	ctx := a.calculator.contextOf(vs)
 	resolved := make([]ProcessParameters, len(vs.Processes))
 	for i, process := range vs.Processes {
-		resolved[i] = a.calculator.resolvedIn(process.Parameters, unit)
+		resolved[i] = a.calculator.resolvedIn(process.Parameters, ctx)
 	}
 
 	for _, params := range resolved {
@@ -380,8 +380,7 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 	}
 
 	// Analyze flow efficiency (ratio of value-adding time to total lead time)
-	totalVAT := a.calculator.CalculateValueAddingTime(vs.Processes)
-	totalLeadTime := a.calculator.CalculateOverallLeadTime(vs.Processes)
+	_, totalLeadTime, totalVAT := a.calculator.streamTotals(vs)
 
 	if totalLeadTime > 0 {
 		analysis.FlowEfficiency = totalVAT / totalLeadTime

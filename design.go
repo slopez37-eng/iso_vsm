@@ -283,7 +283,7 @@ func (d *Designer) CreateIdealState(current *ValueStream) (*ValueStream, error) 
 		idealProcess.Name = process.Name + " (Ideal)"
 
 		// In ideal state: only value-adding time remains
-		idealProcess.Parameters = d.calculator.idealParameters(process.Parameters)
+		idealProcess.Parameters = d.calculator.idealParameters(process.Parameters, d.calculator.contextOf(current))
 
 		idealProcesses = append(idealProcesses, idealProcess)
 	}
@@ -305,8 +305,8 @@ func (d *Designer) CreateIdealState(current *ValueStream) (*ValueStream, error) 
 // NVAT, NNVAT, scrap and rework are 0; yield is 1. When processing time is
 // computed from cycle time × order quantity ÷ resources (A.5), the cycle
 // time is set so that it gives the value adding time.
-func (c *Calculator) idealParameters(params ProcessParameters) ProcessParameters {
-	r := c.ResolveParameters(params)
+func (c *Calculator) idealParameters(params ProcessParameters, ctx streamContext) ProcessParameters {
+	r, _ := c.resolveParameters(params, ctx)
 	vat := r.ValueAddingTime
 	p := r
 	p.ProcessTime, p.ProcessingTime, p.LeadTime = vat, vat, vat
@@ -321,7 +321,7 @@ func (c *Calculator) idealParameters(params ProcessParameters) ProcessParameters
 	if p.CycleTime > 0 && p.OrderQuantity > 0 && p.ResourceCount > 0 {
 		p.CycleTime = vat * float64(p.ResourceCount) / p.OrderQuantity
 	}
-	return c.trimDerived(params, p)
+	return c.trimDerived(params, p, ctx)
 }
 
 // DesignFutureStateFromIdeal creates a future state with no projected
@@ -381,7 +381,7 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 		if t, ok := targets.Processes[process.ID]; ok {
 			own = &t
 		}
-		params, err := d.calculator.applyProcessTargets(process.Parameters, own, targets.Default)
+		params, err := d.calculator.applyProcessTargets(process.Parameters, own, targets.Default, d.calculator.contextOf(current))
 		if err != nil {
 			return nil, fmt.Errorf("process %s: %w", process.ID, err)
 		}
@@ -396,7 +396,7 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 		if t, ok := targets.Inventory[inv.ID]; ok {
 			own = &t
 		}
-		futureInv, err := applyInventoryTargets(inv, own, targets.InventoryDefault)
+		futureInv, err := d.calculator.applyInventoryTargets(inv, own, targets.InventoryDefault, d.calculator.contextOf(current))
 		if err != nil {
 			return nil, fmt.Errorf("inventory %s: %w", inv.ID, err)
 		}
@@ -546,9 +546,9 @@ func (d *Designer) checkContinuousFlowPrinciple(vs *ValueStream) bool {
 	totalIdle := 0.0
 	totalProcess := 0.0
 
-	unit := d.calculator.ReferenceTimeUnit(vs.Processes)
+	ctx := d.calculator.contextOf(vs)
 	for _, process := range vs.Processes {
-		params := d.calculator.resolvedIn(process.Parameters, unit)
+		params := d.calculator.resolvedIn(process.Parameters, ctx)
 		totalIdle += params.IdleTime
 		totalProcess += params.ProcessTime
 	}

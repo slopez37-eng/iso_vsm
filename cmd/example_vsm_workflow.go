@@ -179,8 +179,8 @@ func createVSMProject() *vsm.VSMProject {
 		{
 			ID:          "inventory_1",
 			Name:        "Raw Ingredients",
-			Quantity:    1000,        // kg
-			Range:       2 * 24 * 60, // 2 days in minutes
+			Quantity:    400,         // burger ingredient kits (same unit as customer demand)
+			Range:       2 * 24 * 60, // 2 days in minutes: 400 kits ÷ 200 per day
 			Type:        "warehouse",
 			Description: "Raw ingredients warehouse",
 		},
@@ -188,7 +188,7 @@ func createVSMProject() *vsm.VSMProject {
 			ID:          "inventory_2",
 			Name:        "Finished Patties",
 			Quantity:    50,     // patties
-			Range:       4 * 60, // 4 hours in minutes
+			Range:       6 * 60, // 6 hours in minutes: 50 ÷ 200 per day = 0.25 day
 			Type:        "supermarket",
 			Description: "Grilled patties supermarket",
 		},

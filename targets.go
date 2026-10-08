@@ -54,13 +54,14 @@ func (t *Target) apply(current float64) (float64, error) {
 //     transport_time, waiting_time and storage_time are the parts of
 //     idle_time; scrap_rate and rework_rate set yield_factor (A.17).
 //   - Values computed from other inputs follow them: a cycle_time target
-//     changes waiting_time (stock_quantity × cycle_time, A.11) and
-//     processing_time (cycle_time × order_quantity ÷ resource_count, A.5)
-//     where those formulas apply.
+//     changes processing_time (cycle_time × order_quantity ÷
+//     resource_count, A.5) where that formula applies, and a stock_quantity
+//     target changes waiting_time (stock ÷ customer demand rate, see
+//     Calculator.CalculateInventoryTime) when the demand rate is known.
 //   - A total target (process_time, idle_time, yield_factor) is met by
 //     scaling, in proportion, the parts that have no target of their own and
 //     are not computed from other inputs. A total of 0 zeroes its parts. Where
-//     waiting_time is stock_quantity × cycle_time, it is scaled through
+//     waiting_time is stock_quantity ÷ demand rate, it is scaled through
 //     stock_quantity, and a waiting_time target sets stock_quantity.
 //   - The value classification follows the lead time: when lead time
 //     (process + idle time) changes, the change is taken from
@@ -204,8 +205,8 @@ func hasIssue(issues []ConsistencyIssue, field string) bool {
 // applyProcessTargets returns params with the targets applied (own overrides
 // def field by field). See ProcessTargets for how the result is kept
 // consistent.
-func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *ProcessTargets) (ProcessParameters, error) {
-	cur, curIssues := c.resolveParameters(params)
+func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *ProcessTargets, ctx streamContext) (ProcessParameters, error) {
+	cur, curIssues := c.resolveParameters(params, ctx)
 	p := cur
 	targeted := map[string]bool{}
 	get := func(f func(*ProcessTargets) *Target) *Target { return pick(own, def, f) }
@@ -228,21 +229,19 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		return params, fmt.Errorf("transport_time: for this process it is transport_repetition_time × " +
 			"transport_repetition_count (A.10); change those in the current state instead")
 	}
-	wasStock := cur.StockQuantity > 0 && cur.CycleTime > 0
-	if targeted["waiting_time"] && (wasStock || targeted["stock_quantity"]) {
+	// Waiting time of stock is stock_quantity ÷ customer demand rate.
+	rate, rateKnown := ctx.demandRate(params.TimeUnit)
+	wasStock := rateKnown && cur.StockQuantity > 0
+	if targeted["waiting_time"] && (wasStock || (rateKnown && targeted["stock_quantity"])) {
 		if targeted["stock_quantity"] {
 			return params, fmt.Errorf("waiting_time and stock_quantity: set one, not both; " +
-				"waiting_time = stock_quantity × cycle_time (A.11)")
+				"waiting_time = stock_quantity ÷ customer demand rate")
 		}
-		if p.CycleTime <= 0 {
-			return params, fmt.Errorf("waiting_time: it is stock_quantity × cycle_time (A.11), " +
-				"and the targeted cycle_time is 0")
-		}
-		p.StockQuantity = p.WaitingTime / p.CycleTime
+		p.StockQuantity = p.WaitingTime * rate
 	}
 	updateStock := func() {
-		if p.StockQuantity > 0 && p.CycleTime > 0 {
-			p.WaitingTime = p.StockQuantity * p.CycleTime
+		if rateKnown && p.StockQuantity > 0 {
+			p.WaitingTime = p.StockQuantity / rate
 			p.RangeOfInventory = p.WaitingTime
 		} else if wasStock {
 			p.WaitingTime, p.RangeOfInventory = 0, 0
@@ -309,7 +308,7 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		if !hasIdleParts {
 			p.IdleTime = v
 		} else {
-			stockDriven := p.StockQuantity > 0 && p.CycleTime > 0
+			stockDriven := rateKnown && p.StockQuantity > 0
 			waiting := p.WaitingTime
 			// Transport from repetitions (A.10) is fixed, except that an idle
 			// time of 0 removes the transports too.
@@ -417,8 +416,8 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		p.LeadTime = c.CalculateLeadTime(p)
 	}
 
-	out := c.trimDerived(params, p)
-	_, outIssues := c.resolveParameters(out)
+	out := c.trimDerived(params, p, ctx)
+	_, outIssues := c.resolveParameters(out, ctx)
 	for _, issue := range outIssues {
 		if !hasIssue(curIssues, issue.Field) {
 			return params, fmt.Errorf("these targets would make the process inconsistent: %s", issue.Message)
@@ -446,15 +445,15 @@ var derivedFields = []func(*ProcessParameters) *float64{
 // cleared again, wherever ResolveParameters computes the same values without
 // them. A designed state then stores what the current state stored (with
 // new numbers), instead of every derived value.
-func (c *Calculator) trimDerived(input, out ProcessParameters) ProcessParameters {
-	want := c.ResolveParameters(out)
+func (c *Calculator) trimDerived(input, out ProcessParameters, ctx streamContext) ProcessParameters {
+	want, _ := c.resolveParameters(out, ctx)
 	for _, field := range derivedFields {
 		if *field(&input) != 0 || *field(&out) == 0 {
 			continue
 		}
 		trial := out
 		*field(&trial) = 0
-		got := c.ResolveParameters(trial)
+		got, _ := c.resolveParameters(trial, ctx)
 		same := true
 		for _, f := range derivedFields {
 			if !consistent(*f(&got), *f(&want)) {
@@ -469,9 +468,14 @@ func (c *Calculator) trimDerived(input, out ProcessParameters) ProcessParameters
 	return out
 }
 
-// applyInventoryTargets returns inv with targets applied (own overrides def).
-func applyInventoryTargets(inv Inventory, own, def *InventoryTargets) (Inventory, error) {
+// applyInventoryTargets returns inv with targets applied (own overrides
+// def). When the customer demand rate is known, range = quantity ÷ demand
+// rate (see Calculator.CalculateInventoryTime): a quantity target moves a
+// stored range with it, a range target sets the quantity, and targeting both
+// is an error unless they agree.
+func (c *Calculator) applyInventoryTargets(inv Inventory, own, def *InventoryTargets, ctx streamContext) (Inventory, error) {
 	out := inv
+	targeted := map[string]bool{}
 	fields := []struct {
 		name string
 		get  func(*InventoryTargets) *Target
@@ -493,9 +497,25 @@ func applyInventoryTargets(inv Inventory, own, def *InventoryTargets) (Inventory
 		}
 		v, err := applyField(f.name, t, *f.val, false)
 		if err != nil {
-			return out, err
+			return inv, err
 		}
 		*f.val = v
+		targeted[f.name] = true
+	}
+	rate, ok := ctx.demandRate(ctx.unit)
+	if !ok {
+		return out, nil
+	}
+	switch {
+	case targeted["quantity"] && targeted["range"]:
+		if !consistent(out.Range, out.Quantity/rate) {
+			return inv, fmt.Errorf("quantity and range: range = quantity ÷ customer demand rate "+
+				"= %g, not %g; set one of them", out.Quantity/rate, out.Range)
+		}
+	case targeted["range"]:
+		out.Quantity = out.Range * rate
+	case targeted["quantity"] && inv.Range > 0:
+		out.Range = out.Quantity / rate
 	}
 	return out, nil
 }

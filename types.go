@@ -159,8 +159,8 @@ type Supplier struct {
 type Inventory struct {
 	ID          string  `json:"id"`
 	Name        string  `json:"name"`
-	Quantity    float64 `json:"quantity"` // Number of products or range
-	Range       float64 `json:"range"`    // Time period for inventory
+	Quantity    float64 `json:"quantity"` // Number of products (same unit as Customer.Demand)
+	Range       float64 `json:"range"`    // Time the quantity lasts at customer demand, in the reference time unit
 	Type        string  `json:"type"`     // "stock", "warehouse", "supermarket", etc.
 	Description string  `json:"description,omitempty"`
 }

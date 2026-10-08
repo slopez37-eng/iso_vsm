@@ -15,9 +15,9 @@ const ConsistencyTolerance = 0.005
 // model computes from other stored values. Calculations always use the
 // computed value; the issue only makes the disagreement visible.
 type ConsistencyIssue struct {
-	// Element is "process", "customer" or "value_stream".
+	// Element is "process", "inventory", "customer" or "value_stream".
 	Element string `json:"element"`
-	// ID is the process or customer ID (empty for the value stream).
+	// ID is the process, inventory or customer ID (empty for the value stream).
 	ID string `json:"id,omitempty"`
 	// Field is the JSON name of the stored value (or the sum that was checked).
 	Field string `json:"field"`
@@ -37,8 +37,9 @@ type ConsistencyIssue struct {
 // Relationship rules (used in ConsistencyIssue.Rule).
 const (
 	ruleTransport     = "transport_time = transport_repetition_time × transport_repetition_count (A.10)"
-	ruleWaiting       = "waiting_time = stock_quantity × cycle_time (A.11)"
-	ruleRange         = "range_of_inventory = stock_quantity × cycle_time"
+	ruleWaiting       = "waiting_time = stock_quantity ÷ customer demand rate (inventory time: stock ÷ demand per demand_period)"
+	ruleRange         = "range_of_inventory = stock_quantity ÷ customer demand rate (stock ÷ demand per demand_period)"
+	ruleInvRange      = "inventory range = quantity ÷ customer demand rate (quantity ÷ demand per demand_period)"
 	ruleProcessing    = "processing_time = cycle_time × order_quantity ÷ resource_count (A.5)"
 	ruleProcessParts  = "process_time = processing_time + setup_time + handling_time + waiting_time_process + ancillary_time (A.2)"
 	ruleRepetitive    = "process_time = setup_time + repetition_time × repetition_count (A.6)"
@@ -65,13 +66,24 @@ func consistent(a, b float64) bool {
 // model decides between a stored total and its components; every
 // calculation, analysis and design step uses it.
 //
+// ResolveParameters sees the process alone, so it cannot know the customer
+// demand rate and leaves waiting_time and range_of_inventory as stored. Use
+// ResolveParametersInStream to also derive them from stock_quantity; every
+// value-stream calculation (CalculateKPIs, CheckConsistency, the analyzer
+// and designer) does.
+//
 // The rule: when a value's parts are given (> 0), the value is computed from
 // them and a stored value is only checked against it. When only the stored
 // value is given (a rough map), it is used as is. Zero means "not given".
 // In order:
 //
 //   - transport_time = transport_repetition_time × transport_repetition_count (A.10)
-//   - waiting_time and range_of_inventory = stock_quantity × cycle_time (A.11)
+//   - waiting_time and range_of_inventory = stock_quantity ÷ customer demand
+//     rate: the standard VSM inventory time (Rother & Shook: inventory ÷
+//     daily demand), converted to params' unit through
+//     Customer.DemandPeriod. Only in a stream whose customer has Demand and a
+//     day or week DemandPeriod (see CalculateInventoryTime); otherwise the
+//     stored values are used and not checked.
 //   - processing_time = cycle_time × order_quantity ÷ resource_count (A.5)
 //   - process_time = processing + setup + handling + waiting (process) +
 //     ancillary time (A.2): when any part is given, the sum of the parts,
@@ -86,18 +98,64 @@ func consistent(a, b float64) bool {
 //     stored lead_time
 //   - yield_factor = 1 − (scrap_rate + rework_rate) (A.17)
 func (c *Calculator) ResolveParameters(params ProcessParameters) ProcessParameters {
-	p, _ := c.resolveParameters(params)
+	p, _ := c.resolveParameters(params, streamContext{})
 	return p
 }
 
-// resolvedIn resolves params and converts the result to unit.
-func (c *Calculator) resolvedIn(params ProcessParameters, unit TimeUnit) ProcessParameters {
-	return c.normalizeTimes(c.ResolveParameters(params), unit)
+// ResolveParametersInStream is ResolveParameters for a process of vs: it
+// also derives waiting_time and range_of_inventory from stock_quantity and
+// the customer's demand rate (see ResolveParameters). A process without a
+// TimeUnit is taken to be in vs's reference unit.
+func (c *Calculator) ResolveParametersInStream(params ProcessParameters, vs *ValueStream) ProcessParameters {
+	p, _ := c.resolveParameters(params, c.contextOf(vs))
+	return p
+}
+
+// streamContext is what resolving a process needs from its value stream:
+// the customer (for the demand rate stock is used up at) and the reference
+// time unit (the unit of processes that declare none). The zero value means
+// "process alone".
+type streamContext struct {
+	customer *Customer
+	unit     TimeUnit
+}
+
+// contextOf returns the stream context of vs (zero for nil).
+func (c *Calculator) contextOf(vs *ValueStream) streamContext {
+	if vs == nil {
+		return streamContext{}
+	}
+	return streamContext{customer: vs.Customer, unit: c.ReferenceTimeUnit(vs.Processes)}
+}
+
+// unitOf returns the unit a process's times are in: its own, else the
+// reference unit.
+func (s streamContext) unitOf(u TimeUnit) TimeUnit {
+	if u == "" {
+		return s.unit
+	}
+	return u
+}
+
+// demandRate returns the customer's demand in units per one unit of time u,
+// and false when it cannot be known (see CalculateInventoryTime).
+func (s streamContext) demandRate(u TimeUnit) (float64, bool) {
+	if s.customer == nil {
+		return 0, false
+	}
+	return demandRate(s.customer.Demand, s.customer.DemandPeriod, s.unitOf(u))
+}
+
+// resolvedIn resolves params in the stream context and converts the result
+// to the reference unit.
+func (c *Calculator) resolvedIn(params ProcessParameters, ctx streamContext) ProcessParameters {
+	p, _ := c.resolveParameters(params, ctx)
+	return c.normalizeTimes(p, ctx.unit)
 }
 
 // resolveParameters implements ResolveParameters and also returns the
 // disagreements it found (Element and ID left empty).
-func (c *Calculator) resolveParameters(in ProcessParameters) (ProcessParameters, []ConsistencyIssue) {
+func (c *Calculator) resolveParameters(in ProcessParameters, ctx streamContext) (ProcessParameters, []ConsistencyIssue) {
 	p := in
 	var issues []ConsistencyIssue
 	unit := string(in.TimeUnit)
@@ -120,9 +178,9 @@ func (c *Calculator) resolveParameters(in ProcessParameters) (ProcessParameters,
 		derive("transport_time", &p.TransportTime,
 			p.TransportRepetitionTime*float64(p.TransportRepetitionCount), ruleTransport)
 	}
-	if p.StockQuantity > 0 && p.CycleTime > 0 {
-		derive("waiting_time", &p.WaitingTime, p.StockQuantity*p.CycleTime, ruleWaiting)
-		derive("range_of_inventory", &p.RangeOfInventory, p.StockQuantity*p.CycleTime, ruleRange)
+	if rate, ok := ctx.demandRate(in.TimeUnit); ok && p.StockQuantity > 0 {
+		derive("waiting_time", &p.WaitingTime, p.StockQuantity/rate, ruleWaiting)
+		derive("range_of_inventory", &p.RangeOfInventory, p.StockQuantity/rate, ruleRange)
 	}
 	if p.CycleTime > 0 && p.OrderQuantity > 0 && p.ResourceCount > 0 {
 		derive("processing_time", &p.ProcessingTime,
@@ -211,6 +269,17 @@ func (c *Calculator) resolveParameters(in ProcessParameters) (ProcessParameters,
 	return p, issues
 }
 
+// inventoryRange returns the time inv's quantity lasts at the customer's
+// demand rate, in the reference unit, and false when the rate is unknown or
+// the quantity is 0.
+func (s streamContext) inventoryRange(inv Inventory) (float64, bool) {
+	rate, ok := s.demandRate(s.unit)
+	if !ok || inv.Quantity <= 0 {
+		return 0, false
+	}
+	return inv.Quantity / rate, true
+}
+
 // processPartsGiven lists the A.2 process time parts that are given (> 0).
 func processPartsGiven(p ProcessParameters) []string {
 	var given []string
@@ -249,8 +318,9 @@ func (c *Calculator) customerTakt(cust *Customer) (float64, bool) {
 // CheckConsistency reports every stored value in vs that disagrees (by more
 // than ConsistencyTolerance) with the value computed from other stored
 // values: process totals versus their parts (see
-// Calculator.ResolveParameters), the customer's takt versus available time ÷
-// demand, and stored KPIs versus CalculateKPIs. Times are compared in each
+// Calculator.ResolveParametersInStream), each inventory's range versus
+// quantity ÷ customer demand rate, the customer's takt versus available time
+// ÷ demand, and stored KPIs versus CalculateKPIs. Times are compared in each
 // process's own unit. Calculations use the computed values regardless; this
 // makes the disagreements visible.
 func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
@@ -258,9 +328,10 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 		return nil
 	}
 	c := NewCalculator()
+	ctx := c.contextOf(vs)
 	var issues []ConsistencyIssue
 	for _, process := range vs.Processes {
-		_, found := c.resolveParameters(process.Parameters)
+		_, found := c.resolveParameters(process.Parameters, ctx)
 		for _, issue := range found {
 			issue.Element, issue.ID = "process", process.ID
 			issue.Message = fmt.Sprintf("process %s: %s", process.ID, issue.Message)
@@ -268,7 +339,18 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 		}
 	}
 
-	unit := string(c.ReferenceTimeUnit(vs.Processes))
+	unit := string(ctx.unit)
+	for _, inv := range vs.Inventory {
+		if want, ok := ctx.inventoryRange(inv); ok && inv.Range > 0 && !consistent(inv.Range, want) {
+			issues = append(issues, ConsistencyIssue{
+				Element: "inventory", ID: inv.ID, Field: "range",
+				StoredValue: inv.Range, ComputedValue: want, Unit: unit, Rule: ruleInvRange,
+				Message: fmt.Sprintf("inventory %s: range stored %g, but quantity %g ÷ customer demand rate = %g",
+					inv.ID, inv.Range, inv.Quantity, want),
+			})
+		}
+	}
+
 	if cust := vs.Customer; cust != nil && cust.TaktTime > 0 && cust.AvailableTime > 0 && cust.Demand > 0 {
 		if takt, _ := c.customerTakt(cust); !consistent(cust.TaktTime, takt) {
 			issues = append(issues, ConsistencyIssue{
