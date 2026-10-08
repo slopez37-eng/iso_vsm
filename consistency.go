@@ -96,7 +96,8 @@ func consistent(a, b float64) bool {
 // still makes the parts the source of the process time). In the result,
 // every value the model computed is set; values that are neither entered
 // nor computable stay nil. Compare with the input to tell entered from
-// derived values. In order:
+// derived values. The result shares no pointers with params (see
+// ProcessParameters.Clone). In order:
 //
 //   - transport_time = transport_repetition_time × transport_repetition_count (A.10)
 //   - waiting_time and range_of_inventory = stock_quantity ÷ customer demand
@@ -134,16 +135,17 @@ func consistent(a, b float64) bool {
 //     ConsistencyTolerance.
 func (c *Calculator) ResolveParameters(params ProcessParameters) ProcessParameters {
 	p, _ := c.resolveParameters(params, streamContext{})
-	return p
+	return p.Clone()
 }
 
 // ResolveParametersInStream is ResolveParameters for a process of vs: it
 // also derives waiting_time and range_of_inventory from stock_quantity and
 // the customer's demand rate (see ResolveParameters). A process without a
-// TimeUnit is taken to be in vs's reference unit.
+// TimeUnit is taken to be in vs's reference unit. The result shares no
+// pointers with params (see ProcessParameters.Clone).
 func (c *Calculator) ResolveParametersInStream(params ProcessParameters, vs *ValueStream) ProcessParameters {
 	p, _ := c.resolveParameters(params, c.contextOf(vs))
-	return p
+	return p.Clone()
 }
 
 // streamContext is what resolving a process needs from its value stream:

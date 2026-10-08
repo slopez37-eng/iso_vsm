@@ -283,7 +283,7 @@ func (d *Designer) CreateIdealState(current *ValueStream) (*ValueStream, error) 
 		idealProcess.Name = process.Name + " (Ideal)"
 
 		// In ideal state: only value-adding time remains
-		idealProcess.Parameters = d.calculator.idealParameters(process.Parameters, d.calculator.contextOf(current))
+		idealProcess.Parameters = d.calculator.idealParameters(process.Parameters, d.calculator.contextOf(current)).Clone()
 
 		idealProcesses = append(idealProcesses, idealProcess)
 	}
@@ -352,6 +352,10 @@ func (d *Designer) DesignFutureStateFromIdeal(ideal, current *ValueStream) (*Val
 // Their capacity is not entered (to be sized by the team); they do not change
 // the KPIs.
 //
+// The future state's processes and inventories share no pointers with the
+// current state's (see ProcessParameters.Clone); its Customer and Supplier
+// are the current state's.
+//
 // Returns an error if a target is invalid or names a process or inventory ID
 // that is not in the current state.
 func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *FutureStateTargets) (*ValueStream, error) {
@@ -396,7 +400,7 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 		if err != nil {
 			return nil, fmt.Errorf("process %s: %w", process.ID, err)
 		}
-		futureProcess.Parameters = params
+		futureProcess.Parameters = params.Clone()
 
 		futureProcesses = append(futureProcesses, futureProcess)
 	}
@@ -440,6 +444,7 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 		if err != nil {
 			return nil, fmt.Errorf("inventory %s: %w", inv.ID, err)
 		}
+		futureInv = futureInv.Clone()
 		if i := processIndex(current, inv.ProcessID); i >= 0 {
 			futureInv.ProcessID = futureProcesses[i].ID
 		}

@@ -505,3 +505,30 @@ func TestImprovementMetricsAcrossUnits(t *testing.T) {
 		t.Errorf("turns per day vs per month compared: %v", got)
 	}
 }
+
+// Resolved and designed parameters share no pointers with their input:
+// changing one does not change the other.
+func TestResultsShareNoPointers(t *testing.T) {
+	in := ProcessParameters{ProcessTime: F(10), SetupTime: F(2), ProcessingTime: F(8), YieldFactor: F(0.9)}
+	out := NewCalculator().ResolveParameters(in)
+	*out.SetupTime, *out.YieldFactor = 99, 0
+	if *in.SetupTime != 2 || *in.YieldFactor != 0.9 {
+		t.Errorf("resolved result aliases its input: %+v", in)
+	}
+	current := &ValueStream{ID: "vs", Name: "A", Processes: []Process{{ID: "p", Name: "p", Parameters: in}},
+		Inventory: []Inventory{{ID: "i", Quantity: F(5)}}}
+	future, err := NewDesigner().DesignFutureStateFromTargets(current, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*future.Processes[0].Parameters.SetupTime = 7
+	*future.Inventory[0].Quantity = 7
+	ideal, err := NewDesigner().CreateIdealState(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*ideal.Processes[0].Parameters.YieldFactor = 0.5
+	if *in.SetupTime != 2 || *current.Inventory[0].Quantity != 5 || *in.YieldFactor != 0.9 {
+		t.Errorf("designed states alias the current state: %+v %+v", in, current.Inventory[0])
+	}
+}

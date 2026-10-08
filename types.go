@@ -2,6 +2,7 @@
 package vsm
 
 import (
+	"reflect"
 	"time"
 )
 
@@ -110,6 +111,44 @@ func F(v float64) *float64 { return &v }
 
 // I is F for the optional integer fields (counts).
 func I(v int) *int { return &v }
+
+// Clone returns a copy of p that shares no pointers with p, so changing a
+// value in one (*copy.SetupTime = 3) does not change the other. Results
+// that are new states (resolved parameters, designed future and ideal
+// states) are returned as clones.
+func (p ProcessParameters) Clone() ProcessParameters {
+	cloneOptionals(&p)
+	return p
+}
+
+// Clone returns a copy of c that shares no pointers with c.
+func (c Customer) Clone() Customer {
+	cloneOptionals(&c)
+	return c
+}
+
+// Clone returns a copy of inv that shares no pointers with inv.
+func (inv Inventory) Clone() Inventory {
+	cloneOptionals(&inv)
+	return inv
+}
+
+// cloneOptionals replaces every non-nil *float64 and *int field of the
+// struct v points to with a pointer to a copy of its value.
+func cloneOptionals(v any) {
+	s := reflect.ValueOf(v).Elem()
+	for i := 0; i < s.NumField(); i++ {
+		f := s.Field(i)
+		if f.Kind() != reflect.Pointer || f.IsNil() || !f.CanSet() {
+			continue
+		}
+		if k := f.Elem().Kind(); k == reflect.Float64 || k == reflect.Int {
+			c := reflect.New(f.Elem().Type())
+			c.Elem().Set(f.Elem())
+			f.Set(c)
+		}
+	}
+}
 
 // num returns *p, or 0 when p is nil (not entered). It is for sums and
 // display where a missing value adds nothing; presence checks use p != nil.
