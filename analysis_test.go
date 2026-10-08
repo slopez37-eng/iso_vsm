@@ -205,3 +205,76 @@ func TestProcessLoadCountsResources(t *testing.T) {
 		t.Errorf("no resource count: load = (%v, %v), want (240, 1.25)", c, u)
 	}
 }
+
+// AnalyzeFlow compares neighbours by effective cycle time (CT ÷ resources)
+// only when both are known: a process with no cycle time data is not
+// compared as 0, while an entered 0 is a known value. Process time, which
+// includes the batch and setup, is not what is compared.
+func TestAnalyzeFlowCapacityNeedsKnownNeighbours(t *testing.T) {
+	stream := func(a, b ProcessParameters) *ValueStream {
+		a.TimeUnit, b.TimeUnit = TimeUnitMinutes, TimeUnitMinutes
+		return &ValueStream{ID: "vs", Processes: []Process{
+			{ID: "a", Name: "A", Parameters: a}, {ID: "b", Name: "B", Parameters: b}}}
+	}
+	capacity := func(vs *ValueStream) []FlowInterruption {
+		got, err := NewAnalyzer().AnalyzeFlow(vs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []FlowInterruption
+		for _, fi := range got.FlowInterruptions {
+			if fi.Type == "capacity" {
+				out = append(out, fi)
+			}
+		}
+		return out
+	}
+	cases := []struct {
+		name   string
+		a, b   ProcessParameters
+		impact float64 // 0: no capacity interruption
+	}{
+		{"B has no data", ProcessParameters{ProcessTime: F(10)}, ProcessParameters{}, 0},
+		{"B has no cycle time", ProcessParameters{ProcessTime: F(10), CycleTime: F(10)}, ProcessParameters{ProcessTime: F(2)}, 0},
+		{"B cycle time impossible", ProcessParameters{CycleTime: F(10)}, ProcessParameters{CycleTime: F(-1)}, 0},
+		{"B resource count impossible", ProcessParameters{CycleTime: F(10)}, ProcessParameters{CycleTime: F(1), ResourceCount: I(-1)}, 0},
+		{"B cycle time entered 0", ProcessParameters{CycleTime: F(10)}, ProcessParameters{CycleTime: F(0)}, 10},
+		{"A slower", ProcessParameters{CycleTime: F(3)}, ProcessParameters{CycleTime: F(1)}, 2},
+		// Two resources halve A's effective cycle time: 4 ÷ 2 = 2, not above 1.5 × 2.
+		{"A has two resources", ProcessParameters{CycleTime: F(4), ResourceCount: I(2)}, ProcessParameters{CycleTime: F(2)}, 0},
+		// Process time 100 is a batch of 50 at CT 2: same pace as B.
+		{"A batch, same pace", ProcessParameters{CycleTime: F(2), OrderQuantity: F(50)}, ProcessParameters{CycleTime: F(2), ProcessTime: F(2)}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := capacity(stream(tc.a, tc.b))
+			switch {
+			case tc.impact == 0 && len(got) != 0:
+				t.Errorf("capacity interruptions %+v, want none", got)
+			case tc.impact != 0 && (len(got) != 1 || !approx(got[0].Impact, tc.impact)):
+				t.Errorf("capacity interruptions %+v, want one with impact %v", got, tc.impact)
+			}
+		})
+	}
+	// Excess inventory needs a known process time too; blank process time
+	// with waiting time entered is 0 (blank-parts rule), so it is compared.
+	inventory := func(p ProcessParameters) int {
+		got, err := NewAnalyzer().AnalyzeFlow(&ValueStream{ID: "vs", Processes: []Process{{ID: "p", Name: "P", Parameters: p}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, fi := range got.FlowInterruptions {
+			if fi.Type == "inventory" {
+				n++
+			}
+		}
+		return n
+	}
+	if n := inventory(ProcessParameters{WaitingTime: F(10), CycleTime: F(2), OrderQuantity: F(5), ResourceCount: I(-1)}); n != 0 {
+		t.Errorf("unknown process time: %d inventory interruptions, want none", n)
+	}
+	if n := inventory(ProcessParameters{WaitingTime: F(10)}); n != 1 {
+		t.Errorf("process time 0 (blank part): %d inventory interruptions, want 1", n)
+	}
+}

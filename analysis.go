@@ -297,19 +297,28 @@ func (a *Analyzer) CalculateProcessLoad(process Process, vs *ValueStream) (capac
 	if vs == nil || !a.hasLoadInputs(vs) {
 		return 0, 0, false
 	}
-	ctx := a.calculator.contextOf(vs)
+	effective, ok := a.effectiveCycleTime(process, a.calculator.contextOf(vs))
+	if !ok || effective <= 0 {
+		return 0, 0, false
+	}
+	available := *vs.Customer.AvailableTime
+	return available / effective, *vs.Customer.Demand * effective / available, true
+}
+
+// effectiveCycleTime returns a process's cycle time per resource, CT ÷
+// #RES, in the reference time unit: the time between two units leaving
+// the process, the one figure that capacity (available time ÷ CT ÷ #RES,
+// see CalculateProcessLoad) depends on. ok is false when it is unknown:
+// cycle_time not entered or impossible, resource_count entered as 0 or
+// less (see resourceCount), or a time unit that is not supported. A
+// cycle_time entered as 0 gives 0.
+func (a *Analyzer) effectiveCycleTime(process Process, ctx streamContext) (float64, bool) {
 	params, unitOK := a.calculator.resolvedIn(process.Parameters, ctx)
-	ct := params.CycleTime
-	if !unitOK || !positive(ct) {
-		return 0, 0, false
+	resources, resourcesOK := resourceCount(process.Parameters)
+	if !unitOK || !resourcesOK || params.CycleTime == nil {
+		return 0, false
 	}
-	cycleTime := *ct
-	resources, ok := resourceCount(process.Parameters)
-	if !ok {
-		return 0, 0, false
-	}
-	available := *vs.Customer.AvailableTime * resources
-	return available / cycleTime, *vs.Customer.Demand * cycleTime / available, true
+	return *params.CycleTime / resources, true
 }
 
 // AnalyzeIdleTimes analyzes idle times across all processes and inventory
@@ -427,7 +436,18 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 	return analysis, nil
 }
 
-// AnalyzeFlow analyzes the product and information flow
+// AnalyzeFlow analyzes the product and information flow.
+//
+// A capacity interruption is reported between neighbouring processes when
+// the first one's effective cycle time (CT ÷ #RES, see
+// CalculateProcessLoad) is more than 1.5 times the next one's: it supplies
+// the next process more slowly than that process can work. Process time is
+// not compared, as it includes the batch (order quantity) and setup. An
+// excess-inventory interruption is reported when a process's waiting time
+// is longer than its process time. Each comparison needs both values known
+// (an entered 0 is known); a value that is unknown is not compared (it is
+// reported as missing data by CheckConsistency where a stream total needs
+// it).
 func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 	analysis := &FlowAnalysis{
 		FlowInterruptions: []FlowInterruption{},
@@ -471,13 +491,13 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 	}
 
 	// Identify flow interruptions
+	ctx := a.calculator.contextOf(vs)
 	for i, process := range vs.Processes {
 		if !f.processes[i].unitOK {
 			continue
 		}
 		params := resolved[i]
 		scrap, rework := num(params.ScrapRate), num(params.ReworkRate)
-		processTime, waiting := num(params.ProcessTime), num(params.WaitingTime)
 
 		// Check for quality issues (high scrap/rework rates)
 		if scrap > 0.05 || rework > 0.1 {
@@ -491,22 +511,25 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 		}
 
 		// Check for capacity bottlenecks
-		if i < len(vs.Processes)-1 && f.processes[i+1].unitOK {
+		if i < len(vs.Processes)-1 {
 			nextProcess := vs.Processes[i+1]
-			next := num(resolved[i+1].ProcessTime)
-			if processTime > next*1.5 {
+			this, thisOK := a.effectiveCycleTime(process, ctx)
+			next, nextOK := a.effectiveCycleTime(nextProcess, ctx)
+			if thisOK && nextOK && exceeds(this, next*1.5) {
 				analysis.FlowInterruptions = append(analysis.FlowInterruptions, FlowInterruption{
-					Type:        "capacity",
-					Location:    fmt.Sprintf("%s → %s", process.Name, nextProcess.Name),
-					Frequency:   1.0, // Continuous
-					Impact:      processTime - next,
-					Description: "Capacity mismatch causing bottlenecks",
+					Type:      "capacity",
+					Location:  fmt.Sprintf("%s → %s", process.Name, nextProcess.Name),
+					Frequency: 1.0, // Continuous
+					Impact:    this - next,
+					Description: fmt.Sprintf("Capacity mismatch causing bottlenecks: effective cycle time "+
+						"(cycle time ÷ resources) %g, next process %g", this, next),
 				})
 			}
 		}
 
 		// Check for inventory issues (high waiting times)
-		if waiting > processTime {
+		if params.ProcessTime != nil && params.WaitingTime != nil && *params.WaitingTime > *params.ProcessTime {
+			processTime, waiting := *params.ProcessTime, *params.WaitingTime
 			// Waiting-to-process ratio; with no process time recorded the
 			// ratio is undefined, so report 0 rather than +Inf.
 			frequency := 0.0
