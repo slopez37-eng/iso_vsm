@@ -85,3 +85,13 @@ func assumptionIssues(vs *ValueStream) []ConsistencyIssue {
 	}
 	return issues
 }
+
+// Clone returns a copy of w that shares no pointers with w (nil stays nil).
+func (w *WasteAssumptions) Clone() *WasteAssumptions {
+	if w == nil {
+		return nil
+	}
+	c := *w
+	cloneOptionals(&c)
+	return &c
+}

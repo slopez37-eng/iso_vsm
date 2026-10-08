@@ -469,8 +469,13 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 		Description:   description,
 		Customer:      current.Customer,
 		Supplier:      current.Supplier,
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
+		// The user's waste assumptions and information-flow rating carry
+		// over unchanged: without targets the future state knows exactly
+		// what the current state knows.
+		WasteAssumptions:       current.WasteAssumptions.Clone(),
+		InformationFlowQuality: cloneFloat(current.InformationFlowQuality),
+		CreatedAt:              time.Now(),
+		UpdatedAt:              time.Now(),
 	}
 
 	var futureProcesses []Process

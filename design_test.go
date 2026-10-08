@@ -892,3 +892,28 @@ func fmtOpt(p *float64) string {
 	}
 	return fmt.Sprint(*p)
 }
+
+func TestFutureStateCarriesWasteInputs(t *testing.T) {
+	current := targetStream()
+	current.WasteAssumptions = &WasteAssumptions{InventoryShareOfWaiting: F(0.6), ReductionPotential: F(0.3)}
+	current.InformationFlowQuality = F(0.7)
+
+	future, err := NewDesigner().DesignFutureStateFromTargets(current, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wa := future.WasteAssumptions
+	if wa == nil || wa.InventoryShareOfWaiting == nil || *wa.InventoryShareOfWaiting != 0.6 ||
+		wa.ReductionPotential == nil || *wa.ReductionPotential != 0.3 || wa.WasteShareOfHandling != nil {
+		t.Fatalf("waste assumptions not carried over: %+v", wa)
+	}
+	if future.InformationFlowQuality == nil || *future.InformationFlowQuality != 0.7 {
+		t.Fatalf("information flow quality not carried over: %v", future.InformationFlowQuality)
+	}
+	// Independent copies: changing the future state leaves the current one alone.
+	*future.WasteAssumptions.InventoryShareOfWaiting = 0.1
+	*future.InformationFlowQuality = 0.1
+	if *current.WasteAssumptions.InventoryShareOfWaiting != 0.6 || *current.InformationFlowQuality != 0.7 {
+		t.Fatal("future state shares values with the current state")
+	}
+}
