@@ -2,6 +2,7 @@ package vsm
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -249,5 +250,80 @@ func TestTrendsNormaliseUnitsAndPeriods(t *testing.T) {
 	}
 	if m := got.KPIs["total_lead_time"]; m.Trend != "stable" {
 		t.Errorf("unitless history: trend %q, want stable", m.Trend)
+	}
+}
+
+// Status comes from meeting the target in the KPI's better direction.
+func TestKPIStatusUsesTargetAndDirection(t *testing.T) {
+	a := NewAssessor()
+	tests := []struct {
+		kpi           string
+		value, target float64
+		want          string
+	}{
+		// Lower is better: at or below target is met.
+		{"total_lead_time", 90, 100, StatusExcellent},
+		{"total_lead_time", 100, 100, StatusExcellent},
+		{"total_lead_time", 105, 100, StatusGood},
+		{"total_lead_time", 120, 100, StatusWarning},
+		{"total_lead_time", 150, 100, StatusCritical},
+		{"scrap_rate", 0, 0, StatusExcellent},
+		{"scrap_rate", 0.01, 0, StatusCritical},
+		// Higher is better: at or above target is met.
+		{"value_added_ratio", 0.3, 0.25, StatusExcellent},
+		{"value_added_ratio", 0.25, 0.25, StatusExcellent},
+		{"value_added_ratio", 0.24, 0.25, StatusGood},
+		{"value_added_ratio", 0.2, 0.25, StatusWarning},
+		{"value_added_ratio", 0.1, 0.25, StatusCritical},
+		// Unknown direction: met or missed cannot be told.
+		{"customer_takt", 2, 3, StatusUnrated},
+	}
+	for _, tt := range tests {
+		if got := a.determineKPIStatus(tt.kpi, tt.value, tt.target, true); got != tt.want {
+			t.Errorf("%s %v vs target %v: %q, want %q", tt.kpi, tt.value, tt.target, got, tt.want)
+		}
+	}
+	// No target: no status is invented (a 500-minute lead time is not
+	// "excellent").
+	if got := a.determineKPIStatus("total_lead_time", 500, 0, false); got != StatusUnrated {
+		t.Errorf("no target: %q, want unrated", got)
+	}
+}
+
+// Through AssessValueStream: meeting a lead-time target is not critical,
+// unrated KPIs are left out of the performance index and action items, and
+// with no targets at all the index is 0 with a recommendation to set them.
+func TestAssessValueStreamRatesOnlyTargetedKPIs(t *testing.T) {
+	vs := mixedUnitStream() // lead time 28 min
+	a := NewAssessor()
+	got, err := a.AssessValueStream(vs, map[string]float64{"total_lead_time": 28}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := got.KPIs["total_lead_time"]; m.Status != StatusExcellent || !m.HasTarget {
+		t.Errorf("lead time at target: %q (has target %v), want excellent", m.Status, m.HasTarget)
+	}
+	for name, m := range got.KPIs {
+		if name != "total_lead_time" && (m.Status != StatusUnrated || m.HasTarget) {
+			t.Errorf("%s without target: status %q has_target %v, want unrated", name, m.Status, m.HasTarget)
+		}
+	}
+	if got.PerformanceIndex != 1 {
+		t.Errorf("performance index = %v, want 1 (only the met KPI is rated)", got.PerformanceIndex)
+	}
+	if len(got.ActionItems) != 0 {
+		t.Errorf("action items for unrated KPIs: %+v", got.ActionItems)
+	}
+	if r, ok := got.TargetAchievement["total_lead_time"]; !ok || r != 1 || len(got.TargetAchievement) != 1 {
+		t.Errorf("target achievement = %v, want only total_lead_time = 1", got.TargetAchievement)
+	}
+
+	none, err := a.AssessValueStream(vs, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.PerformanceIndex != 0 || len(none.Recommendations) != 1 ||
+		!strings.Contains(none.Recommendations[0], "no targets") {
+		t.Errorf("no targets: index %v, recommendations %v", none.PerformanceIndex, none.Recommendations)
 	}
 }

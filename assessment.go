@@ -36,12 +36,20 @@ type AssessmentResult struct {
 
 // KPIMeasure represents a measured KPI value with metadata
 type KPIMeasure struct {
-	Name      string  `json:"name"`
-	Value     float64 `json:"value"`
-	Unit      string  `json:"unit"`
-	Target    float64 `json:"target"`
+	Name   string  `json:"name"`
+	Value  float64 `json:"value"`
+	Unit   string  `json:"unit"`
+	Target float64 `json:"target"`
+	// HasTarget is true when a target was supplied for this KPI (a target
+	// of 0 is a real target); without one, Target is 0 and Status is
+	// StatusUnrated.
+	HasTarget bool    `json:"has_target,omitempty"`
 	Threshold float64 `json:"threshold"`
-	Status    string  `json:"status"` // "excellent", "good", "warning", "critical"
+	// Status rates the value against the target in the KPI's better
+	// direction (see determineKPIStatus): StatusExcellent, StatusGood,
+	// StatusWarning, StatusCritical, or StatusUnrated when there is no
+	// target or the direction is unknown.
+	Status string `json:"status"`
 	// Trend is "improving", "declining" or "stable" for KPIs whose better
 	// direction is known (see GetKPIDirection). For a KPI with unknown
 	// direction it only reports the change: "increasing", "decreasing" or
@@ -102,6 +110,19 @@ type PDCAPhase struct {
 	Notes       string    `json:"notes,omitempty"`
 }
 
+// KPI statuses (KPIMeasure.Status).
+const (
+	StatusExcellent = "excellent" // target met (or beaten)
+	StatusGood      = "good"      // target missed by at most 10%
+	StatusWarning   = "warning"   // target missed by more than 10%, at most 30%
+	StatusCritical  = "critical"  // target missed by more than 30%
+	// StatusUnrated: no target was given, or the KPI's better direction is
+	// unknown, so whether the value is good cannot be told. Unrated KPIs
+	// are left out of the performance index, target achievement, action
+	// items and status-based recommendations.
+	StatusUnrated = "unrated"
+)
+
 // Assessor provides methods for assessing value stream performance
 type Assessor struct {
 	calculator *Calculator
@@ -139,7 +160,7 @@ func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64
 
 	// Create KPI measures with targets and status
 	for name, value := range currentKPIs {
-		target := targets[name] // Default target if not specified
+		target, hasTarget := targets[name]
 
 		measure := KPIMeasure{
 			Name:        name,
@@ -149,7 +170,7 @@ func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64
 		}
 
 		// Set target and unit
-		measure.Target = target
+		measure.Target, measure.HasTarget = target, hasTarget
 		measure.Unit = a.getKPIUnit(name)
 		if measure.Unit == "time" && result.TimeUnit != "" {
 			measure.Unit = string(result.TimeUnit)
@@ -159,7 +180,7 @@ func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64
 		}
 
 		// Determine status
-		measure.Status = a.determineKPIStatus(name, value, target)
+		measure.Status = a.determineKPIStatus(name, value, target, hasTarget)
 		measure.Threshold = a.getKPIThreshold(name)
 
 		// Analyze trend if history available
@@ -218,51 +239,41 @@ func (a *Assessor) getKPIUnit(name string) string {
 	return kpiUnit(name)
 }
 
-// determineKPIStatus determines the status of a KPI based on value and target
-func (a *Assessor) determineKPIStatus(name string, value, target float64) string {
-	if target == 0 {
-		if value > 0.8 {
-			return "excellent"
-		} else if value > 0.6 {
-			return "good"
-		} else if value > 0.4 {
-			return "warning"
-		}
-		return "critical"
+// determineKPIStatus rates value against target in the KPI's better
+// direction (GetKPIDirection). The target is met when value ≤ target for a
+// lower-is-better KPI (lead time, scrap) and when value ≥ target for a
+// higher-is-better KPI (flow efficiency, yield): StatusExcellent. A miss is
+// graded by its size relative to the target: up to 10% StatusGood, up to
+// 30% StatusWarning, beyond StatusCritical; any miss of a target of 0 is
+// StatusCritical. Without a target, or for a KPI of unknown direction, the
+// status is StatusUnrated: the library does not invent a rating.
+func (a *Assessor) determineKPIStatus(name string, value, target float64, hasTarget bool) string {
+	if !hasTarget {
+		return StatusUnrated
 	}
-
-	ratio := value / target
-
-	// For some KPIs, higher is better; for others (and, as before, for KPIs
-	// of unknown direction) lower is better.
-	isHigherBetter := GetKPIDirection(name) == HigherIsBetter
-
-	var status string
-	if isHigherBetter {
-		switch {
-		case ratio >= 1.0:
-			status = "excellent"
-		case ratio >= 0.9:
-			status = "good"
-		case ratio >= 0.7:
-			status = "warning"
-		default:
-			status = "critical"
-		}
-	} else {
-		switch {
-		case ratio <= 0.5:
-			status = "excellent"
-		case ratio <= 0.7:
-			status = "good"
-		case ratio <= 0.9:
-			status = "warning"
-		default:
-			status = "critical"
-		}
+	var miss float64
+	switch GetKPIDirection(name) {
+	case HigherIsBetter:
+		miss = target - value
+	case LowerIsBetter:
+		miss = value - target
+	default:
+		return StatusUnrated
 	}
-
-	return status
+	if miss <= 0 || consistent(value, target) {
+		return StatusExcellent
+	}
+	relative := math.Inf(1)
+	if target != 0 {
+		relative = miss / math.Abs(target)
+	}
+	switch {
+	case relative <= 0.1:
+		return StatusGood
+	case relative <= 0.3:
+		return StatusWarning
+	}
+	return StatusCritical
 }
 
 // getKPIThreshold returns the threshold value for a KPI
@@ -403,44 +414,52 @@ func trendLabel(direction KPIDirection, sign int) string {
 	}
 }
 
-// calculatePerformanceIndex calculates an overall performance index
+// calculatePerformanceIndex is the mean status weight of the rated KPIs
+// (excellent 1, good 0.8, warning 0.5, critical 0.2). Unrated KPIs are left
+// out; with no rated KPI the index is 0 (a rated index is at least 0.2).
 func (a *Assessor) calculatePerformanceIndex(kpis map[string]KPIMeasure) float64 {
-	if len(kpis) == 0 {
-		return 0
-	}
-
 	statusWeights := map[string]float64{
-		"excellent": 1.0,
-		"good":      0.8,
-		"warning":   0.5,
-		"critical":  0.2,
+		StatusExcellent: 1.0,
+		StatusGood:      0.8,
+		StatusWarning:   0.5,
+		StatusCritical:  0.2,
 	}
 
-	totalWeight := 0.0
-	totalScore := 0.0
-
+	var totalScore float64
+	rated := 0
 	for _, kpi := range kpis {
-		weight := statusWeights[kpi.Status]
-		totalScore += weight
-		totalWeight += 1.0
+		if weight, ok := statusWeights[kpi.Status]; ok {
+			totalScore += weight
+			rated++
+		}
 	}
-
-	if totalWeight == 0 {
+	if rated == 0 {
 		return 0
 	}
-
-	return totalScore / totalWeight
+	return totalScore / float64(rated)
 }
 
-// calculateTargetAchievement calculates achievement against targets
+// calculateTargetAchievement returns, for each rated KPI, how far it meets
+// its target in its better direction, where 1 or more means met:
+// value ÷ target for higher-is-better KPIs, target ÷ value for
+// lower-is-better ones. A value of 0 for a lower-is-better KPI, or a target
+// of 0 for a higher-is-better one, is met and gives 1. Unrated KPIs (no
+// target, or unknown direction) are left out.
 func (a *Assessor) calculateTargetAchievement(kpis map[string]KPIMeasure) map[string]float64 {
 	achievement := make(map[string]float64)
 
 	for name, kpi := range kpis {
-		if kpi.Target != 0 {
-			achievement[name] = kpi.Value / kpi.Target
+		if kpi.Status == StatusUnrated || !kpi.HasTarget {
+			continue
+		}
+		num, den := kpi.Value, kpi.Target
+		if GetKPIDirection(name) == LowerIsBetter {
+			num, den = kpi.Target, kpi.Value
+		}
+		if den == 0 {
+			achievement[name] = 1
 		} else {
-			achievement[name] = 0 // No target defined
+			achievement[name] = num / den
 		}
 	}
 
@@ -589,7 +608,7 @@ func (a *Assessor) generateActionItems(kpis map[string]KPIMeasure, vs *ValueStre
 	now := time.Now()
 
 	for name, kpi := range kpis {
-		if kpi.Status == "critical" {
+		if kpi.Status == StatusCritical {
 			item := ActionItem{
 				ID: fmt.Sprintf("action_%s_%d", name, now.Unix()),
 				Description: fmt.Sprintf("Address critical %s KPI (current: %.2f, target: %.2f)",
@@ -601,7 +620,7 @@ func (a *Assessor) generateActionItems(kpis map[string]KPIMeasure, vs *ValueStre
 				CreatedAt:  now,
 			}
 			items = append(items, item)
-		} else if kpi.Status == "warning" {
+		} else if kpi.Status == StatusWarning {
 			item := ActionItem{
 				ID: fmt.Sprintf("action_%s_%d", name, now.Unix()),
 				Description: fmt.Sprintf("Improve %s KPI performance (current: %.2f, target: %.2f)",
@@ -651,8 +670,18 @@ func (a *Assessor) assessPDCAStatus(vs *ValueStream) PDCAStatus {
 func (a *Assessor) generateAssessmentRecommendations(result *AssessmentResult) []string {
 	recommendations := []string{}
 
-	// Performance-based recommendations
-	if result.PerformanceIndex < 0.6 {
+	// Performance-based recommendations, over the rated KPIs only.
+	rated := 0
+	for _, kpi := range result.KPIs {
+		if kpi.Status != StatusUnrated {
+			rated++
+		}
+	}
+	if len(result.KPIs) > 0 && rated == 0 {
+		recommendations = append(recommendations,
+			"KPIs have no targets (or no known better direction), so performance is not rated; "+
+				"set targets for the KPIs that matter.")
+	} else if rated > 0 && result.PerformanceIndex < 0.6 {
 		recommendations = append(recommendations,
 			"Overall performance needs significant improvement. Focus on high-impact measures.")
 	}
@@ -660,7 +689,7 @@ func (a *Assessor) generateAssessmentRecommendations(result *AssessmentResult) [
 	// KPI-specific recommendations
 	for name, kpi := range result.KPIs {
 		switch kpi.Status {
-		case "critical":
+		case StatusCritical:
 			switch name {
 			case "total_lead_time":
 				recommendations = append(recommendations,
@@ -669,7 +698,7 @@ func (a *Assessor) generateAssessmentRecommendations(result *AssessmentResult) [
 				recommendations = append(recommendations,
 					"Eliminate non-value-adding activities to improve value-added ratio.")
 			}
-		case "warning":
+		case StatusWarning:
 			recommendations = append(recommendations,
 				fmt.Sprintf("Monitor and improve %s KPI performance.", name))
 		}
