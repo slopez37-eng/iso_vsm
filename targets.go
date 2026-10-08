@@ -92,7 +92,11 @@ func (t *Target) apply(current *float64) (*float64, error) {
 //   - A total whose parts include an unknown value (see ResolveParameters)
 //     cannot follow targets: a target on it or on its other parts is an
 //     error, unless the unknown part itself has a target. Impossible values
-//     of the current state without a target are carried over unchanged.
+//     of the current state without a target are carried over unchanged, and
+//     what is computed from them stays unknown (an impossible input is not
+//     blank): with no targets, the future state knows exactly what the
+//     current state knows. A cycle_time target where resource_count is
+//     impossible is an error (processing time cannot follow it).
 //
 // Targets that cannot be met consistently return an error naming the
 // conflict, rather than producing a map that contradicts itself.
@@ -300,7 +304,27 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		}
 	}
 	updateStock()
-	if processingFormula(p) {
+	// An input that is unknown in the current state (an impossible value,
+	// see ResolveParameters) is nil in cur but is not blank: a formula
+	// that needs it must not read it as blank (resource_count not entered
+	// counts as 1, a blank part as 0).
+	unknownInput := func(names ...string) []string {
+		var out []string
+		for _, n := range names {
+			if cr.unknown[n] && !targeted[n] {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	switch bad := unknownInput("resource_count"); {
+	case len(bad) > 0 && targeted["cycle_time"]:
+		return params, fmt.Errorf("cycle_time: processing_time (cycle_time × order_quantity ÷ resource_count, "+
+			"A.5) cannot follow it: %s unknown in the current state (see CheckConsistency); correct it first",
+			strings.Join(bad, ", "))
+	case len(bad) > 0:
+		// Processing time stays as it is (stored, or unknown).
+	case processingFormula(p):
 		p.ProcessingTime = F(processingTime(p))
 	}
 
@@ -505,7 +529,11 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		return params, fmt.Errorf("process_time: the targets give %g, below value_adding_time %g "+
 			"(value adding time is part of process time)", *p.ProcessTime, *p.ValueAddingTime)
 	}
-	classified := p.NonValueAddingTime != nil || p.NecessaryNonValueAddingTime != nil
+	// A classification with an unknown part (an impossible value) cannot
+	// give or follow the lead time; it is carried over as it is.
+	classUnknown := len(unknownInput("value_adding_time", "non_value_adding_time",
+		"necessary_non_value_adding_time")) > 0
+	classified := (p.NonValueAddingTime != nil || p.NecessaryNonValueAddingTime != nil) && !classUnknown
 	switch {
 	case flowSet && classified:
 		// The lead-time change not already explained by NVAT/NNVAT targets

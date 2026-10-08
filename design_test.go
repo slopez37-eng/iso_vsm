@@ -786,3 +786,109 @@ func TestPartTargetOnTotalOnlyProcess(t *testing.T) {
 		t.Errorf("process time target on a total-only process: err %v", err)
 	}
 }
+
+// TestNoTargetsKeepsKnownAndUnknown: with no targets, every value of the
+// current state is equally known or unknown, and equal, in the future
+// state, process by process (as resolved) and in the stream KPIs, and the
+// future state has the same consistency issues. Streams with impossible
+// inputs are included: an impossible value is unknown, not blank, and a
+// value computed from it must stay unknown.
+func TestNoTargetsKeepsKnownAndUnknown(t *testing.T) {
+	cust := &Customer{ID: "c", Demand: F(100), DemandPeriod: DemandPeriodDay, AvailableTime: F(480)}
+	single := func(p ProcessParameters) *ValueStream {
+		p.TimeUnit = TimeUnitMinutes
+		return &ValueStream{ID: "vs", Customer: cust, Processes: []Process{{ID: "p", Parameters: p}}}
+	}
+	streams := map[string]*ValueStream{
+		"target stream": targetStream(),
+		"rich stream":   richStream(),
+		// The reported case: processing time (A.5) is unknown, not 2 × 10 ÷ 1.
+		"negative resource count": single(ProcessParameters{CycleTime: F(2), OrderQuantity: F(10),
+			ResourceCount: I(-1), ValueAddingTime: F(1)}),
+		"zero resource count": single(ProcessParameters{CycleTime: F(2), OrderQuantity: F(10),
+			ResourceCount: I(0), ValueAddingTime: F(1)}),
+		"negative order quantity": single(ProcessParameters{CycleTime: F(2), OrderQuantity: F(-10),
+			SetupTime: F(3), IdleTime: F(5)}),
+		"negative cycle time": single(ProcessParameters{CycleTime: F(-2), OrderQuantity: F(10), IdleTime: F(5)}),
+		"negative transport count": single(ProcessParameters{ProcessTime: F(4), TransportRepetitionTime: F(3),
+			TransportRepetitionCount: I(-2), StorageTime: F(1)}),
+		"negative stock": single(ProcessParameters{ProcessTime: F(4), StockQuantity: F(-5), StorageTime: F(1)}),
+		"negative repetition count": single(ProcessParameters{SetupTime: F(1), RepetitionTime: F(2),
+			RepetitionCount: I(-3), IdleTime: F(2)}),
+		"negative scrap": single(ProcessParameters{ProcessTime: F(4), ScrapRate: F(-0.1), ReworkRate: F(0.05)}),
+		"negative NVAT": single(ProcessParameters{ValueAddingTime: F(2), NonValueAddingTime: F(-3),
+			NecessaryNonValueAddingTime: F(1)}),
+		"negative NVAT with process time": single(ProcessParameters{ProcessTime: F(4), ValueAddingTime: F(2),
+			NonValueAddingTime: F(-3), NecessaryNonValueAddingTime: F(1)}),
+		"negative VAT with NVAT": single(ProcessParameters{ValueAddingTime: F(-2), NonValueAddingTime: F(3)}),
+		"negative VATp": single(ProcessParameters{ProcessTime: F(4), ValueAddingTimeProcess: F(-1),
+			NonValueAddingTime: F(3)}),
+		"negative setup with processing": single(ProcessParameters{CycleTime: F(2), OrderQuantity: F(10),
+			SetupTime: F(-1), IdleTime: F(5)}),
+		"negative idle total": single(ProcessParameters{ProcessTime: F(4), IdleTime: F(-5)}),
+		"negative yield":      single(ProcessParameters{ProcessTime: F(4), YieldFactor: F(-0.5)}),
+		"stock without demand rate": {ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+			TimeUnit: TimeUnitMinutes, ProcessTime: F(4), StockQuantity: F(5)}}}},
+	}
+	c := NewCalculator()
+	for name, current := range streams {
+		t.Run(name, func(t *testing.T) {
+			future, err := NewDesigner().DesignFutureStateFromTargets(current, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, cp := range current.Processes {
+				want := c.ResolveParametersInStream(cp.Parameters, current)
+				got := c.ResolveParametersInStream(future.Processes[i].Parameters, future)
+				for _, b := range boundedFloats {
+					w, g := *b.value(&want), *b.value(&got)
+					if (w == nil) != (g == nil) || (w != nil && !approx(*g, *w)) {
+						t.Errorf("process %s %s: future %v, current %v", cp.ID, b.name, fmtOpt(g), fmtOpt(w))
+					}
+				}
+			}
+			wantKPIs, gotKPIs := c.CalculateKPIs(current), future.KPIs
+			for k, w := range wantKPIs {
+				if g, ok := gotKPIs[k]; !ok || !approx(g, w) {
+					t.Errorf("KPI %s: future %v (known %v), current %v", k, g, ok, w)
+				}
+			}
+			for k, g := range gotKPIs {
+				if _, ok := wantKPIs[k]; !ok {
+					t.Errorf("KPI %s: future %v, unknown in the current state", k, g)
+				}
+			}
+			key := func(issues []ConsistencyIssue) []string {
+				var out []string
+				for _, issue := range issues {
+					out = append(out, string(issue.Kind)+" "+issue.Element+" "+
+						strings.TrimSuffix(issue.ID, "_future")+" "+issue.Field)
+				}
+				return out
+			}
+			if w, g := key(CheckConsistency(current)), key(CheckConsistency(future)); !reflect.DeepEqual(w, g) {
+				t.Errorf("issues: future %v, current %v", g, w)
+			}
+		})
+	}
+}
+
+// A cycle_time target cannot move a processing time whose resource_count
+// is impossible.
+func TestCycleTimeTargetWithImpossibleResourceCount(t *testing.T) {
+	vs := &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+		TimeUnit: TimeUnitMinutes, CycleTime: F(2), OrderQuantity: F(10), ResourceCount: I(-1)}}}}
+	_, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
+		Default: &ProcessTargets{CycleTime: AbsoluteTarget(1)}})
+	if err == nil || !strings.Contains(err.Error(), "resource_count") {
+		t.Errorf("err = %v, want an error naming resource_count", err)
+	}
+}
+
+// fmtOpt formats an optional number (nil = unknown).
+func fmtOpt(p *float64) string {
+	if p == nil {
+		return "unknown"
+	}
+	return fmt.Sprint(*p)
+}
