@@ -1202,3 +1202,57 @@ func TestWorkingDaysZeroIsInvalid(t *testing.T) {
 		t.Errorf("working days not entered: issues %+v", issues)
 	}
 }
+
+// An ideal state cannot know the ideal time of a process whose value adding
+// time is unknown: its process, processing, cycle and lead times stay
+// unknown (never 0), reported as missing data, and the stream totals that
+// need them are not computed.
+func TestIdealStateWithoutValueAddingTime(t *testing.T) {
+	cust := &Customer{ID: "c", Demand: F(100), DemandPeriod: DemandPeriodDay, AvailableTime: F(480)}
+	cases := map[string]ProcessParameters{
+		"formula only":         {CycleTime: F(2), OrderQuantity: F(10), ResourceCount: I(1)},
+		"formula, setup, idle": {CycleTime: F(2), OrderQuantity: F(10), ResourceCount: I(1), SetupTime: F(5), IdleTime: F(30), StockQuantity: F(5)},
+		"impossible VAT":       {ProcessTime: F(10), IdleTime: F(5), ValueAddingTime: F(-1)},
+	}
+	c := NewCalculator()
+	for name, params := range cases {
+		t.Run(name, func(t *testing.T) {
+			params.TimeUnit = TimeUnitMinutes
+			vs := &ValueStream{ID: "vs", Customer: cust, Processes: []Process{{ID: "p", Parameters: params}}}
+			ideal, err := NewDesigner().CreateIdealState(vs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := c.ResolveParametersInStream(ideal.Processes[0].Parameters, ideal)
+			for field, v := range map[string]*float64{"cycle_time": got.CycleTime, "processing_time": got.ProcessingTime,
+				"process_time": got.ProcessTime, "lead_time": got.LeadTime} {
+				if v != nil {
+					t.Errorf("ideal %s = %v, want unknown", field, *v)
+				}
+			}
+			if lt, ok := ideal.KPIs["total_lead_time"]; ok {
+				t.Errorf("ideal total_lead_time = %v, want not computed", lt)
+			}
+			issues := CheckConsistency(ideal)
+			if len(contradictions(issues)) != 0 {
+				t.Errorf("ideal contradictions: %+v", contradictions(issues))
+			}
+			if _, ok := findIssue(issues, "process", "p_ideal", "lead_time"); !ok {
+				t.Errorf("issues %+v, want missing lead_time", issues)
+			}
+		})
+	}
+	// With value adding time entered, the ideal cycle time gives it.
+	vs := &ValueStream{ID: "vs", Customer: cust, Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+		TimeUnit: TimeUnitMinutes, CycleTime: F(2), OrderQuantity: F(10), ResourceCount: I(1), ValueAddingTime: F(8)}}}}
+	ideal, err := NewDesigner().CreateIdealState(vs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ct := ideal.Processes[0].Parameters.CycleTime; ct == nil || !approx(*ct, 0.8) {
+		t.Errorf("ideal cycle time %v, want 8 ÷ 10 = 0.8", ct)
+	}
+	if lt := ideal.KPIs["total_lead_time"]; !approx(lt, 8) {
+		t.Errorf("ideal lead time %v, want 8", lt)
+	}
+}

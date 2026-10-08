@@ -303,10 +303,18 @@ func (d *Designer) CreateIdealState(current *ValueStream) (*ValueStream, error) 
 // time = value adding time; setup, handling, waiting, ancillary, idle, stock,
 // NVAT, NNVAT, scrap and rework that were known become 0 (those not entered
 // stay not entered); repetition and transport repetition data is removed;
-// yield is 1. A process without value adding time keeps no process, lead or
-// processing time (nothing is known to remain). When processing time is
-// computed from cycle time × order quantity ÷ resources (A.5), the cycle
-// time is set so that it gives the value adding time.
+// yield is 1. When processing time is computed from cycle time × order
+// quantity ÷ resources (A.5), the cycle time is set so that it gives the
+// value adding time.
+//
+// A process whose value adding time is unknown (not entered, or
+// impossible) has no known ideal time: its ideal process, processing,
+// cycle and lead times are unknown, never 0. Its times and stock are then
+// left not entered (an ideal 0 for setup, idle time, NVAT or stock would,
+// by the blank-parts rule of ResolveParameters, make the blank process and
+// lead time 0), so CheckConsistency reports the process's lead time and
+// value adding time as missing data, and the stream totals that need them
+// are not computed. Its yield is still 1.
 func (c *Calculator) idealParameters(params ProcessParameters, ctx streamContext) ProcessParameters {
 	r, _ := c.resolveParameters(params, ctx)
 	vat := r.ValueAddingTime
@@ -327,9 +335,18 @@ func (c *Calculator) idealParameters(params ProcessParameters, ctx streamContext
 	p.RepetitionTime, p.RepetitionCount = nil, nil
 	p.TransportRepetitionTime, p.TransportRepetitionCount = nil, nil
 	p.YieldFactor = F(1)
-	if processingFormula(p) && positive(p.OrderQuantity) {
+	if vat == nil {
+		for _, field := range []**float64{
+			&p.CycleTime, &p.SetupTime, &p.HandlingTime, &p.WaitingTimeProcess, &p.AncillaryTime,
+			&p.IdleTime, &p.WaitingTime, &p.TransportTime, &p.StorageTime,
+			&p.StockQuantity, &p.RangeOfInventory,
+			&p.NonValueAddingTime, &p.NecessaryNonValueAddingTime,
+		} {
+			*field = nil
+		}
+	} else if processingFormula(p) && positive(p.OrderQuantity) {
 		resources, _ := resourceCount(p)
-		p.CycleTime = F(num(vat) * resources / *p.OrderQuantity)
+		p.CycleTime = F(*vat * resources / *p.OrderQuantity)
 	}
 	return c.trimDerived(params, p, ctx)
 }
