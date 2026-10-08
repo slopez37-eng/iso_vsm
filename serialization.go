@@ -208,10 +208,24 @@ func (s *Serializer) LoadValueStreamFromFile(filename string) (*ValueStream, []C
 	return &vs, vs.ConsistencyIssues, nil
 }
 
-// ExportValueStreamMap exports a value stream as a text-based map representation
+// ExportValueStreamMap exports a value stream as a text-based map
+// representation.
+//
+// Every number shown is the value the model computes (see
+// Calculator.ResolveParametersInStream and CalculateKPIs), not a stored
+// total or stored KPI, so the text never mixes resolved values with stale
+// ones. Stored KPIs that the library does not compute are listed separately
+// as stored. When stored values disagree with the computed ones, the map
+// ends with the consistency issues (see CheckConsistency).
 func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 	if vs == nil {
 		return "", errors.New("value stream cannot be nil")
+	}
+	calc := NewCalculator()
+	kpis := calc.CalculateKPIs(vs)
+	timeUnit := string(calc.ReferenceTimeUnit(vs.Processes))
+	if timeUnit == "" {
+		timeUnit = "time units"
 	}
 
 	mapStr := fmt.Sprintf("Value Stream Map: %s\n", vs.Name)
@@ -221,11 +235,6 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 
 	// Customer
 	if vs.Customer != nil {
-		calc := NewCalculator()
-		timeUnit := string(calc.ReferenceTimeUnit(vs.Processes))
-		if timeUnit == "" {
-			timeUnit = "time units"
-		}
 		period := string(vs.Customer.DemandPeriod)
 		if period == "" {
 			period = "period"
@@ -237,7 +246,7 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		}
 		// Same takt the KPIs use: AvailableTime ÷ Demand, else stored TaktTime.
 		takt := vs.Customer.TaktTime
-		if v, ok := calc.CalculateKPIs(vs)["customer_takt"]; ok {
+		if v, ok := kpis["customer_takt"]; ok {
 			takt = v
 		}
 		mapStr += fmt.Sprintf("Takt Time: %.2f %s\n\n", takt, timeUnit)
@@ -252,12 +261,20 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 	// Processes
 	mapStr += "Processes:\n"
 	for i, process := range vs.Processes {
-		// Resolved values: totals computed from their parts (see ResolveParameters).
-		params := NewCalculator().ResolveParameters(process.Parameters)
+		// Resolved values: totals computed from their parts.
+		params := calc.ResolveParametersInStream(process.Parameters, vs)
+		unit := string(params.TimeUnit)
+		if unit == "" {
+			unit = timeUnit
+		}
 		mapStr += fmt.Sprintf("  %d. %s (%s)\n", i+1, process.Name, process.Type)
-		mapStr += fmt.Sprintf("     Process Time: %.2f %s\n", params.ProcessTime, params.TimeUnit)
-		mapStr += fmt.Sprintf("     Cycle Time: %.2f %s\n", params.CycleTime, params.TimeUnit)
-		mapStr += fmt.Sprintf("     Yield Factor: %.2f%%\n", params.YieldFactor*100)
+		mapStr += fmt.Sprintf("     Process Time: %.2f %s\n", params.ProcessTime, unit)
+		mapStr += fmt.Sprintf("     Cycle Time: %.2f %s\n", params.CycleTime, unit)
+		if yieldKnown(process.Parameters) {
+			mapStr += fmt.Sprintf("     Yield Factor: %.2f%%\n", params.YieldFactor*100)
+		} else {
+			mapStr += "     Yield Factor: not given\n"
+		}
 
 		if process.Parameters.ScrapRate > 0 {
 			mapStr += fmt.Sprintf("     Scrap Rate: %.2f%%\n", process.Parameters.ScrapRate*100)
@@ -268,11 +285,16 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		mapStr += "\n"
 	}
 
-	// Inventory
+	// Inventory: range is quantity ÷ customer demand rate when that is known.
 	if len(vs.Inventory) > 0 {
+		ctx := calc.contextOf(vs)
 		mapStr += "Inventory:\n"
 		for _, inv := range vs.Inventory {
-			mapStr += fmt.Sprintf("  %s: %.2f units (%.2f time units range)\n", inv.Name, inv.Quantity, inv.Range)
+			invRange := inv.Range
+			if r, ok := ctx.inventoryRange(inv); ok {
+				invRange = r
+			}
+			mapStr += fmt.Sprintf("  %s: %.2f units (%.2f %s range)\n", inv.Name, inv.Quantity, invRange, timeUnit)
 		}
 		mapStr += "\n"
 	}
@@ -286,21 +308,49 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		mapStr += "\n"
 	}
 
-	// KPIs (sorted by name; ratios shown as percent)
-	if len(vs.KPIs) > 0 {
+	// KPIs (computed; sorted by name; ratios shown as percent)
+	if len(kpis) > 0 {
 		mapStr += "Key Performance Indicators:\n"
-		keys := make([]string, 0, len(vs.KPIs))
-		for key := range vs.KPIs {
-			keys = append(keys, key)
+		for _, key := range sortedKeys(kpis) {
+			mapStr += fmt.Sprintf("  %s: %s\n", key, formatKPIValue(key, kpis[key]))
 		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			mapStr += fmt.Sprintf("  %s: %s\n", key, formatKPIValue(key, vs.KPIs[key]))
+		mapStr += "\n"
+	}
+	other := map[string]float64{}
+	for key, value := range vs.KPIs {
+		if _, computed := kpis[key]; !computed {
+			other[key] = value
+		}
+	}
+	if len(other) > 0 {
+		mapStr += "Other KPIs (as stored; not computed by the library):\n"
+		for _, key := range sortedKeys(other) {
+			mapStr += fmt.Sprintf("  %s: %s\n", key, formatKPIValue(key, other[key]))
+		}
+		mapStr += "\n"
+	}
+
+	// Consistency issues
+	if issues := CheckConsistency(vs); len(issues) > 0 {
+		mapStr += fmt.Sprintf("Consistency issues (%d): stored values that disagree with the computed "+
+			"values shown above\n", len(issues))
+		for _, issue := range issues {
+			mapStr += fmt.Sprintf("  - %s\n", issue.Message)
 		}
 		mapStr += "\n"
 	}
 
 	return mapStr, nil
+}
+
+// sortedKeys returns m's keys in order.
+func sortedKeys(m map[string]float64) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // ImportFromCSV imports basic value stream data from CSV format

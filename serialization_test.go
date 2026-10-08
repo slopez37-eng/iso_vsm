@@ -48,14 +48,46 @@ func TestCustomerWithoutAvailableTimeStillLoads(t *testing.T) {
 
 func TestExportValueStreamMapShowsRatiosAsPercent(t *testing.T) {
 	vs := mixedUnitStream()
-	vs.KPIs = map[string]float64{"value_added_ratio": 0.25, "total_lead_time": 28}
+	vs.KPIs = nil // the map computes its KPIs; 3.25 ÷ 28 = 11.6%
 	out, err := NewSerializer().ExportValueStreamMap(vs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"value_added_ratio: 25.0%", "total_lead_time: 28.0000", "Takt Time: 0.50 minutes"} {
+	for _, want := range []string{"value_added_ratio: 11.6%", "total_lead_time: 28.0000", "Takt Time: 0.50 minutes"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("map text missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "Consistency issues") {
+		t.Errorf("consistent stream lists issues:\n%s", out)
+	}
+}
+
+// TestExportUsesComputedKPIsAndListsIssues: stale stored totals and KPIs
+// are not printed as facts. The map shows the values the model computes
+// and lists the disagreements.
+func TestExportUsesComputedKPIsAndListsIssues(t *testing.T) {
+	vs := &ValueStream{ID: "vs", Name: "Stale", Processes: []Process{{ID: "p", Name: "Press", Type: ProcessTypeMaterial,
+		Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: 20, ProcessingTime: 5}}},
+		KPIs: map[string]float64{"total_lead_time": 20, "team_morale": 7},
+	}
+	out, err := NewSerializer().ExportValueStreamMap(vs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Process Time: 5.00 minutes",
+		"total_lead_time: 5.0000",
+		"team_morale: 7.0000", // a KPI the library does not compute is kept
+		"Consistency issues (2)",
+		"process p: process_time: stored 20",
+		"stored KPI total_lead_time = 20",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("map text missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "total_lead_time: 20") {
+		t.Errorf("map text prints the stale stored lead time:\n%s", out)
 	}
 }
