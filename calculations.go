@@ -577,7 +577,16 @@ func yieldKnown(p ProcessParameters) bool {
 	return p.YieldFactor > 0 || p.ScrapRate > 0 || p.ReworkRate > 0
 }
 
-// CalculateImprovementMetrics calculates metrics for comparing current vs future state
+// CalculateImprovementMetrics compares future with current KPIs: for each
+// KPI both states have, <kpi>_improvement_ratio = future ÷ current and
+// <kpi>_improvement_percent = (future − current) ÷ current × 100.
+//
+// The two states are compared in one unit: time KPIs of both are converted
+// to the current state's reference time unit (the future's when the current
+// declares none), and inventory_turns (turns per Customer.DemandPeriod) of
+// the future are converted to the current state's demand period. When the
+// periods differ and cannot be converted (a month or year period), or only
+// one state has a period, inventory_turns is not compared.
 func (c *Calculator) CalculateImprovementMetrics(current, future *ValueStream) map[string]float64 {
 	metrics := make(map[string]float64)
 
@@ -585,8 +594,19 @@ func (c *Calculator) CalculateImprovementMetrics(current, future *ValueStream) m
 		return metrics
 	}
 
-	currentKPIs := c.CalculateKPIs(current)
-	futureKPIs := c.CalculateKPIs(future)
+	unit := c.ReferenceTimeUnit(current.Processes)
+	if unit == "" {
+		unit = c.ReferenceTimeUnit(future.Processes)
+	}
+	currentKPIs := c.kpisInUnit(current, unit)
+	futureKPIs := c.kpisInUnit(future, unit)
+	if turns, ok := futureKPIs["inventory_turns"]; ok {
+		if factor, ok := periodFactor(demandPeriodOf(future), demandPeriodOf(current)); ok {
+			futureKPIs["inventory_turns"] = turns * factor
+		} else {
+			delete(futureKPIs, "inventory_turns")
+		}
+	}
 
 	// Calculate improvement ratios
 	for key, currentValue := range currentKPIs {
@@ -601,4 +621,43 @@ func (c *Calculator) CalculateImprovementMetrics(current, future *ValueStream) m
 	}
 
 	return metrics
+}
+
+// kpisInUnit returns CalculateKPIs(vs) with its time KPIs converted from
+// vs's reference unit to unit (unchanged when either unit is unknown).
+func (c *Calculator) kpisInUnit(vs *ValueStream, unit TimeUnit) map[string]float64 {
+	kpis := c.CalculateKPIs(vs)
+	from := c.ReferenceTimeUnit(vs.Processes)
+	if !isKnownTimeUnit(from) || !isKnownTimeUnit(unit) {
+		return kpis
+	}
+	for name, v := range kpis {
+		if kpiUnit(name) == "time" {
+			kpis[name] = c.ConvertTimeUnit(v, from, unit)
+		}
+	}
+	return kpis
+}
+
+// demandPeriodOf returns vs's customer demand period ("" when none).
+func demandPeriodOf(vs *ValueStream) DemandPeriod {
+	if vs.Customer == nil {
+		return ""
+	}
+	return vs.Customer.DemandPeriod
+}
+
+// periodFactor returns how many "from" periods fit in one "to" period, so a
+// rate per "from" period times the factor is the rate per "to" period. ok
+// is false when the periods differ and are not both of fixed length.
+func periodFactor(from, to DemandPeriod) (float64, bool) {
+	if from == to {
+		return 1, true
+	}
+	f, okFrom := demandPeriodSeconds[from]
+	t, okTo := demandPeriodSeconds[to]
+	if !okFrom || !okTo {
+		return 0, false
+	}
+	return t / f, true
 }

@@ -446,3 +446,45 @@ func TestAverageYieldCountsKnownZero(t *testing.T) {
 		t.Errorf("no quality data: average_yield_factor = %v, want omitted", got)
 	}
 }
+
+// TestImprovementMetricsAcrossUnits: a current state in minutes and a
+// future state in hours (or with demand per week instead of per day) are
+// compared in one unit, so equal values show no change.
+func TestImprovementMetricsAcrossUnits(t *testing.T) {
+	c := NewCalculator()
+	current := &ValueStream{
+		Customer:  &Customer{ID: "c", Demand: 100, DemandPeriod: DemandPeriodDay, AvailableTime: 480},
+		Processes: []Process{{Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, ProcessTime: 20, IdleTime: 40, ValueAddingTime: 10}}},
+		Inventory: []Inventory{{ID: "i", Quantity: 50}},
+	}
+	future := &ValueStream{
+		// 700 per week = 100 per day; takt = 56 h ÷ 700 = 0.08 h = 4.8 min,
+		// the current takt.
+		Customer:  &Customer{ID: "c", Demand: 700, DemandPeriod: DemandPeriodWeek, AvailableTime: 56},
+		Processes: []Process{{Parameters: ProcessParameters{TimeUnit: TimeUnitHours, ProcessTime: 0.25, IdleTime: 0.5, ValueAddingTime: 1.0 / 6}}},
+		Inventory: []Inventory{{ID: "i", Quantity: 25}},
+	}
+	m := c.CalculateImprovementMetrics(current, future)
+	want := map[string]float64{
+		"total_lead_time_improvement_ratio":           0.75, // 60 min → 45 min
+		"total_lead_time_improvement_percent":         -25,
+		"total_value_adding_time_improvement_ratio":   1, // 10 min both
+		"customer_takt_improvement_ratio":             1, // 4.8 min both
+		"inventory_turns_improvement_ratio":           2, // 2 per day → 28 per week = 4 per day
+		"inventory_turns_improvement_percent":         100,
+		"value_added_ratio_improvement_ratio":         (10.0 / 45) / (10.0 / 60),
+		"total_value_adding_time_improvement_percent": 0,
+	}
+	for name, w := range want {
+		if got, ok := m[name]; !ok || !approx(got, w) {
+			t.Errorf("%s = %v (present %v), want %v", name, got, ok, w)
+		}
+	}
+
+	// Demand per month cannot be put on a daily basis: inventory turns are
+	// not compared.
+	future.Customer = &Customer{ID: "c", Demand: 3000, DemandPeriod: DemandPeriodMonth}
+	if got, ok := c.CalculateImprovementMetrics(current, future)["inventory_turns_improvement_ratio"]; ok {
+		t.Errorf("turns per day vs per month compared: %v", got)
+	}
+}
