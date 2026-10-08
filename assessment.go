@@ -22,26 +22,38 @@ type AssessmentResult struct {
 
 // KPIMeasure represents a measured KPI value with metadata
 type KPIMeasure struct {
-	Name        string    `json:"name"`
-	Value       float64   `json:"value"`
-	Unit        string    `json:"unit"`
-	Target      float64   `json:"target"`
-	Threshold   float64   `json:"threshold"`
-	Status      string    `json:"status"` // "excellent", "good", "warning", "critical"
-	Trend       string    `json:"trend"`  // "improving", "stable", "declining"
+	Name      string  `json:"name"`
+	Value     float64 `json:"value"`
+	Unit      string  `json:"unit"`
+	Target    float64 `json:"target"`
+	Threshold float64 `json:"threshold"`
+	Status    string  `json:"status"` // "excellent", "good", "warning", "critical"
+	// Trend is "improving", "declining" or "stable" for KPIs whose better
+	// direction is known (see GetKPIDirection). For a KPI with unknown
+	// direction it only reports the change: "increasing", "decreasing" or
+	// "stable".
+	Trend string `json:"trend"`
+	// Direction is the KPI's better direction used to label Trend.
+	Direction KPIDirection `json:"direction,omitempty"`
+	// TrendChange is the relative change over the trend window as a fraction
+	// ((last − first) ÷ |first|). Absent when there is no history or the
+	// first value is 0 and the last is not (relative change undefined).
+	TrendChange *float64  `json:"trend_change,omitempty"`
 	MeasuredAt  time.Time `json:"measured_at"`
 	Description string    `json:"description"`
 }
 
 // TrendAnalysis represents trend analysis for a KPI
 type TrendAnalysis struct {
-	KPIName     string      `json:"kpi_name"`
-	Period      string      `json:"period"` // "daily", "weekly", "monthly"
-	DataPoints  []DataPoint `json:"data_points"`
-	Slope       float64     `json:"slope"`
-	Correlation float64     `json:"correlation"`
-	Forecast    float64     `json:"forecast"`   // Next period prediction
-	Confidence  float64     `json:"confidence"` // Prediction confidence (0-1)
+	KPIName string `json:"kpi_name"`
+	// Direction is the KPI's better direction (see GetKPIDirection).
+	Direction   KPIDirection `json:"direction,omitempty"`
+	Period      string       `json:"period"` // "daily", "weekly", "monthly"
+	DataPoints  []DataPoint  `json:"data_points"`
+	Slope       float64      `json:"slope"`
+	Correlation float64      `json:"correlation"`
+	Forecast    float64      `json:"forecast"`   // Next period prediction
+	Confidence  float64      `json:"confidence"` // Prediction confidence (0-1)
 }
 
 // DataPoint represents a single data point in trend analysis
@@ -123,8 +135,9 @@ func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64
 		measure.Threshold = a.getKPIThreshold(name)
 
 		// Analyze trend if history available
+		measure.Direction = GetKPIDirection(name)
 		if len(history) > 0 {
-			measure.Trend = a.analyzeTrend(name, history)
+			measure.Trend, measure.TrendChange = a.analyzeTrend(name, history)
 		} else {
 			measure.Trend = "stable"
 		}
@@ -204,15 +217,9 @@ func (a *Assessor) determineKPIStatus(name string, value, target float64) string
 
 	ratio := value / target
 
-	// For some KPIs, higher is better; for others, lower is better
-	higherIsBetter := map[string]bool{
-		"value_added_ratio":    true,
-		"process_efficiency":   true,
-		"inventory_turns":      true,
-		"average_yield_factor": true,
-	}
-
-	isHigherBetter := higherIsBetter[name]
+	// For some KPIs, higher is better; for others (and, as before, for KPIs
+	// of unknown direction) lower is better.
+	isHigherBetter := GetKPIDirection(name) == HigherIsBetter
 
 	var status string
 	if isHigherBetter {
@@ -258,12 +265,16 @@ func (a *Assessor) getKPIThreshold(name string) float64 {
 	return 0.0
 }
 
-// analyzeTrend analyzes the trend for a KPI
-func (a *Assessor) analyzeTrend(kpiName string, history []AssessmentResult) string {
-	if len(history) < 2 {
-		return "stable"
-	}
+// trendThreshold is the relative change (5%) below which a KPI is "stable".
+const trendThreshold = 0.05
 
+// analyzeTrend compares the first and last of the KPI's last 5 historical
+// values and labels the change using the KPI's direction (GetKPIDirection):
+// for lower-is-better KPIs such as lead time, a fall is "improving". KPIs of
+// unknown direction get "increasing"/"decreasing" instead of a guess. It
+// also returns the relative change (nil when undefined because the first
+// value is 0 and the last is not; the label then follows the sign).
+func (a *Assessor) analyzeTrend(kpiName string, history []AssessmentResult) (string, *float64) {
 	// Get last 5 data points
 	values := []float64{}
 	for i := len(history) - 1; i >= 0 && i >= len(history)-5; i-- {
@@ -273,21 +284,61 @@ func (a *Assessor) analyzeTrend(kpiName string, history []AssessmentResult) stri
 	}
 
 	if len(values) < 2 {
-		return "stable"
+		return "stable", nil
 	}
 
 	// Simple trend analysis: compare first and last values
 	first := values[0]
 	last := values[len(values)-1]
 
-	change := (last - first) / first
-
-	if change > 0.05 {
-		return "improving"
-	} else if change < -0.05 {
-		return "declining"
+	var change *float64
+	var sign int // +1 rising, −1 falling, 0 stable
+	if first != 0 {
+		c := (last - first) / math.Abs(first)
+		change = &c
+		switch {
+		case c > trendThreshold:
+			sign = 1
+		case c < -trendThreshold:
+			sign = -1
+		}
+	} else {
+		switch {
+		case last > 0:
+			sign = 1
+		case last < 0:
+			sign = -1
+		default:
+			zero := 0.0
+			change = &zero
+		}
 	}
-	return "stable"
+
+	return trendLabel(GetKPIDirection(kpiName), sign), change
+}
+
+// trendLabel names a rising (+1), falling (−1) or stable (0) movement.
+func trendLabel(direction KPIDirection, sign int) string {
+	if sign == 0 {
+		return "stable"
+	}
+	switch direction {
+	case HigherIsBetter:
+		if sign > 0 {
+			return "improving"
+		}
+		return "declining"
+	case LowerIsBetter:
+		if sign < 0 {
+			return "improving"
+		}
+		return "declining"
+	default:
+		if sign > 0 {
+			return "increasing"
+		}
+		return "decreasing"
+	}
 }
 
 // calculatePerformanceIndex calculates an overall performance index
@@ -369,6 +420,7 @@ func (a *Assessor) analyzeTrends(history []AssessmentResult, periods int) []Tren
 		if len(dataPoints) >= 2 {
 			trend := TrendAnalysis{
 				KPIName:    kpiName,
+				Direction:  GetKPIDirection(kpiName),
 				Period:     "weekly", // Assume weekly assessments
 				DataPoints: dataPoints,
 			}
@@ -548,9 +600,12 @@ func (a *Assessor) generateAssessmentRecommendations(result *AssessmentResult) [
 		}
 	}
 
-	// Trend-based recommendations
+	// Trend-based recommendations: a KPI moving the wrong way for its
+	// direction (falling flow efficiency, rising lead time).
 	for _, trend := range result.Trends {
-		if trend.Slope < -0.01 { // Declining trend
+		worsening := (trend.Direction == HigherIsBetter && trend.Slope < -0.01) ||
+			(trend.Direction == LowerIsBetter && trend.Slope > 0.01)
+		if worsening {
 			recommendations = append(recommendations,
 				fmt.Sprintf("Address declining trend in %s KPI.", trend.KPIName))
 		}
