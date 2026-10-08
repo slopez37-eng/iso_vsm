@@ -136,9 +136,14 @@ func consistent(a, b float64) bool {
 //
 // Two details keep the breakdowns apart. value_adding_time is entered for
 // its own sake (it is the value adding part of process time, A.9), so on
-// its own it does not start the classification: that starts with
-// non_value_adding_time or necessary_non_value_adding_time, and then a
-// blank value_adding_time is 0. Setup time is in both A.6 and A.2, so A.2
+// its own it does not start the VAT + NVAT + NNVAT lead-time
+// classification: maps commonly record VAT as a share of process time
+// without splitting the rest into NVAT and NNVAT, and treating VAT alone as
+// a complete classification (blank NVAT and NNVAT = 0, lead time = VAT)
+// would make every such map contradict its flow lead time (process + idle
+// time). The classification starts when non_value_adding_time or
+// necessary_non_value_adding_time is entered, and then a blank
+// value_adding_time is 0. Setup time is in both A.6 and A.2, so A.2
 // is a second breakdown of an A.6 process time only when a part other
 // than setup is entered. Formulas that multiply or divide (transport_time
 // = transport_repetition_time × transport_repetition_count, processing

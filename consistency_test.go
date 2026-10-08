@@ -933,6 +933,12 @@ func TestEnteredZeroVersusNotEntered(t *testing.T) {
 // started", see ResolveParameters) for every total defined by parts: one
 // part entered (the blank parts count as 0), all parts blank with a stored
 // total (used as is), and everything blank (unknown, nil).
+//
+// value_adding_time alone does not start the VAT + NVAT + NNVAT lead-time
+// classification: VAT is a share of process time that maps commonly record
+// without the NVA split, so treating it as a complete classification would
+// make every such map contradict its flow lead time. The classification
+// starts when NVAT or NNVAT is entered.
 func TestBlankPartsRule(t *testing.T) {
 	c := NewCalculator()
 	pt := func(p ProcessParameters) *float64 { return p.ProcessTime }
