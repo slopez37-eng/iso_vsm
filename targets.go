@@ -72,7 +72,8 @@ func (t *Target) apply(current float64) (float64, error) {
 //     lead time becomes the resulting process + idle time, even when that is
 //     0. Process time can never drop below the value adding time, so a
 //     target that would do so (for example 0 with value adding time set) is
-//     an error.
+//     an error. A yield_factor target of 0 without scrap/rework data sets
+//     yield_factor_given, so the zero yield still counts.
 //
 // Targets that cannot be met consistently return an error naming the
 // conflict, rather than producing a map that contradicts itself.
@@ -369,6 +370,9 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 				"targets; yield_factor = 1 − (scrap_rate + rework_rate) (A.17)", v)
 		}
 		p.YieldFactor = v
+		// A target of 0 is a real yield: mark it, so it is not read as
+		// "yield not given" (see yieldKnown).
+		p.YieldFactorGiven = v == 0 && !hasDefects
 	}
 	if hasDefects {
 		switch {

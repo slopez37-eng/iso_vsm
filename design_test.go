@@ -531,3 +531,37 @@ func TestTargetsWithImpossibleDefects(t *testing.T) {
 		t.Errorf("scrap target 0.95 with rework 0.1 should be rejected")
 	}
 }
+
+// Yields 0.9 and 1 with no defect breakdown; a yield target of 0 on the
+// first process is a real target: the future average is (0 + 1) ÷ 2 = 0.5,
+// not 1 (the zero must not read as "yield not given").
+func TestZeroYieldTargetKept(t *testing.T) {
+	vs := &ValueStream{ID: "vs", Processes: []Process{
+		{ID: "a", Parameters: ProcessParameters{ProcessTime: 10, YieldFactor: 0.9, TimeUnit: TimeUnitMinutes}},
+		{ID: "b", Parameters: ProcessParameters{ProcessTime: 10, YieldFactor: 1, TimeUnit: TimeUnitMinutes}},
+	}}
+	future, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
+		Processes: map[string]ProcessTargets{"a": {YieldFactor: AbsoluteTarget(0)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := future.KPIs["average_yield_factor"]; !approx(got, 0.5) {
+		t.Errorf("average_yield_factor = %v, want 0.5", got)
+	}
+	if issues := CheckConsistency(future); len(issues) != 0 {
+		t.Errorf("future state issues: %+v", issues)
+	}
+	// The marker survives a JSON round trip.
+	data, err := NewSerializer().SerializeValueStream(future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := NewSerializer().DeserializeValueStream(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := NewCalculator().CalculateKPIs(back)["average_yield_factor"]; !approx(got, 0.5) {
+		t.Errorf("after round trip average_yield_factor = %v, want 0.5", got)
+	}
+}

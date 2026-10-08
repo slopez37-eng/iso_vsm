@@ -84,8 +84,13 @@ type ProcessParameters struct {
 
 	// Quality parameters
 	YieldFactor float64 `json:"yield_factor"` // YF - Yield factor
-	ScrapRate   float64 `json:"scrap_rate"`   // SR - Scrap rate
-	ReworkRate  float64 `json:"rework_rate"`  // RR - Rework rate
+	// YieldFactorGiven marks a yield_factor of 0 as given (nothing comes out
+	// good), not "not given". Optional: a yield_factor above 0, or a
+	// scrap_rate or rework_rate, already makes the yield known. Future-state
+	// targets set it when they set a yield of 0 without a defect breakdown.
+	YieldFactorGiven bool    `json:"yield_factor_given,omitempty"`
+	ScrapRate        float64 `json:"scrap_rate"`  // SR - Scrap rate
+	ReworkRate       float64 `json:"rework_rate"` // RR - Rework rate
 
 	// Derived parameters (calculated)
 	LeadTime         float64 `json:"lead_time"`          // LT - Lead time
