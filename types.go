@@ -150,7 +150,15 @@ type Customer struct {
 	// (AvailableTime × resource count), equivalently cycle time / (takt ×
 	// resource count); see Analyzer.CalculateProcessLoad.
 	AvailableTime float64 `json:"available_time,omitempty"`
-	Description   string  `json:"description,omitempty"`
+	// WorkingDaysPerWeek is how many days a week the plant works (1 to 7,
+	// fractions allowed, e.g. 5.5). Optional: absent (0) means 7. It
+	// matters only for a "day" DemandPeriod: Demand is then per working day,
+	// so stock ÷ daily demand is working days of cover, which the model
+	// turns into calendar (elapsed) time as working days × 7 ÷
+	// WorkingDaysPerWeek (an average; no calendar dates). A week is always
+	// 7 calendar days. See Calculator.CalculateCustomerInventoryTime.
+	WorkingDaysPerWeek float64 `json:"working_days_per_week,omitempty"`
+	Description        string  `json:"description,omitempty"`
 }
 
 // Supplier represents a supplier in the value stream

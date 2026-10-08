@@ -52,6 +52,7 @@ const (
 	ruleDefects       = "scrap_rate + rework_rate is the defective share of parts, so it cannot exceed 1"
 	fieldDefects      = "scrap_rate + rework_rate"
 	ruleTakt          = "takt_time = available_time ÷ demand (A.12)"
+	ruleWorkingDays   = "working_days_per_week is between 1 and 7 (absent means 7)"
 	ruleStoredKPI     = "stored KPI = KPI computed from the processes (CalculateKPIs)"
 	fieldClassSum     = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time"
 	fieldProcessParts = "processing_time + setup_time + handling_time + waiting_time_process + ancillary_time"
@@ -82,10 +83,11 @@ func consistent(a, b float64) bool {
 //   - transport_time = transport_repetition_time × transport_repetition_count (A.10)
 //   - waiting_time and range_of_inventory = stock_quantity ÷ customer demand
 //     rate: the standard VSM inventory time (Rother & Shook: inventory ÷
-//     daily demand), converted to params' unit through
-//     Customer.DemandPeriod. Only in a stream whose customer has Demand and a
-//     day or week DemandPeriod (see CalculateInventoryTime); otherwise the
-//     stored values are used and not checked.
+//     daily demand), as calendar time in params' unit through
+//     Customer.DemandPeriod and Customer.WorkingDaysPerWeek. Only in a
+//     stream whose customer has Demand and a day or week DemandPeriod (see
+//     CalculateCustomerInventoryTime); otherwise the stored values are used
+//     and not checked.
 //   - processing_time = cycle_time × order_quantity ÷ resource_count (A.5)
 //   - process_time = processing + setup + handling + waiting (process) +
 //     ancillary time (A.2): when any part is given, the sum of the parts,
@@ -143,13 +145,14 @@ func (s streamContext) unitOf(u TimeUnit) TimeUnit {
 	return u
 }
 
-// demandRate returns the customer's demand in units per one unit of time u,
-// and false when it cannot be known (see CalculateInventoryTime).
+// demandRate returns the customer's demand in units per one unit of
+// calendar time u, and false when it cannot be known (see
+// CalculateCustomerInventoryTime).
 func (s streamContext) demandRate(u TimeUnit) (float64, bool) {
 	if s.customer == nil {
 		return 0, false
 	}
-	return demandRate(s.customer.Demand, s.customer.DemandPeriod, s.unitOf(u))
+	return customerDemandRate(s.customer, s.unitOf(u))
 }
 
 // resolvedIn resolves params in the stream context and converts the result
@@ -363,6 +366,15 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 					inv.ID, inv.Range, inv.Quantity, want),
 			})
 		}
+	}
+
+	if cust := vs.Customer; cust != nil && !workingDaysValid(cust.WorkingDaysPerWeek) {
+		issues = append(issues, ConsistencyIssue{
+			Element: "customer", ID: cust.ID, Field: "working_days_per_week",
+			StoredValue: cust.WorkingDaysPerWeek, ComputedValue: 7, Rule: ruleWorkingDays,
+			Message: fmt.Sprintf("customer %s: working_days_per_week %g is outside 1–7; "+
+				"inventory times are not derived from demand", cust.ID, cust.WorkingDaysPerWeek),
+		})
 	}
 
 	if cust := vs.Customer; cust != nil && cust.TaktTime > 0 && cust.AvailableTime > 0 && cust.Demand > 0 {

@@ -57,7 +57,7 @@ func (t *Target) apply(current float64) (float64, error) {
 //     changes processing_time (cycle_time × order_quantity ÷
 //     resource_count, A.5) where that formula applies, and a stock_quantity
 //     target changes waiting_time (stock ÷ customer demand rate, see
-//     Calculator.CalculateInventoryTime) when the demand rate is known.
+//     Calculator.CalculateCustomerInventoryTime) when the demand rate is known.
 //   - A total target (process_time, idle_time, yield_factor) is met by
 //     scaling, in proportion, the parts that have no target of their own and
 //     are not computed from other inputs. A total of 0 zeroes its parts. Where
@@ -491,7 +491,7 @@ func (c *Calculator) trimDerived(input, out ProcessParameters, ctx streamContext
 
 // applyInventoryTargets returns inv with targets applied (own overrides
 // def). When the customer demand rate is known, range = quantity ÷ demand
-// rate (see Calculator.CalculateInventoryTime): a quantity target moves a
+// rate (see Calculator.CalculateCustomerInventoryTime): a quantity target moves a
 // stored range with it, a range target sets the quantity, and targeting both
 // is an error unless they agree.
 func (c *Calculator) applyInventoryTargets(inv Inventory, own, def *InventoryTargets, ctx streamContext) (Inventory, error) {

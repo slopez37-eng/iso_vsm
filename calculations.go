@@ -174,61 +174,103 @@ func (c *Calculator) CalculateTransportRepetitionTime(transportRepetitionTime fl
 // needs to work through the stock. It is a diagnostic only. The time a part
 // waits in an inventory is set by how fast the customer uses the stock up,
 // not by the cycle time, so the model's waiting_time and range_of_inventory
-// are stock ÷ customer demand rate (see CalculateInventoryTime). The two
+// are stock ÷ customer demand rate (see CalculateCustomerInventoryTime). The two
 // agree only when the cycle time equals the takt time.
 func (c *Calculator) CalculateWaitingTime(stockQuantity float64, cycleTime float64) float64 {
 	return stockQuantity * cycleTime
 }
 
-// demandPeriodSeconds is the length of a demand period in seconds. Months
-// and years have no fixed length, so they are not listed.
+// demandPeriodSeconds is the calendar length of a demand period in
+// seconds, for a plant working every day. Months and years have no fixed
+// length, so they are not listed. See periodSeconds for working days.
 var demandPeriodSeconds = map[DemandPeriod]float64{
 	DemandPeriodDay:  86400,
 	DemandPeriodWeek: 604800,
 }
 
-// demandRate returns demand (units per period) as units per one unit of
-// time u, and false when it cannot be known (see CalculateInventoryTime).
-func demandRate(demand float64, period DemandPeriod, u TimeUnit) (float64, bool) {
-	seconds, ok := demandPeriodSeconds[period]
-	if !ok || demand <= 0 || !isKnownTimeUnit(u) {
-		return 0, false
-	}
-	return demand / NewCalculator().ConvertTimeUnit(seconds, TimeUnitSeconds, u), true
+// workingDaysValid reports whether n is a usable WorkingDaysPerWeek: 0
+// (absent, meaning 7) or between 1 and 7.
+func workingDaysValid(n float64) bool {
+	return n == 0 || (n >= 1 && n <= 7)
 }
 
-// CalculateInventoryTime returns how long stockQuantity units last at the
-// customer's demand rate, in unit: the standard VSM inventory time (Rother &
-// Shook: inventory ÷ daily customer demand).
+// periodSeconds returns the average calendar (elapsed) time, in seconds,
+// that one demand period of cust covers, and false when it has no fixed
+// length or WorkingDaysPerWeek is invalid. A "day" period is a working day:
+// with w working days a week, one working day covers 7 ÷ w calendar days
+// on average. A week is 7 calendar days whatever w is.
+func periodSeconds(cust *Customer) (float64, bool) {
+	if cust == nil || !workingDaysValid(cust.WorkingDaysPerWeek) {
+		return 0, false
+	}
+	seconds, ok := demandPeriodSeconds[cust.DemandPeriod]
+	if !ok {
+		return 0, false
+	}
+	if cust.DemandPeriod == DemandPeriodDay && cust.WorkingDaysPerWeek > 0 {
+		seconds *= 7 / cust.WorkingDaysPerWeek
+	}
+	return seconds, true
+}
+
+// customerDemandRate returns cust's demand as units per one unit of
+// calendar time u, and false when it cannot be known (see
+// CalculateCustomerInventoryTime).
+func customerDemandRate(cust *Customer, u TimeUnit) (float64, bool) {
+	seconds, ok := periodSeconds(cust)
+	if !ok || cust.Demand <= 0 || !isKnownTimeUnit(u) {
+		return 0, false
+	}
+	return cust.Demand / NewCalculator().ConvertTimeUnit(seconds, TimeUnitSeconds, u), true
+}
+
+// CalculateCustomerInventoryTime returns how long stockQuantity units last
+// at cust's demand rate, as calendar (elapsed) time in unit: the standard
+// VSM inventory time (Rother & Shook: inventory ÷ daily customer demand).
 // IT_inv = SQ ÷ (CD ÷ period length)
 //
-// demand is units per period. The period is converted to unit as calendar
-// time (a day is 24 h, a week 7 days). ok is false, and the time is not
-// known, when demand is 0, unit is unknown, or period is not "day" or
-// "week" (months and years have no fixed length; state demand per day or
-// week instead). The model uses this for waiting_time and
-// range_of_inventory of a process with stock_quantity, and for an
-// inventory's range.
-func (c *Calculator) CalculateInventoryTime(stockQuantity, demand float64, period DemandPeriod, unit TimeUnit) (float64, bool) {
-	rate, ok := demandRate(demand, period, unit)
+// cust.Demand is units per cust.DemandPeriod. A "day" period is a working
+// day: stock ÷ daily demand is working days of cover, converted to calendar
+// time as working days × 7 ÷ WorkingDaysPerWeek days (7 when absent, so a
+// day is then 24 h). A "week" is 7 calendar days. ok is false, and the time
+// is not known, when cust is nil, demand is 0, unit is unknown,
+// WorkingDaysPerWeek is outside 1–7, or the period is not "day" or "week"
+// (months and years have no fixed length; state demand per day or week
+// instead). The model uses this for waiting_time and range_of_inventory of
+// a process with stock_quantity, and for an inventory's range.
+func (c *Calculator) CalculateCustomerInventoryTime(stockQuantity float64, cust *Customer, unit TimeUnit) (float64, bool) {
+	rate, ok := customerDemandRate(cust, unit)
 	if !ok {
 		return 0, false
 	}
 	return stockQuantity / rate, true
 }
 
-// CalculateInventoryQuantity returns the stock that covers coverageTime (in
-// unit) at the customer's demand rate: the inverse of
-// CalculateInventoryTime.
+// CalculateCustomerInventoryQuantity returns the stock that covers
+// coverageTime (calendar time, in unit) at cust's demand rate: the inverse
+// of CalculateCustomerInventoryTime.
 // SQ = (CD ÷ period length) × coverage time
 //
-// ok is false under the same conditions as CalculateInventoryTime.
-func (c *Calculator) CalculateInventoryQuantity(coverageTime float64, unit TimeUnit, demand float64, period DemandPeriod) (float64, bool) {
-	rate, ok := demandRate(demand, period, unit)
+// ok is false under the same conditions as CalculateCustomerInventoryTime.
+func (c *Calculator) CalculateCustomerInventoryQuantity(coverageTime float64, unit TimeUnit, cust *Customer) (float64, bool) {
+	rate, ok := customerDemandRate(cust, unit)
 	if !ok {
 		return 0, false
 	}
 	return rate * coverageTime, true
+}
+
+// CalculateInventoryTime is CalculateCustomerInventoryTime for a customer
+// working 7 days a week (a day period is 24 h): stock ÷ (demand per period
+// ÷ period length).
+func (c *Calculator) CalculateInventoryTime(stockQuantity, demand float64, period DemandPeriod, unit TimeUnit) (float64, bool) {
+	return c.CalculateCustomerInventoryTime(stockQuantity, &Customer{Demand: demand, DemandPeriod: period}, unit)
+}
+
+// CalculateInventoryQuantity is CalculateCustomerInventoryQuantity for a
+// customer working 7 days a week: the inverse of CalculateInventoryTime.
+func (c *Calculator) CalculateInventoryQuantity(coverageTime float64, unit TimeUnit, demand float64, period DemandPeriod) (float64, bool) {
+	return c.CalculateCustomerInventoryQuantity(coverageTime, unit, &Customer{Demand: demand, DemandPeriod: period})
 }
 
 // CalculateCustomerTakt calculates customer takt according to formula (A.12)
@@ -326,7 +368,7 @@ func (c *Calculator) CalculateOperatingTime(availableTime, breaks, downtime floa
 // Deprecated: despite the name this is the clearing time (see
 // CalculateWaitingTime), not the range of inventory. The range of inventory
 // is how long the stock lasts at the customer's demand rate; use
-// CalculateInventoryTime.
+// CalculateCustomerInventoryTime.
 func (c *Calculator) CalculateRangeOfInventory(stockQuantity, cycleTime float64, fromUnit, toUnit TimeUnit) float64 {
 	baseValue := stockQuantity * cycleTime
 	return c.ConvertTimeUnit(baseValue, fromUnit, toUnit)
@@ -604,9 +646,10 @@ func defectsImpossible(p ProcessParameters) bool {
 // The two states are compared in one unit: time KPIs of both are converted
 // to the current state's reference time unit (the future's when the current
 // declares none), and inventory_turns (turns per Customer.DemandPeriod) of
-// the future are converted to the current state's demand period. When the
-// periods differ and cannot be converted (a month or year period), or only
-// one state has a period, inventory_turns is not compared.
+// the future are converted to the current state's demand period (in
+// calendar time, counting Customer.WorkingDaysPerWeek). When the periods
+// differ and cannot be converted (a month or year period), or only one
+// state has a customer, inventory_turns is not compared.
 func (c *Calculator) CalculateImprovementMetrics(current, future *ValueStream) map[string]float64 {
 	metrics := make(map[string]float64)
 
@@ -621,7 +664,7 @@ func (c *Calculator) CalculateImprovementMetrics(current, future *ValueStream) m
 	currentKPIs := c.kpisInUnit(current, unit)
 	futureKPIs := c.kpisInUnit(future, unit)
 	if turns, ok := futureKPIs["inventory_turns"]; ok {
-		if factor, ok := periodFactor(demandPeriodOf(future), demandPeriodOf(current)); ok {
+		if factor, ok := periodFactor(future.Customer, current.Customer); ok {
 			futureKPIs["inventory_turns"] = turns * factor
 		} else {
 			delete(futureKPIs, "inventory_turns")
@@ -659,25 +702,30 @@ func (c *Calculator) kpisInUnit(vs *ValueStream, unit TimeUnit) map[string]float
 	return kpis
 }
 
-// demandPeriodOf returns vs's customer demand period ("" when none).
-func demandPeriodOf(vs *ValueStream) DemandPeriod {
-	if vs.Customer == nil {
-		return ""
+// periodFactor returns how many of from's demand periods fit in one of
+// to's, in calendar time (see periodSeconds), so a rate per "from" period
+// times the factor is the rate per "to" period. ok is false when the
+// periods differ and are not both of fixed length, or only one stream has
+// a customer.
+func periodFactor(from, to *Customer) (float64, bool) {
+	if from == nil || to == nil {
+		return 1, from == nil && to == nil
 	}
-	return vs.Customer.DemandPeriod
-}
-
-// periodFactor returns how many "from" periods fit in one "to" period, so a
-// rate per "from" period times the factor is the rate per "to" period. ok
-// is false when the periods differ and are not both of fixed length.
-func periodFactor(from, to DemandPeriod) (float64, bool) {
-	if from == to {
+	if from.DemandPeriod == to.DemandPeriod && workingDays(from) == workingDays(to) {
 		return 1, true
 	}
-	f, okFrom := demandPeriodSeconds[from]
-	t, okTo := demandPeriodSeconds[to]
+	f, okFrom := periodSeconds(from)
+	t, okTo := periodSeconds(to)
 	if !okFrom || !okTo {
 		return 0, false
 	}
 	return t / f, true
+}
+
+// workingDays returns cust's working days per week (7 when absent).
+func workingDays(cust *Customer) float64 {
+	if cust == nil || cust.WorkingDaysPerWeek == 0 {
+		return 7
+	}
+	return cust.WorkingDaysPerWeek
 }

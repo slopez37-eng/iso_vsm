@@ -481,3 +481,69 @@ func TestDefectFractionAboveOne(t *testing.T) {
 		t.Errorf("resolved yield = %v, must not be negative", y)
 	}
 }
+
+// With 5 working days a week and demand per working day, 200 in stock at
+// 100 per day is 2 working days of cover = 2 × 7 ÷ 5 = 2.8 calendar days.
+// The same rule applies to process stock, inventory points, targets and the
+// exported map; weekly demand is unaffected (a week is 7 calendar days).
+func TestWorkingDaysPerWeek(t *testing.T) {
+	c := NewCalculator()
+	cust := &Customer{ID: "c", Demand: 100, DemandPeriod: DemandPeriodDay, WorkingDaysPerWeek: 5}
+	if got, ok := c.CalculateCustomerInventoryTime(200, cust, TimeUnitDays); !ok || !approx(got, 2.8) {
+		t.Errorf("inventory time = %v %v, want 2.8 days", got, ok)
+	}
+	if got, ok := c.CalculateCustomerInventoryQuantity(2.8, TimeUnitDays, cust); !ok || !approx(got, 200) {
+		t.Errorf("inventory quantity = %v %v, want 200", got, ok)
+	}
+	weekly := &Customer{ID: "c", Demand: 500, DemandPeriod: DemandPeriodWeek, WorkingDaysPerWeek: 5}
+	if got, ok := c.CalculateCustomerInventoryTime(500, weekly, TimeUnitDays); !ok || !approx(got, 7) {
+		t.Errorf("weekly inventory time = %v %v, want 7 days", got, ok)
+	}
+	// Absent = 7 working days: the calendar day rule.
+	if got, ok := c.CalculateCustomerInventoryTime(200, &Customer{Demand: 100, DemandPeriod: DemandPeriodDay}, TimeUnitDays); !ok || !approx(got, 2) {
+		t.Errorf("default inventory time = %v %v, want 2 days", got, ok)
+	}
+
+	vs := &ValueStream{ID: "vs", Name: "wd", Customer: cust,
+		Processes: []Process{{ID: "p", Name: "p", Parameters: ProcessParameters{
+			ProcessTime: 1, StockQuantity: 200, TimeUnit: TimeUnitDays}}},
+		Inventory: []Inventory{{ID: "i", Name: "i", Quantity: 100}},
+	}
+	if wt := c.ResolveParametersInStream(vs.Processes[0].Parameters, vs).WaitingTime; !approx(wt, 2.8) {
+		t.Errorf("process waiting time = %v days, want 2.8", wt)
+	}
+	if r, ok := c.contextOf(vs).inventoryRange(vs.Inventory[0]); !ok || !approx(r, 1.4) {
+		t.Errorf("inventory range = %v %v, want 1.4 days", r, ok)
+	}
+	future, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
+		Default:          &ProcessTargets{WaitingTime: AbsoluteTarget(1.4)},
+		InventoryDefault: &InventoryTargets{Range: AbsoluteTarget(2.8)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := future.Processes[0].Parameters.StockQuantity; !approx(q, 100) {
+		t.Errorf("future stock = %v, want 100 (1.4 calendar days = 1 working day)", q)
+	}
+	if q := future.Inventory[0].Quantity; !approx(q, 200) {
+		t.Errorf("future inventory = %v, want 200", q)
+	}
+	text, err := NewSerializer().ExportValueStreamMap(vs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "5 working days/week") || !strings.Contains(text, "1.40 days range") {
+		t.Errorf("export missing working days or calendar range:\n%s", text)
+	}
+
+	// Outside 1–7 is invalid: reported, and nothing is derived from it.
+	bad := *vs
+	bad.Customer = &Customer{ID: "c", Demand: 100, DemandPeriod: DemandPeriodDay, WorkingDaysPerWeek: 8}
+	issues := CheckConsistency(&bad)
+	if len(issues) != 1 || issues[0].Field != "working_days_per_week" {
+		t.Errorf("issues = %+v, want one working_days_per_week issue", issues)
+	}
+	if err := NewValidator().ValidateValueStream(&bad); err == nil {
+		t.Errorf("validator accepted working_days_per_week = 8")
+	}
+}

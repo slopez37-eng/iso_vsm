@@ -261,6 +261,9 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		}
 		mapStr += fmt.Sprintf("Customer: %s\n", vs.Customer.Name)
 		mapStr += fmt.Sprintf("Demand: %.2f units/%s\n", vs.Customer.Demand, period)
+		if w := vs.Customer.WorkingDaysPerWeek; w > 0 {
+			mapStr += fmt.Sprintf("Working Days: %g working days/week (inventory ranges are calendar time)\n", w)
+		}
 		if vs.Customer.AvailableTime > 0 {
 			mapStr += fmt.Sprintf("Available Time: %.2f %s/%s\n", vs.Customer.AvailableTime, timeUnit, period)
 		}
@@ -414,6 +417,11 @@ func (v *Validator) ValidateValueStream(vs *ValueStream) error {
 		if err := v.ValidateProcess(&process); err != nil {
 			return fmt.Errorf("process %d validation failed: %w", i, err)
 		}
+	}
+
+	if vs.Customer != nil && !workingDaysValid(vs.Customer.WorkingDaysPerWeek) {
+		return fmt.Errorf("customer working_days_per_week %g must be between 1 and 7 (or absent for 7)",
+			vs.Customer.WorkingDaysPerWeek)
 	}
 
 	// Validate inventory
