@@ -124,8 +124,14 @@ func (c *Calculator) CalculateRepetitiveProcessTime(setupTime, repetitionTime fl
 	return setupTime + (repetitionTime * float64(repetitionCount))
 }
 
-// CalculateStockQuantity calculates stock quantity according to formula (A.7)
-// SQ = PT × PQ
+// CalculateStockQuantity returns processTime × processQuantity (formerly
+// presented as A.7, SQ = PT × PQ).
+//
+// Deprecated: the result is not a quantity. A time multiplied by a quantity
+// is time × units (2 min × 3 units = 6 "units" in minutes, but 360 in
+// seconds), so the answer changes with the time unit. The library does not
+// use it. To size stock, use CalculateInventoryQuantity (customer demand
+// rate × the time the stock must cover, with explicit units).
 func (c *Calculator) CalculateStockQuantity(processTime float64, processQuantity float64) float64 {
 	return processTime * processQuantity
 }

@@ -1,7 +1,12 @@
 package vsm
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -30,8 +35,6 @@ func TestScalarFormulas(t *testing.T) {
 		{"processing time zero resources", c.CalculateProcessingTime(2, 10, 0), 0},
 		// A.6: PT = ST + RT × #Rep = 5 + 2 × 3
 		{"repetitive process time A.6", c.CalculateRepetitiveProcessTime(5, 2, 3), 11},
-		// A.7: SQ = PT × PQ
-		{"stock quantity A.7", c.CalculateStockQuantity(2, 3), 6},
 		// A.2 rearranged: HT = PT − (PRT + ST + WTp + AT) = 30 − (20 + 3 + 2 + 1)
 		{"handling time from A.2", c.CalculateHandlingTime(ProcessParameters{
 			ProcessTime: 30, ProcessingTime: 20, SetupTime: 3, WaitingTimeProcess: 2, AncillaryTime: 1,
@@ -371,5 +374,42 @@ func TestCalculateImprovementMetrics(t *testing.T) {
 	}
 	if got := c.CalculateImprovementMetrics(nil, future); len(got) != 0 {
 		t.Errorf("nil current: got %v", got)
+	}
+}
+
+// TestStockQuantityFormulaDeprecated: process time × quantity is not a
+// quantity (its value depends on the time unit), so CalculateStockQuantity
+// is marked deprecated and nothing in the library calls it.
+func TestStockQuantityFormulaDeprecated(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, pkg := range pkgs {
+		for name, file := range pkg.Files {
+			ast.Inspect(file, func(n ast.Node) bool {
+				switch n := n.(type) {
+				case *ast.FuncDecl:
+					if n.Name.Name == "CalculateStockQuantity" {
+						found = true
+						if n.Doc == nil || !strings.Contains(n.Doc.Text(), "\nDeprecated: ") {
+							t.Errorf("CalculateStockQuantity is not marked Deprecated")
+						}
+					}
+				case *ast.SelectorExpr:
+					if n.Sel.Name == "CalculateStockQuantity" {
+						t.Errorf("%s calls CalculateStockQuantity", name)
+					}
+				}
+				return true
+			})
+		}
+	}
+	if !found {
+		t.Error("CalculateStockQuantity not found (it must stay for compatibility)")
 	}
 }
