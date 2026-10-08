@@ -443,3 +443,41 @@ func TestCalculateInventoryTimeAndQuantity(t *testing.T) {
 		t.Error("year period has no fixed length; want ok = false")
 	}
 }
+
+// Scrap 0.8 + rework 0.4 is impossible (more than every part is defective):
+// it is rejected by validation, reported by CheckConsistency, and the
+// process's yield is treated as unknown instead of −0.2.
+func TestDefectFractionAboveOne(t *testing.T) {
+	c := NewCalculator()
+	bad := ProcessParameters{ProcessTime: 10, ScrapRate: 0.8, ReworkRate: 0.4, TimeUnit: TimeUnitMinutes}
+
+	found := false
+	for _, err := range c.ValidateProcessParameters(bad) {
+		if strings.Contains(err.Error(), "scrap rate + rework rate") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ValidateProcessParameters did not reject scrap + rework = 1.2")
+	}
+
+	vs := &ValueStream{Processes: []Process{
+		{ID: "bad", Parameters: bad},
+		{ID: "good", Parameters: ProcessParameters{ProcessTime: 10, YieldFactor: 0.9, TimeUnit: TimeUnitMinutes}},
+	}}
+	issues := CheckConsistency(vs)
+	if len(issues) != 1 || issues[0].ID != "bad" || issues[0].Field != fieldDefects {
+		t.Fatalf("issues = %+v, want one %q issue for process bad", issues, fieldDefects)
+	}
+	if issues[0].Unit != "" {
+		t.Errorf("defect issue unit = %q, want none (rates are fractions)", issues[0].Unit)
+	}
+
+	kpis := c.CalculateKPIs(vs)
+	if got := kpis["average_yield_factor"]; !approx(got, 0.9) {
+		t.Errorf("average_yield_factor = %v, want 0.9 (impossible yield left out)", got)
+	}
+	if y := c.ResolveParameters(bad).YieldFactor; y < 0 {
+		t.Errorf("resolved yield = %v, must not be negative", y)
+	}
+}

@@ -371,10 +371,14 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		p.YieldFactor = v
 	}
 	if hasDefects {
-		if p.ScrapRate+p.ReworkRate > 1 {
+		switch {
+		case !defectsImpossible(p):
+			p.YieldFactor = c.CalculateYieldFactor(p.ScrapRate, p.ReworkRate)
+		case !hasIssue(curIssues, fieldDefects):
 			return params, fmt.Errorf("scrap_rate + rework_rate = %g is above 1", p.ScrapRate+p.ReworkRate)
 		}
-		p.YieldFactor = c.CalculateYieldFactor(p.ScrapRate, p.ReworkRate)
+		// Otherwise the current state already has scrap + rework above 1
+		// (reported by CheckConsistency); untouched, it is carried over.
 	}
 
 	// Lead time and its value classification. The lead time is the flow

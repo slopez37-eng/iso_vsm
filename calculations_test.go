@@ -224,8 +224,8 @@ func TestValidateProcessParameters(t *testing.T) {
 	}
 	bad := ProcessParameters{ProcessTime: -1, CycleTime: -1, CustomerDemand: -1, ValueAddingTime: 5,
 		YieldFactor: 2, ScrapRate: -0.1, ReworkRate: 1.5}
-	if errs := c.ValidateProcessParameters(bad); len(errs) != 7 {
-		t.Errorf("got %d errors, want 7: %v", len(errs), errs)
+	if errs := c.ValidateProcessParameters(bad); len(errs) != 8 {
+		t.Errorf("got %d errors, want 8 (scrap + rework = 1.4 too): %v", len(errs), errs)
 	}
 }
 

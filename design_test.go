@@ -510,3 +510,24 @@ func TestZeroTargetsRecomputeLeadTime(t *testing.T) {
 		}
 	}
 }
+
+// A current state with scrap + rework above 1 can still be carried into a
+// future state without targets (the contradiction stays reported), but a
+// target that creates such a state is rejected.
+func TestTargetsWithImpossibleDefects(t *testing.T) {
+	vs := &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+		ProcessTime: 10, ScrapRate: 0.8, ReworkRate: 0.4, TimeUnit: TimeUnitMinutes}}}}
+	future, err := NewDesigner().DesignFutureStateFromTargets(vs, nil)
+	if err != nil {
+		t.Fatalf("no targets: %v", err)
+	}
+	if _, ok := future.KPIs["average_yield_factor"]; ok {
+		t.Errorf("impossible yield must stay unknown, got %v", future.KPIs["average_yield_factor"])
+	}
+	ok := &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+		ProcessTime: 10, ScrapRate: 0.1, ReworkRate: 0.1, TimeUnit: TimeUnitMinutes}}}}
+	_, err = NewDesigner().DesignFutureStateFromTargets(ok, &FutureStateTargets{Default: &ProcessTargets{ScrapRate: AbsoluteTarget(0.95)}})
+	if err == nil {
+		t.Errorf("scrap target 0.95 with rework 0.1 should be rejected")
+	}
+}

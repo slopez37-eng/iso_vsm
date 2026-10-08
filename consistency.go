@@ -49,6 +49,8 @@ const (
 	ruleLeadFlow      = "lead_time = process_time + idle_time"
 	ruleLeadClass     = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time = lead_time = process_time + idle_time (A.3)"
 	ruleYield         = "yield_factor = 1 − (scrap_rate + rework_rate) (A.17)"
+	ruleDefects       = "scrap_rate + rework_rate is the defective share of parts, so it cannot exceed 1"
+	fieldDefects      = "scrap_rate + rework_rate"
 	ruleTakt          = "takt_time = available_time ÷ demand (A.12)"
 	ruleStoredKPI     = "stored KPI = KPI computed from the processes (CalculateKPIs)"
 	fieldClassSum     = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time"
@@ -96,7 +98,11 @@ func consistent(a, b float64) bool {
 //   - lead_time = process_time + idle_time; when neither is given, the value
 //     classification VAT + NVAT + NNVAT (A.3); when neither is given, the
 //     stored lead_time
-//   - yield_factor = 1 − (scrap_rate + rework_rate) (A.17)
+//   - yield_factor = 1 − (scrap_rate + rework_rate) (A.17); when the sum
+//     of scrap_rate and rework_rate is above 1 (impossible), yield_factor is
+//     left as stored,
+//     the process's yield counts as unknown and the contradiction is
+//     reported
 func (c *Calculator) ResolveParameters(params ProcessParameters) ProcessParameters {
 	p, _ := c.resolveParameters(params, streamContext{})
 	return p
@@ -255,8 +261,16 @@ func (c *Calculator) resolveParameters(in ProcessParameters, ctx streamContext) 
 	}
 	p.LeadTime = lt
 
-	// Yield.
-	if p.ScrapRate > 0 || p.ReworkRate > 0 {
+	// Yield. Scrap + rework above 1 is impossible: the yield is not derived
+	// from them (it would be negative), the process's yield counts as
+	// unknown (see yieldKnown), and the contradiction is reported.
+	if defects := p.ScrapRate + p.ReworkRate; defectsImpossible(p) {
+		issues = append(issues, ConsistencyIssue{
+			Field: fieldDefects, StoredValue: defects, ComputedValue: 1, Rule: ruleDefects,
+			Message: fmt.Sprintf("%s = %g is above 1 (more than every part defective); "+
+				"the yield of this process is treated as unknown", fieldDefects, defects),
+		})
+	} else if p.ScrapRate > 0 || p.ReworkRate > 0 {
 		derive("yield_factor", &p.YieldFactor, c.CalculateYieldFactor(p.ScrapRate, p.ReworkRate), ruleYield)
 	}
 

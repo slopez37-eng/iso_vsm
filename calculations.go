@@ -489,6 +489,10 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 		errs = append(errs, errors.New("rework rate must be between 0 and 1"))
 	}
 
+	if defectsImpossible(params) {
+		errs = append(errs, errors.New("scrap rate + rework rate cannot exceed 1"))
+	}
+
 	return errs
 }
 
@@ -514,7 +518,10 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 //     rework when those are given, else the stored YieldFactor) over the
 //     processes whose yield is known: yield_factor, scrap_rate or
 //     rework_rate given (> 0). A process that scraps everything counts with
-//     yield 0. Omitted when no process has quality data.
+//     yield 0. A process whose scrap_rate + rework_rate is above 1
+//     (impossible; CheckConsistency reports it) is left out rather than
+//     counted with a negative yield. Omitted when no process has quality
+//     data.
 //
 // All process values are resolved in the stream first (see
 // ResolveParametersInStream), so stored
@@ -571,10 +578,22 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 	return kpis
 }
 
-// yieldKnown reports whether a process has quality data: a yield factor, or
-// a scrap or rework rate it is computed from.
+// yieldKnown reports whether a process has usable quality data: a yield
+// factor, or a scrap or rework rate it is computed from. Scrap + rework
+// above 1 is impossible, so such a yield is not known (see
+// defectsImpossible).
 func yieldKnown(p ProcessParameters) bool {
+	if defectsImpossible(p) {
+		return false
+	}
 	return p.YieldFactor > 0 || p.ScrapRate > 0 || p.ReworkRate > 0
+}
+
+// defectsImpossible reports whether scrap_rate + rework_rate is above 1
+// (beyond ConsistencyTolerance): more than every part defective.
+func defectsImpossible(p ProcessParameters) bool {
+	sum := p.ScrapRate + p.ReworkRate
+	return sum > 1 && !consistent(sum, 1)
 }
 
 // CalculateImprovementMetrics compares future with current KPIs: for each

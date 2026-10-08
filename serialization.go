@@ -292,6 +292,8 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		mapStr += fmt.Sprintf("     Cycle Time: %.2f %s\n", params.CycleTime, unit)
 		if yieldKnown(process.Parameters) {
 			mapStr += fmt.Sprintf("     Yield Factor: %.2f%%\n", params.YieldFactor*100)
+		} else if defectsImpossible(process.Parameters) {
+			mapStr += "     Yield Factor: unknown (scrap + rework above 100%)\n"
 		} else {
 			mapStr += "     Yield Factor: not given\n"
 		}
