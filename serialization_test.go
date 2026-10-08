@@ -2,6 +2,7 @@ package vsm
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -160,5 +161,252 @@ func TestProjectAndDesignFileLoadsRefreshIssues(t *testing.T) {
 	}
 	if is := design.FutureState.ConsistencyIssues; len(is) != 1 || is[0].Field != "process_time" {
 		t.Errorf("design result issues = %+v", is)
+	}
+}
+
+// legacyStream is a value stream as written before format_version 2: every
+// blank number stored as 0.
+const legacyStream = `{
+  "id": "vs", "name": "Legacy", "state": "current", "product_family": "f",
+  "customer": {"id": "c", "name": "C", "demand": 100, "takt_time": 0,
+               "demand_period": "day", "available_time": 0},
+  "processes": [
+    {"id": "p1", "name": "Press", "type": "material", "parameters": {
+      "process_time": 30, "cycle_time": 2, "setup_time": 0, "processing_time": 0,
+      "idle_time": 0, "waiting_time": 0, "transport_time": 0, "storage_time": 0,
+      "transport_repetition_count": 0, "repetition_count": 0, "resource_count": 0,
+      "stock_quantity": 0, "value_adding_time": 10, "non_value_adding_time": 0,
+      "yield_factor": 0, "scrap_rate": 0.02, "rework_rate": 0, "lead_time": 0,
+      "time_unit": "minutes"}},
+    {"id": "p2", "name": "Scrap all", "type": "material", "parameters": {
+      "process_time": 20, "setup_time": 0, "yield_factor": 0, "yield_factor_given": true,
+      "scrap_rate": 0, "rework_rate": 0, "time_unit": "minutes"}},
+    {"id": "p3", "name": "Paint", "type": "material", "parameters": {
+      "process_time": 10, "yield_factor": 0, "time_unit": "minutes"}}
+  ],
+  "inventory": [{"id": "i", "name": "WIP", "quantity": 0, "range": 2880, "type": "stock"}],
+  "flow_elements": [{"id": "k", "type": "kanban", "capacity": 0}],
+  "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z", "version": "1"
+}`
+
+// A legacy file keeps its old meaning: 0 is "not entered", except a yield
+// marked by yield_factor_given. Saving writes the current format, and
+// loading that gives the same values and results.
+func TestLegacyFileZerosBecomeNotEntered(t *testing.T) {
+	s := NewSerializer()
+	vs, err := s.DeserializeValueStream([]byte(legacyStream))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p1, p2, p3 := vs.Processes[0].Parameters, vs.Processes[1].Parameters, vs.Processes[2].Parameters
+	for name, v := range map[string]*float64{
+		"setup_time": p1.SetupTime, "processing_time": p1.ProcessingTime, "idle_time": p1.IdleTime,
+		"waiting_time": p1.WaitingTime, "stock_quantity": p1.StockQuantity, "yield_factor": p1.YieldFactor,
+		"rework_rate": p1.ReworkRate, "lead_time": p1.LeadTime, "non_value_adding_time": p1.NonValueAddingTime,
+		"p2 scrap_rate": p2.ScrapRate, "p3 yield_factor": p3.YieldFactor,
+		"takt_time": vs.Customer.TaktTime, "available_time": vs.Customer.AvailableTime,
+		"inventory quantity": vs.Inventory[0].Quantity, "capacity": vs.FlowElements[0].Capacity,
+	} {
+		if v != nil {
+			t.Errorf("legacy %s = %v, want not entered", name, *v)
+		}
+	}
+	if p1.ResourceCount != nil || p1.RepetitionCount != nil || p1.TransportRepetitionCount != nil {
+		t.Errorf("legacy zero counts must be not entered: %+v", p1)
+	}
+	if p2.YieldFactor == nil || *p2.YieldFactor != 0 {
+		t.Errorf("yield_factor_given zero yield = %v, want an entered 0", p2.YieldFactor)
+	}
+	if num(p1.ProcessTime) != 30 || num(p1.ScrapRate) != 0.02 || num(vs.Inventory[0].Range) != 2880 {
+		t.Errorf("non-zero values changed: %+v", p1)
+	}
+	if len(vs.ConsistencyIssues) != 0 {
+		t.Errorf("legacy stream issues: %+v", vs.ConsistencyIssues)
+	}
+	// Same results as before the format change: lead time 30 + 20 + 10 +
+	// 2 days of inventory; yields 0.98 (p1) and 0 (p2), p3 unknown.
+	kpis := NewCalculator().CalculateKPIs(vs)
+	if !approx(kpis["total_lead_time"], 60+2880) || !approx(kpis["average_yield_factor"], 0.49) ||
+		!approx(kpis["inventory_turns"], 0.5) {
+		t.Errorf("legacy KPIs = %v", kpis)
+	}
+
+	// Saved in the current format: marked, zeros that meant "not entered"
+	// gone, the entered zero yield kept.
+	data, err := s.SerializeValueStream(vs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"format_version": 2`) || strings.Contains(text, `"setup_time"`) ||
+		strings.Contains(text, `"yield_factor_given"`) || strings.Count(text, `"yield_factor": 0`) != 1 {
+		t.Errorf("saved stream:\n%s", text)
+	}
+	back, err := s.DeserializeValueStream(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back.Processes, vs.Processes) || !reflect.DeepEqual(back.Inventory, vs.Inventory) ||
+		!reflect.DeepEqual(back.Customer, vs.Customer) {
+		t.Errorf("save → load changed the stream")
+	}
+	if !reflect.DeepEqual(NewCalculator().CalculateKPIs(back), kpis) {
+		t.Errorf("KPIs after save → load differ")
+	}
+}
+
+// In the current format, 0 is an entered zero and an absent (or null)
+// field is not entered.
+func TestFormat2ZeroVersusAbsent(t *testing.T) {
+	data := `{"format_version": 2, "id": "vs", "name": "New", "processes": [
+	  {"id": "a", "name": "A", "parameters": {"process_time": 30, "setup_time": 0, "time_unit": "minutes"}},
+	  {"id": "b", "name": "B", "parameters": {"process_time": 30, "setup_time": null, "time_unit": "minutes"}}],
+	  "inventory": [{"id": "i", "name": "I", "quantity": 0}]}`
+	vs, err := NewSerializer().DeserializeValueStream([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := vs.Processes[0].Parameters, vs.Processes[1].Parameters
+	if a.SetupTime == nil || *a.SetupTime != 0 || b.SetupTime != nil {
+		t.Fatalf("setup a %v b %v, want entered 0 and not entered", a.SetupTime, b.SetupTime)
+	}
+	if q := vs.Inventory[0].Quantity; q == nil || *q != 0 {
+		t.Errorf("inventory quantity %v, want an entered 0", q)
+	}
+	// The entered 0 setup is a part: process a's time is its parts (0),
+	// and the stored 30 is reported; b keeps its total.
+	if len(vs.ConsistencyIssues) != 1 || vs.ConsistencyIssues[0].ID != "a" {
+		t.Errorf("issues = %+v, want one on process a", vs.ConsistencyIssues)
+	}
+	c := NewCalculator()
+	if pt := num(c.ResolveParametersInStream(a, vs).ProcessTime); pt != 0 {
+		t.Errorf("process a time = %v, want 0", pt)
+	}
+	if pt := num(c.ResolveParametersInStream(b, vs).ProcessTime); pt != 30 {
+		t.Errorf("process b time = %v, want 30", pt)
+	}
+}
+
+// Saving and loading keeps which values were entered, zeros included.
+func TestSaveLoadPreservesPresence(t *testing.T) {
+	vs := &ValueStream{ID: "vs", Name: "P",
+		Customer: &Customer{ID: "c", Name: "C", Demand: F(0), WorkingDaysPerWeek: F(5)},
+		Processes: []Process{{ID: "p", Name: "P", Parameters: ProcessParameters{
+			TimeUnit: TimeUnitMinutes, ProcessTime: F(12), SetupTime: F(0), ProcessingTime: F(12),
+			StockQuantity: F(0), YieldFactor: F(0), ReworkRate: F(0), ScrapRate: F(1),
+			ResourceCount: I(0), RepetitionTime: nil}}},
+		Inventory:    []Inventory{{ID: "i", Name: "I", Quantity: F(0)}, {ID: "j", Name: "J", Range: F(3)}},
+		FlowElements: []FlowElement{{ID: "f", Type: "fifo", Capacity: F(0)}, {ID: "g", Type: "kanban"}},
+	}
+	path := filepath.Join(t.TempDir(), "vs.json")
+	s := NewSerializer()
+	if err := s.SaveToFile(vs, path); err != nil {
+		t.Fatal(err)
+	}
+	back, _, err := s.LoadValueStreamFromFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back.Processes, vs.Processes) || !reflect.DeepEqual(back.Customer, vs.Customer) ||
+		!reflect.DeepEqual(back.Inventory, vs.Inventory) || !reflect.DeepEqual(back.FlowElements, vs.FlowElements) {
+		t.Errorf("presence changed by save → load:\nsaved  %+v\nloaded %+v", vs.Processes[0].Parameters, back.Processes[0].Parameters)
+	}
+}
+
+// Projects and design results: a nested stream follows its own
+// format_version, else the container's; a legacy container (no marker)
+// is read with the old meaning.
+func TestNestedStreamsFollowFormatVersion(t *testing.T) {
+	stream := func(marker string) string {
+		return `{` + marker + `"id": "s", "name": "S", "processes": [{"id": "p", "name": "P",
+		  "parameters": {"process_time": 10, "setup_time": 0, "processing_time": 10}}]}`
+	}
+	setup := func(vs *ValueStream) *float64 { return vs.Processes[0].Parameters.SetupTime }
+	s := NewSerializer()
+
+	// Legacy project: setup 0 is not entered.
+	legacy := `{"id": "pr", "name": "Pr", "current_state": ` + stream("") + `, "future_state": ` + stream("") + `}`
+	project, err := s.DeserializeVSMProject([]byte(legacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if setup(&project.CurrentState) != nil || setup(project.FutureState) != nil || project.IdealState != nil {
+		t.Errorf("legacy project: setup %v / %v, ideal %v", setup(&project.CurrentState), setup(project.FutureState), project.IdealState)
+	}
+	// Marked project: nested streams without a marker are format 2.
+	marked := `{"format_version": 2, "id": "pr", "name": "Pr", "current_state": ` + stream("") +
+		`, "future_state": ` + stream(`"format_version": 1, `) + `}`
+	if project, err = s.DeserializeVSMProject([]byte(marked)); err != nil {
+		t.Fatal(err)
+	}
+	if v := setup(&project.CurrentState); v == nil || *v != 0 {
+		t.Errorf("marked project: current setup %v, want an entered 0", v)
+	}
+	if v := setup(project.FutureState); v != nil {
+		t.Errorf("stream marked format 1 in a format 2 project: setup %v, want not entered", *v)
+	}
+	// Written projects mark the container and every stream.
+	data, err := s.SerializeVSMProject(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), `"format_version": 2`); n != 3 {
+		t.Errorf("saved project has %d format markers, want 3 (project, current, future)", n)
+	}
+	again, err := s.DeserializeVSMProject(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(again.CurrentState.Processes, project.CurrentState.Processes) ||
+		!reflect.DeepEqual(again.FutureState.Processes, project.FutureState.Processes) {
+		t.Errorf("project save → load changed the streams")
+	}
+
+	// Design results.
+	design := `{"value_stream_id": "s", "future_state": ` + stream("") + `, "ideal_state": null}`
+	result, err := s.DeserializeDesignResult([]byte(design))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if setup(result.FutureState) != nil || result.IdealState != nil {
+		t.Errorf("legacy design result: setup %v", setup(result.FutureState))
+	}
+	if result, err = s.DeserializeDesignResult([]byte(`{"format_version": 2, ` + design[1:])); err != nil {
+		t.Fatal(err)
+	}
+	if v := setup(result.FutureState); v == nil || *v != 0 {
+		t.Errorf("marked design result: setup %v, want an entered 0", v)
+	}
+}
+
+// Legacy assessment results: working_days_per_week 0 is not entered, and a
+// target counts only with has_target.
+func TestLegacyAssessmentResult(t *testing.T) {
+	legacy := `{"value_stream_id": "vs", "working_days_per_week": 0, "kpis": {
+	  "total_lead_time": {"name": "total_lead_time", "value": 10, "target": 0, "has_target": true},
+	  "value_added_ratio": {"name": "value_added_ratio", "value": 0.2, "target": 0}}}`
+	got, err := NewSerializer().DeserializeAssessmentResult([]byte(legacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WorkingDaysPerWeek != nil {
+		t.Errorf("working days = %v, want not entered", *got.WorkingDaysPerWeek)
+	}
+	if tgt := got.KPIs["total_lead_time"].Target; tgt == nil || *tgt != 0 {
+		t.Errorf("has_target zero target = %v, want an entered 0", tgt)
+	}
+	if tgt := got.KPIs["value_added_ratio"].Target; tgt != nil {
+		t.Errorf("target without has_target = %v, want none", *tgt)
+	}
+	data, err := NewSerializer().SerializeAssessmentResult(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := NewSerializer().DeserializeAssessmentResult(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"format_version": 2`) || !reflect.DeepEqual(back.KPIs, got.KPIs) {
+		t.Errorf("assessment save → load: %s", data)
 	}
 }

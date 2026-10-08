@@ -666,3 +666,88 @@ func TestZeroStockTargetRemovesLinkedInventory(t *testing.T) {
 		t.Errorf("future total_lead_time = %v, want 730", lt)
 	}
 }
+
+// Targets that set a value to 0 enter a real zero; a reduction of a value
+// that is not entered leaves it not entered.
+func TestTargetsZeroAndNotEntered(t *testing.T) {
+	current := &ValueStream{ID: "vs", Name: "Z",
+		Customer: &Customer{ID: "c", Demand: F(100), DemandPeriod: DemandPeriodDay},
+		Processes: []Process{{ID: "p", Name: "p", Parameters: ProcessParameters{
+			TimeUnit: TimeUnitMinutes, SetupTime: F(5), ProcessingTime: F(20), StockQuantity: F(100),
+			ScrapRate: F(0.1)}}},
+		Inventory: []Inventory{{ID: "i", Quantity: F(50)}},
+	}
+	if issues := CheckConsistency(current); len(issues) != 0 {
+		t.Fatalf("current inconsistent: %+v", issues)
+	}
+	future, err := NewDesigner().DesignFutureStateFromTargets(current, &FutureStateTargets{
+		Default: &ProcessTargets{
+			SetupTime: AbsoluteTarget(0), StockQuantity: AbsoluteTarget(0), ScrapRate: AbsoluteTarget(0),
+			// Not entered in the current state: a reduction changes nothing.
+			StorageTime: ReductionTarget(50), CycleTime: ReductionTarget(50),
+		},
+		InventoryDefault: &InventoryTargets{Quantity: AbsoluteTarget(0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues := CheckConsistency(future); len(issues) != 0 {
+		t.Errorf("future issues: %+v", issues)
+	}
+	p := future.Processes[0].Parameters
+	for name, v := range map[string]*float64{"setup_time": p.SetupTime, "stock_quantity": p.StockQuantity, "scrap_rate": p.ScrapRate} {
+		if v == nil || *v != 0 {
+			t.Errorf("%s = %v, want an entered 0", name, v)
+		}
+	}
+	if p.StorageTime != nil || p.CycleTime != nil {
+		t.Errorf("reductions of values not entered: storage %v cycle %v, want not entered", p.StorageTime, p.CycleTime)
+	}
+	r := NewCalculator().ResolveParametersInStream(p, future)
+	if num(r.ProcessTime) != 20 || r.WaitingTime == nil || *r.WaitingTime != 0 || num(r.YieldFactor) != 1 {
+		t.Errorf("resolved PT %v WT %v YF %v, want 20, 0, 1", num(r.ProcessTime), r.WaitingTime, num(r.YieldFactor))
+	}
+	if inv := future.Inventory[0]; inv.Quantity == nil || *inv.Quantity != 0 {
+		t.Errorf("inventory quantity = %v, want an entered 0", inv.Quantity)
+	}
+	if lt := future.KPIs["total_lead_time"]; !approx(lt, 20) {
+		t.Errorf("total_lead_time = %v, want 20 (no stock, no waiting)", lt)
+	}
+	if y := future.KPIs["average_yield_factor"]; !approx(y, 1) {
+		t.Errorf("average_yield_factor = %v, want 1", y)
+	}
+	// The zeros survive saving and loading.
+	data, err := NewSerializer().SerializeValueStream(future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"setup_time": 0`, `"stock_quantity": 0`, `"scrap_rate": 0`, `"quantity": 0`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("saved future state lacks %s", want)
+		}
+	}
+	back, err := NewSerializer().DeserializeValueStream(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bp := back.Processes[0].Parameters; bp.SetupTime == nil || bp.StockQuantity == nil || bp.StorageTime != nil {
+		t.Errorf("after reload: setup %v stock %v storage %v", bp.SetupTime, bp.StockQuantity, bp.StorageTime)
+	}
+}
+
+// A yield target of 0 on a process without scrap/rework data enters a
+// yield of 0 (no flag needed).
+func TestZeroYieldTargetIsEntered(t *testing.T) {
+	vs := &ValueStream{ID: "vs", Processes: []Process{{ID: "a", Parameters: ProcessParameters{ProcessTime: F(10)}}}}
+	future, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
+		Default: &ProcessTargets{YieldFactor: AbsoluteTarget(0)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if y := future.Processes[0].Parameters.YieldFactor; y == nil || *y != 0 {
+		t.Errorf("yield = %v, want an entered 0", y)
+	}
+	if got, ok := future.KPIs["average_yield_factor"]; !ok || got != 0 {
+		t.Errorf("average_yield_factor = %v (present %v), want 0", got, ok)
+	}
+}

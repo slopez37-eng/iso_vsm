@@ -2,6 +2,7 @@ package vsm
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -802,5 +803,199 @@ func TestValueAddingTimeAboveLeadTime(t *testing.T) {
 	}
 	if r := NewCalculator().CalculateKPIs(vs)["value_added_ratio"]; !approx(r, 0.5) {
 		t.Errorf("value_added_ratio = %v, want 0.5", r)
+	}
+}
+
+// TestEnteredZeroVersusNotEntered pins the difference between a value
+// entered as 0 and one not entered, for every relationship where it matters.
+func TestEnteredZeroVersusNotEntered(t *testing.T) {
+	c := NewCalculator()
+	// 720 per day = 0.5 per minute.
+	ctx := streamContext{customer: &Customer{Demand: F(720), DemandPeriod: DemandPeriodDay}, unit: TimeUnitMinutes}
+	resolve := func(p ProcessParameters) (ProcessParameters, []ConsistencyIssue) {
+		p.TimeUnit = TimeUnitMinutes
+		return c.resolveParameters(p, ctx)
+	}
+	fields := func(issues []ConsistencyIssue) []string {
+		var out []string
+		for _, is := range issues {
+			out = append(out, is.Field)
+		}
+		return out
+	}
+
+	// Process time parts: a setup time entered as 0 is a part, so the
+	// parts (summing to 0) replace the stored 30 and the gap is reported.
+	got, issues := resolve(ProcessParameters{ProcessTime: F(30), SetupTime: F(0)})
+	if num(got.ProcessTime) != 0 || len(issues) != 1 || issues[0].Field != "process_time" ||
+		!strings.Contains(issues[0].Message, "only setup_time given") {
+		t.Errorf("setup 0: PT %v, issues %+v; want 0 and one process_time issue", num(got.ProcessTime), issues)
+	}
+	got, issues = resolve(ProcessParameters{ProcessTime: F(30)})
+	if num(got.ProcessTime) != 30 || len(issues) != 0 {
+		t.Errorf("setup not entered: PT %v, issues %+v; want 30, none", num(got.ProcessTime), issues)
+	}
+	got, issues = resolve(ProcessParameters{ProcessTime: F(30), SetupTime: F(0), ProcessingTime: F(30)})
+	if num(got.ProcessTime) != 30 || len(issues) != 0 {
+		t.Errorf("setup 0 + processing 30: PT %v, issues %+v; want 30, none", num(got.ProcessTime), issues)
+	}
+	// A.6: an A.2 part beyond setup entered as 0 is a second breakdown.
+	_, issues = resolve(ProcessParameters{SetupTime: F(5), RepetitionTime: F(2), RepetitionCount: I(3), HandlingTime: F(0)})
+	if f := fields(issues); len(f) != 1 || f[0] != fieldProcessParts {
+		t.Errorf("A.6 with handling 0: issues %v, want the parts sum", f)
+	}
+	// A repetition count of 0 is entered: A.6 gives setup + 0.
+	if got, _ := resolve(ProcessParameters{SetupTime: F(5), RepetitionTime: F(2), RepetitionCount: I(0)}); num(got.ProcessTime) != 5 {
+		t.Errorf("A.6 with 0 repetitions: PT %v, want 5", num(got.ProcessTime))
+	}
+
+	// Idle time parts.
+	got, issues = resolve(ProcessParameters{IdleTime: F(10), TransportTime: F(0)})
+	if got.IdleTime == nil || *got.IdleTime != 0 || len(issues) != 1 || issues[0].Field != "idle_time" {
+		t.Errorf("transport 0: IT %v, issues %+v; want 0 and one idle_time issue", num(got.IdleTime), issues)
+	}
+	got, issues = resolve(ProcessParameters{IdleTime: F(10)})
+	if num(got.IdleTime) != 10 || len(issues) != 0 {
+		t.Errorf("idle total only: IT %v, issues %+v", num(got.IdleTime), issues)
+	}
+	if got, _ = resolve(ProcessParameters{WaitingTime: F(0), StorageTime: F(5)}); num(got.IdleTime) != 5 {
+		t.Errorf("waiting 0 + storage 5: IT %v, want 5", num(got.IdleTime))
+	}
+
+	// Stock: 0 entered means no inventory time; not entered means unknown.
+	got, issues = resolve(ProcessParameters{ProcessTime: F(10), StockQuantity: F(0)})
+	if got.WaitingTime == nil || *got.WaitingTime != 0 || got.RangeOfInventory == nil || len(issues) != 0 ||
+		num(got.LeadTime) != 10 {
+		t.Errorf("stock 0: WT %v range %v LT %v issues %+v; want 0, 0, 10, none",
+			got.WaitingTime, got.RangeOfInventory, num(got.LeadTime), issues)
+	}
+	got, _ = resolve(ProcessParameters{ProcessTime: F(10)})
+	if got.WaitingTime != nil || got.RangeOfInventory != nil {
+		t.Errorf("stock not entered: WT %v range %v, want both not entered", got.WaitingTime, got.RangeOfInventory)
+	}
+	_, issues = resolve(ProcessParameters{ProcessTime: F(10), StockQuantity: F(0), WaitingTime: F(30)})
+	if f := fields(issues); len(f) != 1 || f[0] != "waiting_time" {
+		t.Errorf("stock 0 with stored waiting 30: issues %v, want waiting_time", f)
+	}
+	if got, issues = resolve(ProcessParameters{ProcessTime: F(10), WaitingTime: F(30)}); num(got.WaitingTime) != 30 || len(issues) != 0 {
+		t.Errorf("waiting 30, stock not entered: WT %v issues %+v", num(got.WaitingTime), issues)
+	}
+
+	// Yield.
+	if got, _ = resolve(ProcessParameters{ScrapRate: F(0)}); got.YieldFactor == nil || *got.YieldFactor != 1 {
+		t.Errorf("scrap 0: yield %v, want 1", got.YieldFactor)
+	}
+	if got, _ = resolve(ProcessParameters{ProcessTime: F(1)}); got.YieldFactor != nil {
+		t.Errorf("no quality data: yield %v, want not entered", *got.YieldFactor)
+	}
+	_, issues = resolve(ProcessParameters{YieldFactor: F(0), ReworkRate: F(0)})
+	if f := fields(issues); len(f) != 1 || f[0] != "yield_factor" {
+		t.Errorf("yield 0 with rework 0 (yield 1): issues %v, want yield_factor", f)
+	}
+
+	// Lead time from a classification entered as 0.
+	if got, _ = resolve(ProcessParameters{NonValueAddingTime: F(0)}); got.LeadTime == nil || *got.LeadTime != 0 {
+		t.Errorf("NVAT 0 alone: LT %v, want 0", got.LeadTime)
+	}
+	if got, _ = resolve(ProcessParameters{}); got.LeadTime != nil {
+		t.Errorf("nothing entered: LT %v, want not entered", *got.LeadTime)
+	}
+}
+
+// Average yield counts a yield entered as 0 and skips one not entered.
+func TestAverageYieldZeroVersusNotEntered(t *testing.T) {
+	stream := func(first *float64) *ValueStream {
+		return &ValueStream{ID: "vs", Processes: []Process{
+			{ID: "a", Parameters: ProcessParameters{ProcessTime: F(1), YieldFactor: first}},
+			{ID: "b", Parameters: ProcessParameters{ProcessTime: F(1), YieldFactor: F(1)}},
+		}}
+	}
+	c := NewCalculator()
+	if got := c.CalculateKPIs(stream(F(0)))["average_yield_factor"]; !approx(got, 0.5) {
+		t.Errorf("yield 0 and 1: average %v, want 0.5", got)
+	}
+	if got := c.CalculateKPIs(stream(nil))["average_yield_factor"]; !approx(got, 1) {
+		t.Errorf("yield not entered and 1: average %v, want 1", got)
+	}
+	none := &ValueStream{ID: "vs", Processes: []Process{{ID: "a", Parameters: ProcessParameters{ProcessTime: F(1)}}}}
+	if got, ok := c.CalculateKPIs(none)["average_yield_factor"]; ok {
+		t.Errorf("no quality data: average %v, want omitted", got)
+	}
+}
+
+// Inventories: a quantity of 0 is an empty inventory (no time, no stock);
+// a quantity not entered leaves the range as the measure.
+func TestInventoryQuantityZeroVersusNotEntered(t *testing.T) {
+	stream := func(inv Inventory, stock *float64) *ValueStream {
+		return &ValueStream{ID: "vs", Name: "Inv",
+			Customer: &Customer{ID: "c", Demand: F(100), DemandPeriod: DemandPeriodDay},
+			Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+				TimeUnit: TimeUnitMinutes, ProcessTime: F(10), StockQuantity: stock}}},
+			Inventory: []Inventory{inv},
+		}
+	}
+	c := NewCalculator()
+	field := func(issues []ConsistencyIssue) string {
+		if len(issues) != 1 {
+			return fmt.Sprint(issues)
+		}
+		return issues[0].Field
+	}
+
+	// Quantity 0 with a stored range: range is 0 ÷ rate = 0; the stored
+	// 1440 contradicts it.
+	vs := stream(Inventory{ID: "i", Quantity: F(0), Range: F(1440)}, nil)
+	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 10) {
+		t.Errorf("quantity 0: lead time %v, want 10", lt)
+	}
+	if f := field(CheckConsistency(vs)); f != "range" {
+		t.Errorf("quantity 0, range 1440: issue %v, want range", f)
+	}
+	// Quantity not entered: the range is the measure (1 day of stock).
+	vs = stream(Inventory{ID: "i", Range: F(1440)}, nil)
+	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 1450) {
+		t.Errorf("range only: lead time %v, want 1450", lt)
+	}
+	if issues := CheckConsistency(vs); len(issues) != 0 {
+		t.Errorf("range only: issues %+v", issues)
+	}
+	if turns := c.CalculateKPIs(vs)["inventory_turns"]; !approx(turns, 1) {
+		t.Errorf("range only: turns %v, want 1 (100 in stock at 100/day)", turns)
+	}
+	// Linked to a process whose stock is entered as 0: the same empty
+	// stock, consistent.
+	vs = stream(Inventory{ID: "i", Quantity: F(0), ProcessID: "p"}, F(0))
+	if issues := CheckConsistency(vs); len(issues) != 0 {
+		t.Errorf("empty linked inventory, stock 0: issues %+v", issues)
+	}
+	if _, ok := c.CalculateKPIs(vs)["inventory_turns"]; ok {
+		t.Errorf("no stock at all: inventory_turns must be omitted")
+	}
+	// Linked inventory of 50 to a process whose stock is entered as 0.
+	vs = stream(Inventory{ID: "i", Quantity: F(50), ProcessID: "p"}, F(0))
+	if f := field(CheckConsistency(vs)); f != "quantity" {
+		t.Errorf("quantity 50 vs stock 0: issue %v, want quantity", f)
+	}
+	// Linked inventory to a process whose stock is not entered: not linked.
+	vs = stream(Inventory{ID: "i", Quantity: F(50), ProcessID: "p"}, nil)
+	if f := field(CheckConsistency(vs)); f != "process_id" {
+		t.Errorf("stock not entered: issue %v, want process_id", f)
+	}
+}
+
+// Working days per week: not entered means 7; entered 0 is invalid.
+func TestWorkingDaysZeroIsInvalid(t *testing.T) {
+	vs := &ValueStream{ID: "vs", Name: "W", Processes: []Process{{ID: "p", Name: "p",
+		Parameters: ProcessParameters{ProcessTime: F(1)}}},
+		Customer: &Customer{ID: "c", Demand: F(100), DemandPeriod: DemandPeriodDay, WorkingDaysPerWeek: F(0)}}
+	if issues := CheckConsistency(vs); len(issues) != 1 || issues[0].Field != "working_days_per_week" {
+		t.Errorf("working days 0: issues %+v", issues)
+	}
+	if err := NewValidator().ValidateValueStream(vs); err == nil {
+		t.Errorf("working days 0 must fail validation")
+	}
+	vs.Customer.WorkingDaysPerWeek = nil
+	if issues := CheckConsistency(vs); len(issues) != 0 {
+		t.Errorf("working days not entered: issues %+v", issues)
 	}
 }
