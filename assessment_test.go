@@ -2,6 +2,7 @@ package vsm
 
 import (
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -102,14 +103,16 @@ func TestAssessValueStreamTrendForLeadTime(t *testing.T) {
 
 func TestTrendRecommendationRespectsDirection(t *testing.T) {
 	a := NewAssessor()
+	day0, day1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
+	points := func(from, to float64) []DataPoint { return []DataPoint{{day0, from}, {day1, to}} }
 	falling := &AssessmentResult{PerformanceIndex: 1, Trends: []TrendAnalysis{
-		{KPIName: "total_lead_time", Direction: LowerIsBetter, Slope: -1},
+		{KPIName: "total_lead_time", Direction: LowerIsBetter, Slope: -1, DataPoints: points(10, 9)},
 	}}
 	if recs := a.generateAssessmentRecommendations(falling); len(recs) != 0 {
 		t.Errorf("falling lead time should not be flagged: %v", recs)
 	}
 	rising := &AssessmentResult{PerformanceIndex: 1, Trends: []TrendAnalysis{
-		{KPIName: "total_lead_time", Direction: LowerIsBetter, Slope: 1},
+		{KPIName: "total_lead_time", Direction: LowerIsBetter, Slope: 1, DataPoints: points(10, 11)},
 	}}
 	if recs := a.generateAssessmentRecommendations(rising); len(recs) != 1 {
 		t.Errorf("rising lead time should be flagged once: %v", recs)
@@ -325,5 +328,31 @@ func TestAssessValueStreamRatesOnlyTargetedKPIs(t *testing.T) {
 	if none.PerformanceIndex != 0 || len(none.Recommendations) != 1 ||
 		!strings.Contains(none.Recommendations[0], "no targets") {
 		t.Errorf("no targets: index %v, recommendations %v", none.PerformanceIndex, none.Recommendations)
+	}
+}
+
+// The trend recommendation does not depend on the time unit: the same
+// history in minutes and in hours gives the same recommendations (a 1%
+// rise over a day is below the 5% threshold, a 20% rise is above it).
+func TestTrendRecommendationUnitIndependent(t *testing.T) {
+	a := NewAssessor()
+	day0, day1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
+	recs := func(from, to float64, unit TimeUnit) []string {
+		history := []AssessmentResult{
+			{AssessmentDate: day0, TimeUnit: unit, KPIs: map[string]KPIMeasure{"total_lead_time": {Value: from}}},
+			{AssessmentDate: day1, TimeUnit: unit, KPIs: map[string]KPIMeasure{"total_lead_time": {Value: to}}},
+		}
+		return a.generateAssessmentRecommendations(&AssessmentResult{PerformanceIndex: 1, Trends: a.analyzeTrends(history, 5)})
+	}
+	for _, tc := range []struct {
+		from, to float64
+		want     int
+	}{{10, 10.1, 0}, {10, 12, 1}} {
+		minutes := recs(tc.from, tc.to, TimeUnitMinutes)
+		hours := recs(tc.from/60, tc.to/60, TimeUnitHours)
+		if len(minutes) != tc.want || !reflect.DeepEqual(minutes, hours) {
+			t.Errorf("lead time %g → %g: minutes %v, hours %v; want %d recommendation(s), the same in both",
+				tc.from, tc.to, minutes, hours, tc.want)
+		}
 	}
 }

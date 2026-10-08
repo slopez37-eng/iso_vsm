@@ -543,6 +543,30 @@ func (a *Assessor) analyzeTrends(history []AssessmentResult, periods int) []Tren
 	return trends
 }
 
+// relativeChange returns the change of the fitted trend line over the
+// trend window (Slope × days from the first to the last data point) as a
+// fraction of the first value's magnitude (of the mean magnitude when the
+// first value is 0): dimensionless, so independent of the KPI's unit. ok
+// is false with fewer than two data points or when every value is 0.
+func (t TrendAnalysis) relativeChange() (float64, bool) {
+	n := len(t.DataPoints)
+	if n < 2 {
+		return 0, false
+	}
+	first, last := t.DataPoints[0], t.DataPoints[n-1]
+	days := last.Date.Sub(first.Date).Hours() / 24
+	base := math.Abs(first.Value)
+	if base == 0 {
+		for _, p := range t.DataPoints {
+			base += math.Abs(p.Value) / float64(n)
+		}
+	}
+	if base == 0 {
+		return 0, false
+	}
+	return t.Slope * days / base, true
+}
+
 // periodName names an assessment interval given in days.
 func periodName(days float64) string {
 	switch {
@@ -720,10 +744,14 @@ func (a *Assessor) generateAssessmentRecommendations(result *AssessmentResult) [
 	}
 
 	// Trend-based recommendations: a KPI moving the wrong way for its
-	// direction (falling flow efficiency, rising lead time).
+	// direction (falling flow efficiency, rising lead time) by more than
+	// trendThreshold of its value over the trend window (see
+	// TrendAnalysis.relativeChange). A relative change has no unit, so
+	// the decision is the same whether lead time is in minutes or hours.
 	for _, trend := range result.Trends {
-		worsening := (trend.Direction == HigherIsBetter && trend.Slope < -0.01) ||
-			(trend.Direction == LowerIsBetter && trend.Slope > 0.01)
+		change, ok := trend.relativeChange()
+		worsening := ok && ((trend.Direction == HigherIsBetter && change < -trendThreshold) ||
+			(trend.Direction == LowerIsBetter && change > trendThreshold))
 		if worsening {
 			recommendations = append(recommendations,
 				fmt.Sprintf("Address declining trend in %s KPI.", trend.KPIName))
