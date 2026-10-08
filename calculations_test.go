@@ -1,6 +1,7 @@
 package vsm
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -411,5 +412,37 @@ func TestStockQuantityFormulaDeprecated(t *testing.T) {
 	}
 	if !found {
 		t.Error("CalculateStockQuantity not found (it must stay for compatibility)")
+	}
+}
+
+// TestAverageYieldCountsKnownZero: a process that scraps everything has a
+// known yield of 0 and counts in the average; a process with no quality data
+// (no yield, scrap or rework given) does not.
+func TestAverageYieldCountsKnownZero(t *testing.T) {
+	stream := func(params ...ProcessParameters) *ValueStream {
+		vs := &ValueStream{ID: "vs"}
+		for i, p := range params {
+			vs.Processes = append(vs.Processes, Process{ID: fmt.Sprint("p", i), Parameters: p})
+		}
+		return vs
+	}
+	c := NewCalculator()
+	cases := []struct {
+		name string
+		vs   *ValueStream
+		want float64
+	}{
+		{"one total failure, one perfect", stream(ProcessParameters{ScrapRate: 1}, ProcessParameters{YieldFactor: 1}), 0.5},
+		{"complete failure everywhere", stream(ProcessParameters{ScrapRate: 1}, ProcessParameters{ScrapRate: 0.4, ReworkRate: 0.6}), 0},
+		{"unknown yield left out", stream(ProcessParameters{ScrapRate: 1}, ProcessParameters{ProcessTime: 3}), 0},
+	}
+	for _, tt := range cases {
+		got, ok := c.CalculateKPIs(tt.vs)["average_yield_factor"]
+		if !ok || !approx(got, tt.want) {
+			t.Errorf("%s: average_yield_factor = %v (present %v), want %v", tt.name, got, ok, tt.want)
+		}
+	}
+	if got, ok := c.CalculateKPIs(stream(ProcessParameters{ProcessTime: 3}))["average_yield_factor"]; ok {
+		t.Errorf("no quality data: average_yield_factor = %v, want omitted", got)
 	}
 }

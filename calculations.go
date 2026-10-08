@@ -511,8 +511,10 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 //     per Customer.DemandPeriod): omitted when there is no customer, demand
 //     is 0, or inventory is 0.
 //   - average_yield_factor: mean of the processes' yield factors (1 − scrap −
-//     rework when those are given, else the stored YieldFactor) that are
-//     known (> 0); omitted when none are.
+//     rework when those are given, else the stored YieldFactor) over the
+//     processes whose yield is known: yield_factor, scrap_rate or
+//     rework_rate given (> 0). A process that scraps everything counts with
+//     yield 0. Omitted when no process has quality data.
 //
 // All process values are resolved in the stream first (see
 // ResolveParametersInStream), so stored
@@ -551,20 +553,28 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 		kpis["inventory_turns"] = c.CalculateInventoryTurns(vs.Customer.Demand, totalStock)
 	}
 
-	// Average yield factor across processes that report one
+	// Average yield factor across processes whose yield is known. A yield
+	// of 0 (everything scrapped) is known when scrap or rework is given.
 	var totalYield float64
 	processCount := 0
 	for _, process := range vs.Processes {
-		if yf := c.ResolveParametersInStream(process.Parameters, vs).YieldFactor; yf > 0 {
-			totalYield += yf
-			processCount++
+		if !yieldKnown(process.Parameters) {
+			continue
 		}
+		totalYield += c.ResolveParametersInStream(process.Parameters, vs).YieldFactor
+		processCount++
 	}
 	if processCount > 0 {
 		kpis["average_yield_factor"] = totalYield / float64(processCount)
 	}
 
 	return kpis
+}
+
+// yieldKnown reports whether a process has quality data: a yield factor, or
+// a scrap or rework rate it is computed from.
+func yieldKnown(p ProcessParameters) bool {
+	return p.YieldFactor > 0 || p.ScrapRate > 0 || p.ReworkRate > 0
 }
 
 // CalculateImprovementMetrics calculates metrics for comparing current vs future state
