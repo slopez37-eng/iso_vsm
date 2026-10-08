@@ -106,15 +106,43 @@ type Process struct {
 	Symbol      string            `json:"symbol,omitempty"` // VSM symbol representation
 }
 
+// DemandPeriod is the calendar period that Customer.Demand and
+// Customer.AvailableTime both refer to.
+type DemandPeriod string
+
+const (
+	DemandPeriodDay   DemandPeriod = "day"
+	DemandPeriodWeek  DemandPeriod = "week"
+	DemandPeriodMonth DemandPeriod = "month"
+	DemandPeriodYear  DemandPeriod = "year"
+)
+
+// IsValid reports whether p is one of the defined demand periods.
+func (p DemandPeriod) IsValid() bool {
+	switch p {
+	case DemandPeriodDay, DemandPeriodWeek, DemandPeriodMonth, DemandPeriodYear:
+		return true
+	}
+	return false
+}
+
 // Customer represents the end customer in the value stream
 type Customer struct {
 	ID       string  `json:"id"`
 	Name     string  `json:"name"`
-	Demand   float64 `json:"demand"`    // Customer demand per period
+	Demand   float64 `json:"demand"`    // Customer demand per DemandPeriod
 	TaktTime float64 `json:"takt_time"` // Customer takt time
-	// AvailableTime is the available operating time per demand period, in the
-	// value stream's reference time unit (see Calculator.ReferenceTimeUnit).
-	// Optional: when set together with Demand, takt = AvailableTime / Demand.
+	// DemandPeriod is the period Demand and AvailableTime are counted over
+	// (day, week, month or year). Optional, but process capacity and
+	// utilization are only computed when it is set (see
+	// Analyzer.CalculateProcessLoad).
+	DemandPeriod DemandPeriod `json:"demand_period,omitempty"`
+	// AvailableTime is the available operating time per DemandPeriod (e.g.
+	// one shift of 480 for a "day" period in minutes), in the value stream's
+	// reference time unit (see Calculator.ReferenceTimeUnit).
+	// Optional: when set together with Demand, takt = AvailableTime / Demand,
+	// and with DemandPeriod also set, utilization = Demand × cycle time /
+	// AvailableTime (equivalently cycle time / takt).
 	AvailableTime float64 `json:"available_time,omitempty"`
 	Description   string  `json:"description,omitempty"`
 }

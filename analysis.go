@@ -16,14 +16,22 @@ type AnalysisResult struct {
 	FlowAnalysis     FlowAnalysis       `json:"flow_analysis"`
 	KPIs             map[string]float64 `json:"kpis"`
 	Recommendations  []string           `json:"recommendations"`
-	AnalyzedAt       time.Time          `json:"analyzed_at"`
+	// Notes explains analysis steps that were skipped for missing inputs.
+	Notes      []string  `json:"notes,omitempty"`
+	AnalyzedAt time.Time `json:"analyzed_at"`
 }
 
 // BottleneckInfo contains information about a bottleneck process
 type BottleneckInfo struct {
-	ProcessID       string  `json:"process_id"`
-	ProcessName     string  `json:"process_name"`
-	Capacity        float64 `json:"capacity"`
+	ProcessID   string `json:"process_id"`
+	ProcessName string `json:"process_name"`
+	// Capacity is units the process can make per CapacityPeriod
+	// (Customer.AvailableTime ÷ cycle time).
+	Capacity float64 `json:"capacity"`
+	// CapacityPeriod is the demand period Capacity is counted over.
+	CapacityPeriod DemandPeriod `json:"capacity_period,omitempty"`
+	// Utilization is demand ÷ capacity as a fraction (1.0 = fully loaded).
+	// It is not capped: above 1.0 means demand exceeds capacity.
 	Utilization     float64 `json:"utilization"`
 	BottleneckLevel string  `json:"bottleneck_level"` // "high", "medium", "low"
 	Description     string  `json:"description"`
@@ -34,7 +42,7 @@ type IdleTimeAnalysis struct {
 	TotalIdleTime      float64            `json:"total_idle_time"`
 	IdleTimeByProcess  map[string]float64 `json:"idle_time_by_process"`
 	IdleTimeBreakdown  IdleTimeBreakdown  `json:"idle_time_breakdown"`
-	IdleTimeEfficiency float64            `json:"idle_time_efficiency"` // Percentage of productive time
+	IdleTimeEfficiency float64            `json:"idle_time_efficiency"` // Share of productive time, as a fraction (0-1)
 }
 
 // IdleTimeBreakdown breaks down idle time by category
@@ -127,17 +135,28 @@ func (a *Analyzer) AnalyzeCurrentState(vs *ValueStream) (*AnalysisResult, error)
 	// Generate recommendations
 	result.Recommendations = a.GenerateRecommendations(result)
 
+	if len(vs.Processes) > 0 && !a.hasLoadInputs(vs) {
+		result.Notes = append(result.Notes, missingLoadInputsNote)
+	}
+
 	return result, nil
 }
 
-// IdentifyBottlenecks identifies bottleneck processes in the value stream
+// IdentifyBottlenecks identifies bottleneck processes in the value stream.
+//
+// Utilization needs Customer.Demand, Customer.DemandPeriod,
+// Customer.AvailableTime and each process's CycleTime (see
+// CalculateProcessLoad). Processes whose utilization cannot be computed are
+// skipped, so with those inputs missing the result is empty.
 func (a *Analyzer) IdentifyBottlenecks(vs *ValueStream) ([]BottleneckInfo, error) {
 	var bottlenecks []BottleneckInfo
 
 	// Calculate utilization for each process
 	for _, process := range vs.Processes {
-		capacity := a.calculateProcessCapacity(process)
-		utilization := a.calculateProcessUtilization(process, vs)
+		capacity, utilization, ok := a.CalculateProcessLoad(process, vs)
+		if !ok {
+			continue
+		}
 
 		bottleneckLevel := "low"
 		if utilization > 0.9 {
@@ -151,6 +170,7 @@ func (a *Analyzer) IdentifyBottlenecks(vs *ValueStream) ([]BottleneckInfo, error
 				ProcessID:       process.ID,
 				ProcessName:     process.Name,
 				Capacity:        capacity,
+				CapacityPeriod:  vs.Customer.DemandPeriod,
 				Utilization:     utilization,
 				BottleneckLevel: bottleneckLevel,
 				Description:     fmt.Sprintf("Process %s has %.1f%% utilization", process.Name, utilization*100),
@@ -166,41 +186,42 @@ func (a *Analyzer) IdentifyBottlenecks(vs *ValueStream) ([]BottleneckInfo, error
 	return bottlenecks, nil
 }
 
-// calculateProcessCapacity calculates the theoretical capacity of a process
-func (a *Analyzer) calculateProcessCapacity(process Process) float64 {
-	params := process.Parameters
+// missingLoadInputsNote is reported when utilization cannot be computed.
+const missingLoadInputsNote = "Process capacity and utilization not computed: set customer demand, " +
+	"demand_period and available_time (available time per demand period, in the reference time unit), " +
+	"and each process's cycle_time"
 
-	// Capacity = Operating Time / Cycle Time
-	if params.CycleTime == 0 {
-		return 0
-	}
-
-	// Assume 8 hours/day, 5 days/week, 50 weeks/year = 2000 hours/year
-	operatingTime := 2000.0
-
-	return operatingTime / params.CycleTime
+// hasLoadInputs reports whether the customer data needed for utilization is set.
+func (a *Analyzer) hasLoadInputs(vs *ValueStream) bool {
+	c := vs.Customer
+	return c != nil && c.Demand > 0 && c.AvailableTime > 0 && c.DemandPeriod.IsValid()
 }
 
-// calculateProcessUtilization calculates the actual utilization of a process
-func (a *Analyzer) calculateProcessUtilization(process Process, vs *ValueStream) float64 {
-	capacity := a.calculateProcessCapacity(process)
-
-	// Calculate demand on this process
-	var demand float64
-	if vs.Customer != nil {
-		demand = vs.Customer.Demand
+// CalculateProcessLoad returns a process's capacity and utilization for the
+// customer's demand period.
+//
+//	capacity    = AvailableTime ÷ CT          (units per DemandPeriod)
+//	utilization = Demand × CT ÷ AvailableTime (fraction; = CT ÷ takt)
+//
+// Demand and AvailableTime are both per Customer.DemandPeriod, so capacity and
+// demand are compared over the same period. CT is the process's CycleTime,
+// converted to the reference time unit (Calculator.ReferenceTimeUnit), which
+// is the unit AvailableTime is given in. Utilization is not capped, so a value
+// above 1 means demand exceeds capacity.
+//
+// ok is false (and nothing is assumed) when the customer, Demand,
+// DemandPeriod, AvailableTime or the process's CycleTime is missing.
+func (a *Analyzer) CalculateProcessLoad(process Process, vs *ValueStream) (capacity, utilization float64, ok bool) {
+	if vs == nil || !a.hasLoadInputs(vs) {
+		return 0, 0, false
 	}
-
-	if capacity == 0 {
-		return 0
+	unit := a.calculator.ReferenceTimeUnit(vs.Processes)
+	cycleTime := a.calculator.normalizeTimes(process.Parameters, unit).CycleTime
+	if cycleTime <= 0 {
+		return 0, 0, false
 	}
-
-	utilization := demand / capacity
-	if utilization > 1 {
-		utilization = 1 // Cap at 100%
-	}
-
-	return utilization
+	available := vs.Customer.AvailableTime
+	return available / cycleTime, vs.Customer.Demand * cycleTime / available, true
 }
 
 // AnalyzeIdleTimes analyzes idle times across all processes
@@ -288,9 +309,11 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 		}
 		analysis.WasteByType["defects"] += defectsWaste
 
-		// Over-production waste (excess capacity utilization)
-		utilization := a.calculateProcessUtilization(process, vs)
-		if utilization < 0.7 { // Under-utilized capacity
+		// Over-production waste (excess capacity utilization); only when
+		// utilization can be computed (see CalculateProcessLoad).
+		_, utilization, loadKnown := a.CalculateProcessLoad(process, vs)
+		underUtilized := loadKnown && utilization < 0.7
+		if underUtilized {
 			overProductionWaste := (1 - utilization) * params.OperatingTime
 			analysis.WasteByType["over_production"] += overProductionWaste
 		}
@@ -298,7 +321,7 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 		// Total waste for this process
 		processWaste := transportWaste + inventoryWaste + motionWaste + waitingWaste +
 			overProcessingWaste + defectsWaste
-		if utilization < 0.7 {
+		if underUtilized {
 			processWaste += (1 - utilization) * params.OperatingTime
 		}
 

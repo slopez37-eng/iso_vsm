@@ -186,9 +186,26 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 
 	// Customer
 	if vs.Customer != nil {
+		calc := NewCalculator()
+		timeUnit := string(calc.ReferenceTimeUnit(vs.Processes))
+		if timeUnit == "" {
+			timeUnit = "time units"
+		}
+		period := string(vs.Customer.DemandPeriod)
+		if period == "" {
+			period = "period"
+		}
 		mapStr += fmt.Sprintf("Customer: %s\n", vs.Customer.Name)
-		mapStr += fmt.Sprintf("Demand: %.2f units/period\n", vs.Customer.Demand)
-		mapStr += fmt.Sprintf("Takt Time: %.2f time units\n\n", vs.Customer.TaktTime)
+		mapStr += fmt.Sprintf("Demand: %.2f units/%s\n", vs.Customer.Demand, period)
+		if vs.Customer.AvailableTime > 0 {
+			mapStr += fmt.Sprintf("Available Time: %.2f %s/%s\n", vs.Customer.AvailableTime, timeUnit, period)
+		}
+		// Same takt the KPIs use: AvailableTime ÷ Demand, else stored TaktTime.
+		takt := vs.Customer.TaktTime
+		if v, ok := calc.CalculateKPIs(vs)["customer_takt"]; ok {
+			takt = v
+		}
+		mapStr += fmt.Sprintf("Takt Time: %.2f %s\n\n", takt, timeUnit)
 	}
 
 	// Supplier

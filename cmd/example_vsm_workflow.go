@@ -48,11 +48,13 @@ func main() {
 func createVSMProject() *vsm.VSMProject {
 	// Create customer
 	customer := &vsm.Customer{
-		ID:          "customer_1",
-		Name:        "Restaurant Chain",
-		Demand:      200,   // 200 burgers per day
-		TaktTime:    115.2, // minutes per burger (assuming 8 hour day)
-		Description: "Main customer for burger products",
+		ID:            "customer_1",
+		Name:          "Restaurant Chain",
+		Demand:        200,                 // 200 burgers per day
+		DemandPeriod:  vsm.DemandPeriodDay, // demand and available time are per day
+		AvailableTime: 480,                 // minutes per day (one 8 hour shift)
+		TaktTime:      2.4,                 // minutes per burger (480 / 200)
+		Description:   "Main customer for burger products",
 	}
 
 	// Create supplier

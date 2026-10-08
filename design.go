@@ -414,15 +414,21 @@ func (d *Designer) ApplyDesignPrinciples(current, future *ValueStream) []DesignP
 	return principles
 }
 
-// checkTaktTimePrinciple checks if takt time principle is applied
+// checkTaktTimePrinciple checks if takt time principle is applied. Takt is
+// the customer_takt KPI (AvailableTime ÷ Demand for the same demand period,
+// else the stored TaktTime), compared with cycle times in the same
+// reference time unit.
 func (d *Designer) checkTaktTimePrinciple(vs *ValueStream) bool {
-	if vs.Customer == nil {
+	takt, ok := d.calculator.CalculateKPIs(vs)["customer_takt"]
+	if !ok || takt <= 0 {
 		return false
 	}
+	unit := d.calculator.ReferenceTimeUnit(vs.Processes)
 	// Check if any process has cycle time close to customer takt
 	for _, process := range vs.Processes {
-		if process.Parameters.CycleTime > 0 {
-			ratio := process.Parameters.CycleTime / vs.Customer.TaktTime
+		cycleTime := d.calculator.normalizeTimes(process.Parameters, unit).CycleTime
+		if cycleTime > 0 {
+			ratio := cycleTime / takt
 			if ratio >= 0.9 && ratio <= 1.1 { // Within 10% of takt time
 				return true
 			}
@@ -476,8 +482,8 @@ func (d *Designer) checkPacemakerPrinciple(vs *ValueStream) bool {
 	// Pacemaker should have the highest utilization or be explicitly defined
 	maxUtilization := 0.0
 	for _, process := range vs.Processes {
-		utilization := d.analyzer.calculateProcessUtilization(process, vs)
-		if utilization > maxUtilization {
+		_, utilization, ok := d.analyzer.CalculateProcessLoad(process, vs)
+		if ok && utilization > maxUtilization {
 			maxUtilization = utilization
 		}
 	}

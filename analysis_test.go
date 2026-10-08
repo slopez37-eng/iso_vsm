@@ -76,3 +76,101 @@ func TestContinuousFlowPrincipleNormalizesUnits(t *testing.T) {
 		t.Error("expected continuous flow principle to be detected")
 	}
 }
+
+// loadStream: demand 200/day, 480 min available per day (takt 2.4 min).
+// p1 CT 2 min, p2 CT 180 s = 3 min (mixed units), p3 has no cycle time.
+func loadStream() *ValueStream {
+	return &ValueStream{
+		Customer: &Customer{ID: "c", Demand: 200, DemandPeriod: DemandPeriodDay, AvailableTime: 480},
+		Processes: []Process{
+			{ID: "p1", Name: "Cut", Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes, CycleTime: 2}},
+			{ID: "p2", Name: "Weld", Parameters: ProcessParameters{TimeUnit: TimeUnitSeconds, CycleTime: 180}},
+			{ID: "p3", Name: "Pack", Parameters: ProcessParameters{TimeUnit: TimeUnitMinutes}},
+		},
+	}
+}
+
+func TestCalculateProcessLoad(t *testing.T) {
+	a := NewAnalyzer()
+	vs := loadStream()
+	tests := []struct {
+		name           string
+		process        Process
+		capacity, util float64
+		wantOK         bool
+	}{
+		// capacity = 480 / 2 = 240 per day; utilization = 200 × 2 / 480
+		{"minutes", vs.Processes[0], 240, 200.0 * 2 / 480, true},
+		// 180 s = 3 min: capacity 160 per day; utilization 1.25 (not capped)
+		{"seconds converted", vs.Processes[1], 160, 1.25, true},
+		{"no cycle time", vs.Processes[2], 0, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, u, ok := a.CalculateProcessLoad(tt.process, vs)
+			if ok != tt.wantOK || !approx(c, tt.capacity) || !approx(u, tt.util) {
+				t.Errorf("got (%v, %v, %v), want (%v, %v, %v)", c, u, ok, tt.capacity, tt.util, tt.wantOK)
+			}
+		})
+	}
+	// Utilization = CT ÷ takt, with the same takt CalculateKPIs reports.
+	takt := NewCalculator().CalculateKPIs(vs)["customer_takt"]
+	if _, u, _ := a.CalculateProcessLoad(vs.Processes[0], vs); !approx(u, 2/takt) {
+		t.Errorf("utilization %v != CT/takt %v", u, 2/takt)
+	}
+}
+
+func TestCalculateProcessLoadMissingInputs(t *testing.T) {
+	a := NewAnalyzer()
+	cases := map[string]func(*Customer){
+		"no period":         func(c *Customer) { c.DemandPeriod = "" },
+		"unknown period":    func(c *Customer) { c.DemandPeriod = "fortnight" },
+		"no available time": func(c *Customer) { c.AvailableTime = 0 },
+		"no demand":         func(c *Customer) { c.Demand = 0 },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			vs := loadStream()
+			mutate(vs.Customer)
+			if _, _, ok := a.CalculateProcessLoad(vs.Processes[0], vs); ok {
+				t.Error("expected utilization to be skipped")
+			}
+			b, err := a.IdentifyBottlenecks(vs)
+			if err != nil || len(b) != 0 {
+				t.Errorf("bottlenecks = %v, %v; want none", b, err)
+			}
+		})
+	}
+	vs := loadStream()
+	vs.Customer = nil
+	if _, _, ok := a.CalculateProcessLoad(vs.Processes[0], vs); ok {
+		t.Error("expected utilization to be skipped without a customer")
+	}
+}
+
+func TestIdentifyBottlenecksUsesDemandPeriod(t *testing.T) {
+	b, err := NewAnalyzer().IdentifyBottlenecks(loadStream())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// p1 at 83% (medium) and p2 at 125% (high); p3 skipped.
+	if len(b) != 2 || b[0].ProcessID != "p2" || b[0].BottleneckLevel != "high" ||
+		b[1].ProcessID != "p1" || b[1].BottleneckLevel != "medium" {
+		t.Fatalf("unexpected bottlenecks: %+v", b)
+	}
+	if b[0].CapacityPeriod != DemandPeriodDay || !approx(b[0].Capacity, 160) {
+		t.Errorf("capacity = %v per %q, want 160 per day", b[0].Capacity, b[0].CapacityPeriod)
+	}
+}
+
+func TestAnalyzeCurrentStateNotesMissingLoadInputs(t *testing.T) {
+	vs := loadStream()
+	vs.Customer.DemandPeriod = ""
+	got, err := NewAnalyzer().AnalyzeCurrentState(vs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Notes) != 1 || len(got.Bottlenecks) != 0 {
+		t.Errorf("notes = %v, bottlenecks = %v", got.Notes, got.Bottlenecks)
+	}
+}

@@ -447,7 +447,9 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 // Time KPIs are in ReferenceTimeUnit(vs.Processes). A KPI is left out of the
 // map, rather than reported as 0, when it cannot be computed honestly:
 //   - customer_takt: Customer.AvailableTime ÷ Customer.Demand when both are
-//     set; otherwise Customer.TaktTime when set; otherwise omitted.
+//     set (both are per Customer.DemandPeriod, so the period cancels and
+//     DemandPeriod is not required here); otherwise Customer.TaktTime when
+//     set; otherwise omitted.
 //   - total_lead_time, total_value_adding_time: omitted when there are no
 //     processes. Lead time = Σ(process time + idle time); see
 //     CalculateOverallLeadTime.
@@ -455,8 +457,9 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 //     and process_efficiency = process time ÷ lead time (share of lead time
 //     spent in processes, including non-value-adding process time):
 //     omitted when lead time is 0.
-//   - inventory_turns = Customer.Demand ÷ total inventory quantity: omitted
-//     when there is no customer, demand is 0, or inventory is 0.
+//   - inventory_turns = Customer.Demand ÷ total inventory quantity (turns
+//     per Customer.DemandPeriod): omitted when there is no customer, demand
+//     is 0, or inventory is 0.
 //   - average_yield_factor: mean of the processes' YieldFactor values that
 //     are set (> 0); omitted when none are set.
 func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
