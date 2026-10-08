@@ -628,3 +628,41 @@ func TestInventoryRangeOnlyTargets(t *testing.T) {
 		t.Errorf("inventory = %+v, want range 1 (quantity left unstored)", inv)
 	}
 }
+
+// A linked inventory follows its process's stock in either stored form, down
+// to zero: removing the stock removes the inventory's time, without a link
+// issue.
+func TestZeroStockTargetRemovesLinkedInventory(t *testing.T) {
+	vs := linkStream(100, Inventory{ID: "i", Range: 1440, ProcessID: "p"})
+	if lt := NewCalculator().CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 1450) {
+		t.Fatalf("current total_lead_time = %v, want 1450", lt)
+	}
+	future, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
+		Processes: map[string]ProcessTargets{"p": {StockQuantity: AbsoluteTarget(0)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lt := future.KPIs["total_lead_time"]; !approx(lt, 10) {
+		t.Errorf("future total_lead_time = %v, want 10", lt)
+	}
+	if inv := future.Inventory[0]; inv.Quantity != 0 || inv.Range != 0 {
+		t.Errorf("future inventory = %+v, want empty", inv)
+	}
+	if issues := CheckConsistency(future); len(issues) != 0 {
+		t.Errorf("future issues = %+v, want none", issues)
+	}
+	// Range alone without a demand rate: the range moves with the stock.
+	vs = linkStream(100, Inventory{ID: "i", Range: 1440, ProcessID: "p"})
+	vs.Customer = nil
+	future, err = NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
+		Processes: map[string]ProcessTargets{"p": {StockQuantity: ReductionTarget(50)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv := future.Inventory[0]; !approx(inv.Range, 720) || inv.Quantity != 0 {
+		t.Errorf("future inventory = %+v, want range 720", inv)
+	}
+	if lt := future.KPIs["total_lead_time"]; !approx(lt, 730) {
+		t.Errorf("future total_lead_time = %v, want 730", lt)
+	}
+}

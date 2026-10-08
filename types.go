@@ -181,7 +181,12 @@ type Inventory struct {
 	// that process's waiting time, and quantity must equal the process's
 	// stock_quantity (CheckConsistency reports it when not). Without it, the
 	// inventory is a separate stock and its range adds to the lead time.
-	// See Calculator.CalculateKPIs.
+	// When the process has no waiting time to carry the stock's time (no
+	// customer demand rate and no waiting_time stored), the inventory's
+	// range is the only measure of it and is counted instead; the stock is
+	// still counted once (inventory turns). An empty inventory (quantity
+	// and range 0) linked to a process without stock is consistent. See
+	// Calculator.CalculateKPIs.
 	ProcessID   string `json:"process_id,omitempty"`
 	Description string `json:"description,omitempty"`
 }

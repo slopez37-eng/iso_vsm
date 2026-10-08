@@ -405,10 +405,21 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 				return nil, fmt.Errorf("inventory %s: it is the stock of process %s (process_id); "+
 					"target that process's stock_quantity or waiting_time instead", inv.ID, holder.ID)
 			}
+			// In either stored form (quantity, or range alone), and down to
+			// zero when the process's stock is targeted away.
 			own, def = nil, nil
-			if inv.Quantity > 0 {
-				futureStock := futureProcesses[processIndex(current, holder.ID)].Parameters.StockQuantity
+			futureStock := futureProcesses[processIndex(current, holder.ID)].Parameters.StockQuantity
+			ctx := d.calculator.contextOf(current)
+			_, rateKnown := ctx.demandRate(ctx.unit)
+			switch {
+			case inv.Quantity > 0 || (inv.Range > 0 && rateKnown):
+				// With the demand rate known, a range-only inventory's
+				// range follows from the quantity (see applyInventoryTargets).
 				own = &InventoryTargets{Quantity: AbsoluteTarget(futureStock)}
+			case inv.Range > 0:
+				// Range alone, demand rate unknown: the range is
+				// proportional to the stock.
+				own = &InventoryTargets{Range: AbsoluteTarget(inv.Range * futureStock / holder.Parameters.StockQuantity)}
 			}
 		}
 		futureInv, err := d.calculator.applyInventoryTargets(inv, own, def, d.calculator.contextOf(current))

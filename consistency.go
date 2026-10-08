@@ -46,6 +46,7 @@ const (
 	ruleIdle          = "idle_time = transport_time + waiting_time + storage_time"
 	ruleVATp          = "value_adding_time = value_adding_time_process (A.9)"
 	ruleVATWithinPT   = "value_adding_time is part of process_time, so it cannot exceed it"
+	ruleVATWithinLT   = "value_adding_time is part of lead_time, so it cannot exceed it"
 	ruleLeadFlow      = "lead_time = process_time + idle_time"
 	ruleLeadClass     = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time = lead_time = process_time + idle_time (A.3)"
 	ruleYield         = "yield_factor = 1 − (scrap_rate + rework_rate) (A.17)"
@@ -58,6 +59,18 @@ const (
 	fieldClassSum     = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time"
 	fieldProcessParts = "processing_time + setup_time + handling_time + waiting_time_process + ancillary_time"
 )
+
+// boundEpsilon is the floating-point rounding allowance for mathematical
+// bounds (a share at most 1, a part at most its whole). It is not
+// ConsistencyTolerance: that is how far two measurements of the same value
+// may differ, and must never let an impossible value through.
+const boundEpsilon = 1e-9
+
+// exceeds reports whether v is above limit by more than float rounding
+// (boundEpsilon, relative to limit when limit is above 1).
+func exceeds(v, limit float64) bool {
+	return v > limit+boundEpsilon*math.Max(1, math.Abs(limit))
+}
 
 // consistent reports whether a and b agree within ConsistencyTolerance.
 func consistent(a, b float64) bool {
@@ -97,7 +110,10 @@ func consistent(a, b float64) bool {
 //     repetition_count) gives process_time instead, and A.2 parts beyond
 //     setup_time that add up to something else are reported.
 //   - idle_time = transport + waiting + storage time
-//   - value_adding_time = value_adding_time_process when that is set (A.9)
+//   - value_adding_time = value_adding_time_process when that is set (A.9);
+//     value adding time above process time, or above lead time when process
+//     time is not given, is impossible and reported (flow efficiency is
+//     then unknown, see CalculateKPIs)
 //   - lead_time = process_time + idle_time; when neither is given, the value
 //     classification VAT + NVAT + NNVAT (A.3); when neither is given, the
 //     stored lead_time
@@ -105,7 +121,10 @@ func consistent(a, b float64) bool {
 //     of scrap_rate and rework_rate is above 1 (impossible), yield_factor is
 //     left as stored,
 //     the process's yield counts as unknown and the contradiction is
-//     reported
+//     reported. A stored yield_factor is compared when above 0 or marked
+//     by yield_factor_given. Bounds like this one (a share at most 1, a
+//     part at most its whole) allow only float rounding, not
+//     ConsistencyTolerance.
 func (c *Calculator) ResolveParameters(params ProcessParameters) ProcessParameters {
 	p, _ := c.resolveParameters(params, streamContext{})
 	return p
@@ -240,9 +259,10 @@ func (c *Calculator) resolveParameters(in ProcessParameters, ctx streamContext) 
 		derive("value_adding_time", &p.ValueAddingTime, p.ValueAddingTimeProcess, ruleVATp)
 	}
 	p.ValueAddingTimeProcess = p.ValueAddingTime
-	if p.ProcessTime > 0 && p.ValueAddingTime > p.ProcessTime && !consistent(p.ValueAddingTime, p.ProcessTime) {
+	vatAbovePT := p.ProcessTime > 0 && exceeds(p.ValueAddingTime, p.ProcessTime)
+	if vatAbovePT {
 		report("value_adding_time", p.ValueAddingTime, p.ProcessTime, ruleVATWithinPT,
-			"%s: %g exceeds process_time %g")
+			"%s: %g exceeds process_time %g; flow efficiency is treated as unknown")
 	}
 
 	// Lead time: flow (PT + IT) first, else the value classification.
@@ -264,6 +284,12 @@ func (c *Calculator) resolveParameters(in ProcessParameters, ctx streamContext) 
 		report("lead_time", p.LeadTime, lt, ltRule, replaced)
 	}
 	p.LeadTime = lt
+	// Value adding time is part of the lead time too; this catches it when
+	// process_time is not given (otherwise the check above already has).
+	if !vatAbovePT && exceeds(p.ValueAddingTime, p.LeadTime) {
+		report("value_adding_time", p.ValueAddingTime, p.LeadTime, ruleVATWithinLT,
+			"%s: %g exceeds lead_time %g; flow efficiency is treated as unknown")
+	}
 
 	// Yield. Scrap + rework above 1 is impossible: the yield is not derived
 	// from them (it would be negative), the process's yield counts as
@@ -275,7 +301,13 @@ func (c *Calculator) resolveParameters(in ProcessParameters, ctx streamContext) 
 				"the yield of this process is treated as unknown", fieldDefects, defects),
 		})
 	} else if p.ScrapRate > 0 || p.ReworkRate > 0 {
-		derive("yield_factor", &p.YieldFactor, c.CalculateYieldFactor(p.ScrapRate, p.ReworkRate), ruleYield)
+		// A stored yield of 0 is compared too when yield_factor_given marks
+		// it as entered.
+		computed := c.CalculateYieldFactor(p.ScrapRate, p.ReworkRate)
+		if (p.YieldFactor > 0 || p.YieldFactorGiven) && !consistent(p.YieldFactor, computed) {
+			report("yield_factor", p.YieldFactor, computed, ruleYield, replaced)
+		}
+		p.YieldFactor = computed
 	}
 
 	// Rates are fractions, not times.
@@ -323,16 +355,31 @@ func stockHolder(vs *ValueStream, inv Inventory) (*Process, bool) {
 	return nil, false
 }
 
+// timeThroughProcess reports whether inv's time is already in the lead time
+// through holder, the process whose stock inv is (see stockHolder): the
+// process's resolved waiting_time is known (from stock ÷ demand rate, or
+// stored), or its idle_time is given only as a total, which is taken to
+// include the wait. Otherwise, for example stock_quantity without a demand
+// rate and no waiting_time, the process does not account for the time, and
+// the inventory's own time (its range) is the only measure of it: it is
+// then counted on its own. Its stock is still counted once, through the
+// process (see streamStock).
+func (c *Calculator) timeThroughProcess(holder *Process, ctx streamContext) bool {
+	p, _ := c.resolveParameters(holder.Parameters, ctx)
+	idleTotalOnly := p.TransportTime == 0 && p.StorageTime == 0 && p.IdleTime > 0
+	return p.WaitingTime > 0 || idleTotalOnly
+}
+
 // inventoryTimes returns, for each inventory of vs counted on its own (not
-// through a linked process, see Inventory.ProcessID), the time it adds to
-// the lead time in the reference unit, keyed by inventory ID, and their
-// sum.
+// through a linked process, see Inventory.ProcessID and timeThroughProcess),
+// the time it adds to the lead time in the reference unit, keyed by
+// inventory ID, and their sum.
 func (c *Calculator) inventoryTimes(vs *ValueStream) (map[string]float64, float64) {
 	ctx := c.contextOf(vs)
 	times := map[string]float64{}
 	var total float64
 	for _, inv := range vs.Inventory {
-		if _, linked := stockHolder(vs, inv); linked {
+		if holder, linked := stockHolder(vs, inv); linked && c.timeThroughProcess(holder, ctx) {
 			continue
 		}
 		t := ctx.inventoryTime(inv)
@@ -340,6 +387,38 @@ func (c *Calculator) inventoryTimes(vs *ValueStream) (map[string]float64, float6
 		total += t
 	}
 	return times, total
+}
+
+// streamStock returns the total stock of vs, each stock counted once: every
+// process's stock_quantity; an inventory linked to a process with stock
+// (see Inventory.ProcessID) is that stock and adds nothing; every other
+// inventory adds its quantity, or, given by its range alone, range ×
+// customer demand rate. ok is false when an inventory's stock cannot be
+// known (range alone and no demand rate). Every KPI that sums stock uses
+// it, so it is the same stock the lead time counts.
+func (c *Calculator) streamStock(vs *ValueStream) (total float64, ok bool) {
+	ctx := c.contextOf(vs)
+	for _, process := range vs.Processes {
+		if q := process.Parameters.StockQuantity; q > 0 {
+			total += q
+		}
+	}
+	for _, inv := range vs.Inventory {
+		if _, linked := stockHolder(vs, inv); linked {
+			continue
+		}
+		switch {
+		case inv.Quantity > 0:
+			total += inv.Quantity
+		case inv.Range > 0:
+			rate, known := ctx.demandRate(ctx.unit)
+			if !known {
+				return 0, false
+			}
+			total += inv.Range * rate
+		}
+	}
+	return total, true
 }
 
 // processPartsGiven lists the A.2 process time parts that are given (> 0).
@@ -413,6 +492,10 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 		}
 	}
 
+	rangeChecked := func(inv Inventory) bool {
+		_, ok := ctx.inventoryRange(inv)
+		return ok
+	}
 	for _, inv := range vs.Inventory {
 		if inv.ProcessID == "" {
 			continue
@@ -424,6 +507,10 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 			issue.Field = "process_id"
 			issue.Message = fmt.Sprintf("inventory %s: process_id %q names no process; the inventory is counted on its own",
 				inv.ID, inv.ProcessID)
+		case !linked && inv.Quantity == 0 && inv.Range == 0:
+			// Both empty (e.g. a future state that removed the stock):
+			// nothing to count, nothing contradicts.
+			continue
 		case !linked:
 			issue.Field = "process_id"
 			issue.Message = fmt.Sprintf("inventory %s: linked to process %s, which has no stock_quantity; "+
@@ -433,6 +520,17 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 			issue.Message = fmt.Sprintf("inventory %s: quantity %g, but it is the stock of process %s, "+
 				"whose stock_quantity is %g; calculations count the process's stock", inv.ID, inv.Quantity,
 				inv.ProcessID, holder.Parameters.StockQuantity)
+		case inv.Range > 0 && !rangeChecked(inv) && c.timeThroughProcess(holder, ctx):
+			// The range is not checked against quantity ÷ demand rate, so
+			// check it against the process's waiting time, the same time.
+			waiting := c.resolvedIn(holder.Parameters, ctx).WaitingTime
+			if waiting == 0 || consistent(inv.Range, waiting) {
+				continue
+			}
+			issue.Field, issue.StoredValue, issue.ComputedValue, issue.Unit = "range", inv.Range, waiting, unit
+			issue.Message = fmt.Sprintf("inventory %s: range %g, but it is the stock of process %s, "+
+				"whose waiting_time is %g; calculations count the process's waiting time", inv.ID, inv.Range,
+				inv.ProcessID, waiting)
 		default:
 			continue
 		}

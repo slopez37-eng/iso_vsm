@@ -224,8 +224,23 @@ func TestValidateProcessParameters(t *testing.T) {
 	}
 	bad := ProcessParameters{ProcessTime: -1, CycleTime: -1, CustomerDemand: -1, ValueAddingTime: 5,
 		YieldFactor: 2, ScrapRate: -0.1, ReworkRate: 1.5}
-	if errs := c.ValidateProcessParameters(bad); len(errs) != 8 {
-		t.Errorf("got %d errors, want 8 (scrap + rework = 1.4 too): %v", len(errs), errs)
+	// Value adding time 5 is within the lead time here (process time -1 is
+	// already an error), so 7: scrap + rework = 1.4 is the 7th.
+	if errs := c.ValidateProcessParameters(bad); len(errs) != 7 {
+		t.Errorf("got %d errors, want 7 (scrap + rework = 1.4 too): %v", len(errs), errs)
+	}
+	for name, tc := range map[string]struct {
+		p    ProcessParameters
+		want int
+	}{
+		"VAT above PT":              {ProcessParameters{ProcessTime: 4, ValueAddingTime: 5}, 1},
+		"no PT, VAT above lead":     {ProcessParameters{IdleTime: 10, ValueAddingTime: 20}, 1},
+		"no PT, VAT within lead":    {ProcessParameters{IdleTime: 30, ValueAddingTime: 20}, 0},
+		"defects 1.004 (tolerance)": {ProcessParameters{ScrapRate: 0.6, ReworkRate: 0.404}, 1},
+	} {
+		if errs := c.ValidateProcessParameters(tc.p); len(errs) != tc.want {
+			t.Errorf("%s: errors = %v, want %d", name, errs, tc.want)
+		}
 	}
 }
 

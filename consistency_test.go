@@ -410,7 +410,9 @@ func TestInventoryTimeIsStockOverDemand(t *testing.T) {
 	}
 
 	// Demand rate unknown (no customer, or a month period with no fixed
-	// length): nothing is derived or flagged.
+	// length): nothing is derived from demand. The linked inventory's
+	// 2-day range is still the same stock's time as the process's stored
+	// 4-hour waiting time, so that contradiction is the only one reported.
 	for name, cust := range map[string]*Customer{
 		"no customer":  nil,
 		"month period": {ID: "c", Demand: 2400, DemandPeriod: DemandPeriodMonth},
@@ -418,8 +420,14 @@ func TestInventoryTimeIsStockOverDemand(t *testing.T) {
 	} {
 		vs = stream(240 * 60)
 		vs.Customer = cust
+		if issues := CheckConsistency(vs); len(issues) != 1 || issues[0].Element != "inventory" ||
+			issues[0].Field != "range" || !approx(issues[0].ComputedValue, 240*60) {
+			t.Errorf("%s: issues = %+v, want one inventory range issue", name, issues)
+		}
+		vs = stream(twoDays)
+		vs.Customer = cust
 		if issues := CheckConsistency(vs); len(issues) != 0 {
-			t.Errorf("%s: issues = %+v", name, issues)
+			t.Errorf("%s: agreeing range flagged: %+v", name, issues)
 		}
 		vs = stream(0)
 		vs.Customer = cust
@@ -642,5 +650,149 @@ func TestLinkedInventoryNotDoubleCounted(t *testing.T) {
 	})
 	if err == nil {
 		t.Errorf("target on linked inventory accepted")
+	}
+}
+
+// linkStream: demand 100/day; process p (minutes) with process time 10 and
+// stock; optionally one inventory.
+func linkStream(stock float64, inv ...Inventory) *ValueStream {
+	return &ValueStream{ID: "vs", Name: "Link",
+		Customer: &Customer{ID: "c", Demand: 100, DemandPeriod: DemandPeriodDay},
+		Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+			TimeUnit: TimeUnitMinutes, ProcessTime: 10, StockQuantity: stock}}},
+		Inventory: inv,
+	}
+}
+
+// Inventory turns count the same stock the lead time counts: each process's
+// stock once, a linked inventory through its process, and unlinked
+// inventories on their own.
+func TestInventoryTurnsCountStockOnce(t *testing.T) {
+	c := NewCalculator()
+	for name, tc := range map[string]struct {
+		vs    *ValueStream
+		turns float64
+	}{
+		// Lead time and CheckConsistency use the process's 200; so do turns.
+		"linked, quantities differ": {linkStream(200, Inventory{ID: "i", Quantity: 100, ProcessID: "p"}), 0.5},
+		"process only":              {linkStream(200), 0.5},
+		"unlinked quantity":         {linkStream(200, Inventory{ID: "i", Quantity: 100}), 100.0 / 300},
+		// Range alone: 1440 min at 100/day is 100 units.
+		"unlinked range only": {linkStream(200, Inventory{ID: "i", Range: 1440}), 100.0 / 300},
+	} {
+		if got, ok := c.CalculateKPIs(tc.vs)["inventory_turns"]; !ok || !approx(got, tc.turns) {
+			t.Errorf("%s: inventory_turns = %v (present %v), want %v", name, got, ok, tc.turns)
+		}
+	}
+	vs := linkStream(200, Inventory{ID: "i", Quantity: 100, ProcessID: "p"})
+	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 10+2880) {
+		t.Errorf("linked: total_lead_time = %v, want 2890 (the process's 200)", lt)
+	}
+	// Range alone without a demand rate: its stock is unknown, so turns are.
+	vs = linkStream(200, Inventory{ID: "i", Range: 1440})
+	vs.Customer.DemandPeriod = DemandPeriodMonth
+	if got, ok := c.CalculateKPIs(vs)["inventory_turns"]; ok {
+		t.Errorf("unknown stock: inventory_turns = %v, want omitted", got)
+	}
+}
+
+// A linked inventory's time is skipped only when its process accounts for
+// it. Without a demand rate the process cannot derive its waiting time from
+// stock, so the inventory's stored range is the only measure and counts.
+func TestLinkedInventoryKeepsOnlyKnownTime(t *testing.T) {
+	c := NewCalculator()
+	vs := linkStream(100, Inventory{ID: "i", Quantity: 100, Range: 1440, ProcessID: "p"})
+	vs.Customer = nil
+	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 10+1440) {
+		t.Errorf("total_lead_time = %v, want 1450", lt)
+	}
+	if issues := CheckConsistency(vs); len(issues) != 0 {
+		t.Errorf("issues = %+v, want none", issues)
+	}
+	// With the process's waiting time stored, it is counted once, through
+	// the process.
+	vs.Processes[0].Parameters.WaitingTime = 1440
+	if lt := c.CalculateKPIs(vs)["total_lead_time"]; !approx(lt, 10+1440) {
+		t.Errorf("waiting stored: total_lead_time = %v, want 1450", lt)
+	}
+	if issues := CheckConsistency(vs); len(issues) != 0 {
+		t.Errorf("waiting stored: issues = %+v, want none", issues)
+	}
+}
+
+// An explicit zero yield (yield_factor_given) that scrap and rework
+// contradict is reported, not silently replaced.
+func TestExplicitZeroYieldCompared(t *testing.T) {
+	vs := &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+		ProcessTime: 10, YieldFactor: 0, YieldFactorGiven: true, ScrapRate: 0.1}}}}
+	issues := CheckConsistency(vs)
+	if len(issues) != 1 || issues[0].Field != "yield_factor" || issues[0].StoredValue != 0 ||
+		!approx(issues[0].ComputedValue, 0.9) {
+		t.Errorf("issues = %+v, want one yield_factor issue (stored 0, computed 0.9)", issues)
+	}
+	// Not marked as given, 0 is "not entered": no issue.
+	vs.Processes[0].Parameters.YieldFactorGiven = false
+	if issues := CheckConsistency(vs); len(issues) != 0 {
+		t.Errorf("unmarked zero yield flagged: %+v", issues)
+	}
+}
+
+// Scrap + rework of 1.004 is within the stored-vs-computed tolerance but is
+// still impossible: the bound is mathematical, not a measurement tolerance.
+func TestDefectsJustAboveOneImpossible(t *testing.T) {
+	vs := &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+		ProcessTime: 10, ScrapRate: 0.6, ReworkRate: 0.404}}}}
+	issues := CheckConsistency(vs)
+	if len(issues) != 1 || issues[0].Field != fieldDefects {
+		t.Errorf("issues = %+v, want one %s issue", issues, fieldDefects)
+	}
+	if y, ok := NewCalculator().CalculateKPIs(vs)["average_yield_factor"]; ok {
+		t.Errorf("average_yield_factor = %v, want omitted (yield unknown)", y)
+	}
+	// Float rounding at exactly 1 is not a contradiction.
+	vs.Processes[0].Parameters.ScrapRate, vs.Processes[0].Parameters.ReworkRate = 0.7, 0.3
+	if issues := CheckConsistency(vs); len(issues) != 0 {
+		t.Errorf("scrap 0.7 + rework 0.3 flagged: %+v", issues)
+	}
+	// Targets cannot create it either.
+	vs.Processes[0].Parameters.ScrapRate, vs.Processes[0].Parameters.ReworkRate = 0.1, 0.1
+	_, err := NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{
+		Default: &ProcessTargets{ScrapRate: AbsoluteTarget(0.6), ReworkRate: AbsoluteTarget(0.404)}})
+	if err == nil {
+		t.Errorf("targets scrap 0.6 + rework 0.404 accepted")
+	}
+}
+
+// Value adding time above the lead time (process time not given) is
+// reported, and flow efficiency is unknown rather than above 100%.
+func TestValueAddingTimeAboveLeadTime(t *testing.T) {
+	vs := &ValueStream{ID: "vs", Name: "VAT", Processes: []Process{{ID: "p", Name: "P", Parameters: ProcessParameters{
+		TimeUnit: TimeUnitMinutes, IdleTime: 10, ValueAddingTime: 20}}}}
+	issues := CheckConsistency(vs)
+	if len(issues) != 1 || issues[0].Field != "value_adding_time" || !approx(issues[0].ComputedValue, 10) {
+		t.Errorf("issues = %+v, want one value_adding_time issue (lead time 10)", issues)
+	}
+	if r, ok := NewCalculator().CalculateKPIs(vs)["value_added_ratio"]; ok {
+		t.Errorf("value_added_ratio = %v, want omitted", r)
+	}
+	// It surfaces on load too.
+	data, err := json.Marshal(vs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := NewSerializer().DeserializeValueStream(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.ConsistencyIssues) != 1 {
+		t.Errorf("loaded issues = %+v, want one", loaded.ConsistencyIssues)
+	}
+	// Within the lead time it is fine.
+	vs.Processes[0].Parameters.IdleTime = 40
+	if issues := CheckConsistency(vs); len(issues) != 0 {
+		t.Errorf("VAT 20 within lead time 40 flagged: %+v", issues)
+	}
+	if r := NewCalculator().CalculateKPIs(vs)["value_added_ratio"]; !approx(r, 0.5) {
+		t.Errorf("value_added_ratio = %v, want 0.5", r)
 	}
 }

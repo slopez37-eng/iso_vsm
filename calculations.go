@@ -519,8 +519,8 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 	}
 
 	// Logical validations (on the resolved process time, see ResolveParameters)
-	if resolved := c.ResolveParameters(params); params.ValueAddingTime > resolved.ProcessTime {
-		errs = append(errs, errors.New("value adding time cannot exceed process time"))
+	if vatImpossible(c.ResolveParameters(params)) {
+		errs = append(errs, errors.New("value adding time cannot exceed process time or lead time"))
 	}
 
 	if params.YieldFactor < 0 || params.YieldFactor > 1 {
@@ -557,15 +557,24 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 //     CalculateCustomerInventoryTime), or its stored range when the rate is
 //     not known. No stock is counted twice: an inventory whose process_id
 //     names a process with stock_quantity is that process's stock, already
-//     in its waiting time, so it adds nothing more (see Inventory.ProcessID).
+//     in its waiting time, so it adds nothing more (see Inventory.ProcessID);
+//     only when that process has no waiting time to account for it (no
+//     demand rate and no waiting_time stored) does the inventory's range
+//     count instead.
 //     Inventory time is waiting, never value adding.
 //   - value_added_ratio (flow efficiency) = value adding time ÷ lead time,
 //     and process_efficiency = process time ÷ lead time (share of lead time
 //     spent in processes, including non-value-adding process time):
-//     omitted when lead time is 0.
-//   - inventory_turns = Customer.Demand ÷ total inventory quantity (turns
-//     per Customer.DemandPeriod): omitted when there is no customer, demand
-//     is 0, or inventory is 0.
+//     omitted when lead time is 0. value_added_ratio is also omitted when a
+//     process's value adding time exceeds its process time or lead time
+//     (impossible; CheckConsistency reports it), so it never exceeds 1.
+//   - inventory_turns = Customer.Demand ÷ total stock (turns per
+//     Customer.DemandPeriod). Total stock is the stock the lead time
+//     counts, each once: every process's stock_quantity, plus each
+//     inventory not linked to a process with stock (its quantity, or range
+//     × demand rate when given by range alone). Omitted when there is no
+//     customer, demand is 0, stock is 0, or an inventory's stock cannot be
+//     known (range alone, no demand rate).
 //   - average_yield_factor: mean of the processes' yield factors (1 − scrap −
 //     rework when those are given, else the stored YieldFactor) over the
 //     processes whose yield is known: yield_factor, scrap_rate or
@@ -598,17 +607,25 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 		kpis["total_value_adding_time"] = totalVAT
 
 		if totalLeadTime > 0 {
-			kpis["value_added_ratio"] = c.CalculateValueAddedRatio(totalVAT, totalLeadTime)
+			// A process whose value adding time exceeds its process or lead
+			// time (impossible; CheckConsistency reports it) makes the
+			// stream's flow efficiency unknown.
+			vatKnown := !exceeds(totalVAT, totalLeadTime)
+			ctx := c.contextOf(vs)
+			for _, process := range vs.Processes {
+				if vatImpossible(c.resolvedIn(process.Parameters, ctx)) {
+					vatKnown = false
+				}
+			}
+			if vatKnown {
+				kpis["value_added_ratio"] = c.CalculateValueAddedRatio(totalVAT, totalLeadTime)
+			}
 			kpis["process_efficiency"] = totalProcessTime / totalLeadTime
 		}
 	}
 
-	// Inventory turns for all inventory
-	var totalStock float64
-	for _, inv := range vs.Inventory {
-		totalStock += inv.Quantity
-	}
-	if totalStock > 0 && vs.Customer != nil && vs.Customer.Demand > 0 {
+	// Inventory turns over the same stock the lead time counts.
+	if totalStock, ok := c.streamStock(vs); ok && totalStock > 0 && vs.Customer != nil && vs.Customer.Demand > 0 {
 		kpis["inventory_turns"] = c.CalculateInventoryTurns(vs.Customer.Demand, totalStock)
 	}
 
@@ -643,10 +660,17 @@ func yieldKnown(p ProcessParameters) bool {
 }
 
 // defectsImpossible reports whether scrap_rate + rework_rate is above 1
-// (beyond ConsistencyTolerance): more than every part defective.
+// (beyond float rounding, see exceeds): more than every part defective.
 func defectsImpossible(p ProcessParameters) bool {
-	sum := p.ScrapRate + p.ReworkRate
-	return sum > 1 && !consistent(sum, 1)
+	return exceeds(p.ScrapRate+p.ReworkRate, 1)
+}
+
+// vatImpossible reports whether a resolved process's value adding time
+// exceeds its process time (when given) or its lead time: a part larger
+// than its whole. Its flow efficiency is then unknown.
+func vatImpossible(p ProcessParameters) bool {
+	return (p.ProcessTime > 0 && exceeds(p.ValueAddingTime, p.ProcessTime)) ||
+		exceeds(p.ValueAddingTime, p.LeadTime)
 }
 
 // CalculateImprovementMetrics compares future with current KPIs: for each

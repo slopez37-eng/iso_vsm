@@ -391,8 +391,7 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 	flow := p.ProcessTime + p.IdleTime
 	flowSet := cur.ProcessTime > 0 || cur.IdleTime > 0 || ptTargeted || itTargeted
 	ptKnown := cur.ProcessTime > 0 || p.ProcessTime > 0 || ptTargeted
-	if ptKnown && p.ValueAddingTime > p.ProcessTime &&
-		!consistent(p.ValueAddingTime, p.ProcessTime) && !hasIssue(curIssues, "value_adding_time") {
+	if ptKnown && exceeds(p.ValueAddingTime, p.ProcessTime) && !hasIssue(curIssues, "value_adding_time") {
 		return params, fmt.Errorf("process_time: the targets give %g, below value_adding_time %g "+
 			"(value adding time is part of process time)", p.ProcessTime, p.ValueAddingTime)
 	}
