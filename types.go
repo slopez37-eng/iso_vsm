@@ -312,6 +312,13 @@ type ValueStream struct {
 	// Flow control elements
 	FlowElements []FlowElement `json:"flow_elements,omitempty"`
 
+	// User-entered analysis inputs (optional; see waste_assumptions.go).
+	// WasteAssumptions split measured times into waste; nil = none entered.
+	WasteAssumptions *WasteAssumptions `json:"waste_assumptions,omitempty"`
+	// InformationFlowQuality is the user's rating of the information flow,
+	// 0 (poor) to 1 (good). nil = not entered: not estimated.
+	InformationFlowQuality *float64 `json:"information_flow_quality,omitempty"`
+
 	// Analysis results
 	KPIs map[string]float64 `json:"kpis,omitempty"` // Key Performance Indicators
 

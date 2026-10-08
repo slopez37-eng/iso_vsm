@@ -913,7 +913,8 @@ func (c *Calculator) customerTakt(cust *Customer) (float64, bool) {
 // IssueContradiction, as do impossible or unusable values (a negative
 // time, quantity or count, a rate or yield outside 0–1, scrap + rework
 // above 1, resource_count 0 for a process with demand or an order,
-// working_days_per_week outside 1–7, an unsupported time_unit, an
+// working_days_per_week outside 1–7, a waste assumption or
+// information_flow_quality outside 0–1, an unsupported time_unit, an
 // inventory linked to a process whose idle or lead time is shorter than the
 // inventory's range, a second inventory linked to the same process, a
 // range stored for an inventory of quantity 0).
@@ -1113,6 +1114,7 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 			})
 		}
 	}
+	issues = append(issues, assumptionIssues(vs)...)
 	for i := range issues {
 		issues[i].Kind = IssueContradiction
 	}
