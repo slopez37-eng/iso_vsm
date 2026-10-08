@@ -274,9 +274,13 @@ func assessPerformance(project *vsm.VSMProject) *vsm.AssessmentResult {
 
 	// Define KPI targets
 	targets := map[string]float64{
-		"value_added_ratio":    0.25, // Target 25% value-added time
-		"process_efficiency":   0.50, // Target 50% process efficiency
-		"inventory_turns":      6.0,  // Target 6 inventory turns
+		"value_added_ratio":  0.25, // Target 25% value-added time
+		"process_efficiency": 0.50, // Target 50% process efficiency
+		// Turns are per the customer's demand period (here per day): 0.5
+		// turns a day is 2 days of stock, about 180 turns a year at 7
+		// working days a week. The current state holds 450 units at 200 a
+		// day, 0.44 turns a day.
+		"inventory_turns":      0.5,
 		"average_yield_factor": 0.95, // Target 95% yield
 	}
 
