@@ -174,3 +174,34 @@ func TestAnalyzeCurrentStateNotesMissingLoadInputs(t *testing.T) {
 		t.Errorf("notes = %v, bottlenecks = %v", got.Notes, got.Bottlenecks)
 	}
 }
+
+// TestProcessLoadCountsResources: two machines with a 2 min cycle time
+// make 480 a day in 480 min, consistent with processing time = CT × quantity
+// ÷ resources (A.5). At 300 a day that is 62.5% utilization, not a
+// bottleneck.
+func TestProcessLoadCountsResources(t *testing.T) {
+	vs := &ValueStream{
+		Customer: &Customer{ID: "c", Demand: 300, DemandPeriod: DemandPeriodDay, AvailableTime: 480},
+		Processes: []Process{{ID: "p", Name: "Press", Parameters: ProcessParameters{
+			TimeUnit: TimeUnitMinutes, CycleTime: 2, ResourceCount: 2,
+		}}},
+	}
+	a := NewAnalyzer()
+	c, u, ok := a.CalculateProcessLoad(vs.Processes[0], vs)
+	if !ok || !approx(c, 480) || !approx(u, 0.625) {
+		t.Errorf("load = (%v, %v, %v), want (480, 0.625, true)", c, u, ok)
+	}
+	// Capacity agrees with the processing time formula: 480 units on 2
+	// resources take 2 × 480 ÷ 2 = 480 min, the whole available time.
+	if prt := NewCalculator().CalculateProcessingTime(2, 480, 2); !approx(prt, 480) {
+		t.Errorf("processing time for the capacity = %v, want 480", prt)
+	}
+	if b, _ := a.IdentifyBottlenecks(vs); len(b) != 0 {
+		t.Errorf("bottlenecks = %+v, want none", b)
+	}
+	// Resource count 0 or below counts as one resource.
+	vs.Processes[0].Parameters.ResourceCount = 0
+	if c, u, _ := a.CalculateProcessLoad(vs.Processes[0], vs); !approx(c, 240) || !approx(u, 1.25) {
+		t.Errorf("no resource count: load = (%v, %v), want (240, 1.25)", c, u)
+	}
+}

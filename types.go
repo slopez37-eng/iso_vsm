@@ -142,7 +142,8 @@ type Customer struct {
 	// reference time unit (see Calculator.ReferenceTimeUnit).
 	// Optional: when set together with Demand, takt = AvailableTime / Demand,
 	// and with DemandPeriod also set, utilization = Demand × cycle time /
-	// AvailableTime (equivalently cycle time / takt).
+	// (AvailableTime × resource count), equivalently cycle time / (takt ×
+	// resource count); see Analyzer.CalculateProcessLoad.
 	AvailableTime float64 `json:"available_time,omitempty"`
 	Description   string  `json:"description,omitempty"`
 }

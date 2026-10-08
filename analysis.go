@@ -213,8 +213,12 @@ func (a *Analyzer) hasLoadInputs(vs *ValueStream) bool {
 // CalculateProcessLoad returns a process's capacity and utilization for the
 // customer's demand period.
 //
-//	capacity    = AvailableTime ÷ CT          (units per DemandPeriod)
-//	utilization = Demand × CT ÷ AvailableTime (fraction; = CT ÷ takt)
+//	capacity    = AvailableTime × #RES ÷ CT          (units per DemandPeriod)
+//	utilization = Demand × CT ÷ (AvailableTime × #RES) (fraction; = CT ÷ (takt × #RES))
+//
+// #RES is the process's ResourceCount (0 or less counts as 1): resources
+// working in parallel multiply capacity, as in processing time = CT × PQ ÷
+// #RES (A.5).
 //
 // Demand and AvailableTime are both per Customer.DemandPeriod, so capacity and
 // demand are compared over the same period. CT is the process's CycleTime,
@@ -233,7 +237,8 @@ func (a *Analyzer) CalculateProcessLoad(process Process, vs *ValueStream) (capac
 	if cycleTime <= 0 {
 		return 0, 0, false
 	}
-	available := vs.Customer.AvailableTime
+	resources := float64(max(process.Parameters.ResourceCount, 1))
+	available := vs.Customer.AvailableTime * resources
 	return available / cycleTime, vs.Customer.Demand * cycleTime / available, true
 }
 
