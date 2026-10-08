@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 )
 
 // Serializer provides JSON serialization/deserialization for VSM objects
@@ -249,11 +250,16 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		mapStr += "\n"
 	}
 
-	// KPIs
+	// KPIs (sorted by name; ratios shown as percent)
 	if len(vs.KPIs) > 0 {
 		mapStr += "Key Performance Indicators:\n"
-		for key, value := range vs.KPIs {
-			mapStr += fmt.Sprintf("  %s: %.4f\n", key, value)
+		keys := make([]string, 0, len(vs.KPIs))
+		for key := range vs.KPIs {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			mapStr += fmt.Sprintf("  %s: %s\n", key, formatKPIValue(key, vs.KPIs[key]))
 		}
 		mapStr += "\n"
 	}

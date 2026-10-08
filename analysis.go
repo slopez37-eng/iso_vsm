@@ -72,7 +72,7 @@ type FlowAnalysis struct {
 type FlowInterruption struct {
 	Type        string  `json:"type"`      // "stockout", "quality", "capacity", etc.
 	Location    string  `json:"location"`  // Process or connection point
-	Frequency   float64 `json:"frequency"` // How often it occurs
+	Frequency   float64 `json:"frequency"` // How often it occurs: defect share as a fraction for "quality", waiting ÷ process time for "inventory", 1 for "capacity"
 	Impact      float64 `json:"impact"`    // Time or cost impact
 	Description string  `json:"description"`
 }
@@ -377,7 +377,7 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 			analysis.FlowInterruptions = append(analysis.FlowInterruptions, FlowInterruption{
 				Type:        "quality",
 				Location:    process.Name,
-				Frequency:   (params.ScrapRate + params.ReworkRate) * 100, // Percentage
+				Frequency:   params.ScrapRate + params.ReworkRate, // Defect share, as a fraction
 				Impact:      params.Downtime,
 				Description: fmt.Sprintf("High defect rate (%.1f%%) causing flow interruptions", (params.ScrapRate+params.ReworkRate)*100),
 			})

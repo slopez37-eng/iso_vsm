@@ -114,3 +114,19 @@ func TestTrendRecommendationRespectsDirection(t *testing.T) {
 		t.Errorf("rising lead time should be flagged once: %v", recs)
 	}
 }
+
+func TestRatioKPIsLabelledRatio(t *testing.T) {
+	got, err := NewAssessor().AssessValueStream(mixedUnitStream(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"value_added_ratio", "process_efficiency", "average_yield_factor"} {
+		m, ok := got.KPIs[name]
+		if !ok {
+			t.Fatalf("missing KPI %s", name)
+		}
+		if m.Unit != "ratio" || m.Value <= 0 || m.Value > 1 {
+			t.Errorf("%s = %v %q, want a fraction labelled ratio", name, m.Value, m.Unit)
+		}
+	}
+}

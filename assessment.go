@@ -184,22 +184,10 @@ func (a *Assessor) getKPIDescription(name string) string {
 	return "Key performance indicator"
 }
 
-// getKPIUnit returns the unit for a KPI
+// getKPIUnit returns the unit for a KPI. Ratio KPIs are fractions (0.25 =
+// 25%) and are labelled "ratio", not "%".
 func (a *Assessor) getKPIUnit(name string) string {
-	units := map[string]string{
-		"customer_takt":           "time",
-		"total_lead_time":         "time",
-		"total_value_adding_time": "time",
-		"value_added_ratio":       "%",
-		"process_efficiency":      "%",
-		"inventory_turns":         "turns",
-		"average_yield_factor":    "%",
-	}
-
-	if unit, exists := units[name]; exists {
-		return unit
-	}
-	return "unit"
+	return kpiUnit(name)
 }
 
 // determineKPIStatus determines the status of a KPI based on value and target

@@ -1,6 +1,9 @@
 package vsm
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // KPIDirection says which way a KPI has to move to count as better.
 type KPIDirection string
@@ -76,4 +79,34 @@ func GetKPIDirection(name string) KPIDirection {
 		return d
 	}
 	return DirectionUnknown
+}
+
+// kpiUnits labels the KPIs CalculateKPIs produces. Ratios are stored as
+// fractions (0.25 means 25%) and labelled "ratio"; they are converted to
+// percent only when formatted for people (see formatKPIValue).
+var kpiUnits = map[string]string{
+	"customer_takt":           "time",
+	"total_lead_time":         "time",
+	"total_value_adding_time": "time",
+	"value_added_ratio":       "ratio",
+	"process_efficiency":      "ratio",
+	"inventory_turns":         "turns",
+	"average_yield_factor":    "ratio",
+}
+
+// kpiUnit returns the unit label for a KPI, or "unit" when unknown.
+func kpiUnit(name string) string {
+	if unit, ok := kpiUnits[name]; ok {
+		return unit
+	}
+	return "unit"
+}
+
+// formatKPIValue formats a KPI value for human-readable text: ratio KPIs
+// (stored as fractions) are shown as percent, everything else as a number.
+func formatKPIValue(name string, value float64) string {
+	if kpiUnit(name) == "ratio" {
+		return fmt.Sprintf("%.1f%%", value*100)
+	}
+	return fmt.Sprintf("%.4f", value)
 }

@@ -2,6 +2,7 @@ package vsm
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -42,5 +43,19 @@ func TestCustomerWithoutAvailableTimeStillLoads(t *testing.T) {
 	}
 	if vs.Customer.AvailableTime != 0 || vs.Customer.TaktTime != 6 {
 		t.Errorf("unexpected customer: %+v", vs.Customer)
+	}
+}
+
+func TestExportValueStreamMapShowsRatiosAsPercent(t *testing.T) {
+	vs := mixedUnitStream()
+	vs.KPIs = map[string]float64{"value_added_ratio": 0.25, "total_lead_time": 28}
+	out, err := NewSerializer().ExportValueStreamMap(vs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"value_added_ratio: 25.0%", "total_lead_time: 28.0000", "Takt Time: 0.50 minutes"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("map text missing %q:\n%s", want, out)
+		}
 	}
 }
