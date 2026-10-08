@@ -167,3 +167,87 @@ func TestTrendForecastFromLatest(t *testing.T) {
 		}
 	}
 }
+
+// The same 60-minute stream assessed in minutes, then in seconds, is not a
+// change: history is converted to the current unit before trends are read.
+func TestTrendsNormaliseUnitsAndPeriods(t *testing.T) {
+	a := NewAssessor()
+	stream := func(unit TimeUnit, factor float64) *ValueStream {
+		return &ValueStream{ID: "vs", Processes: []Process{{ID: "p", Parameters: ProcessParameters{
+			ProcessTime: 20 * factor, IdleTime: 40 * factor, ValueAddingTime: 10 * factor, TimeUnit: unit}}}}
+	}
+	week := 7 * 24 * time.Hour
+	first, err := a.AssessValueStream(stream(TimeUnitMinutes, 1), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.TimeUnit != TimeUnitMinutes || first.KPIs["total_lead_time"].Unit != "minutes" {
+		t.Errorf("unit not recorded: %q / %q", first.TimeUnit, first.KPIs["total_lead_time"].Unit)
+	}
+	first.AssessmentDate = first.AssessmentDate.Add(-2 * week)
+	second, err := a.AssessValueStream(stream(TimeUnitSeconds, 60), nil, []AssessmentResult{*first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.AssessmentDate = second.AssessmentDate.Add(-week)
+	third, err := a.AssessValueStream(stream(TimeUnitSeconds, 60), nil, []AssessmentResult{*first, *second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := third.KPIs["total_lead_time"]; m.Trend != "stable" || m.Value != 3600 {
+		t.Errorf("lead time 60 min → 3600 s: trend %q value %v, want stable 3600", m.Trend, m.Value)
+	}
+	for _, tr := range third.Trends {
+		if tr.KPIName == "total_lead_time" && (!approx(tr.DataPoints[0].Value, 3600) || !approx(tr.Forecast, 3600)) {
+			t.Errorf("trend points %v forecast %v, want 3600 s throughout", tr.DataPoints, tr.Forecast)
+		}
+	}
+	if d := a.CompareAssessments(second, first)["total_lead_time_change"]; d != 0 {
+		t.Errorf("CompareAssessments change = %v, want 0", d)
+	}
+
+	// Inventory turns: 2 per day, then the same stock and demand stated per
+	// week (14 per week) is not an improvement.
+	turns := func(period DemandPeriod, demand float64) *ValueStream {
+		vs := stream(TimeUnitMinutes, 1)
+		vs.Customer = &Customer{ID: "c", Demand: demand, DemandPeriod: period}
+		vs.Inventory = []Inventory{{ID: "i", Quantity: 50}}
+		return vs
+	}
+	daily, err := a.AssessValueStream(turns(DemandPeriodDay, 100), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if daily.DemandPeriod != DemandPeriodDay {
+		t.Errorf("demand period not recorded: %q", daily.DemandPeriod)
+	}
+	daily.AssessmentDate = daily.AssessmentDate.Add(-week)
+	weekly, err := a.AssessValueStream(turns(DemandPeriodWeek, 700), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := weekly.KPIs["inventory_turns"]; m.Value != 14 {
+		t.Errorf("weekly turns = %v, want 14", m.Value)
+	}
+	daily2 := *daily
+	daily2.AssessmentDate = daily.AssessmentDate.Add(-week)
+	weekly, err = a.AssessValueStream(turns(DemandPeriodWeek, 700), nil, []AssessmentResult{daily2, *daily})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tr := range weekly.Trends {
+		if tr.KPIName == "inventory_turns" && !approx(tr.DataPoints[0].Value, 14) {
+			t.Errorf("turns history %v, want 14 per week", tr.DataPoints)
+		}
+	}
+
+	// Old history without units counts as the current unit.
+	old := history("total_lead_time", 3600, 3600)
+	got, err := a.AssessValueStream(stream(TimeUnitSeconds, 60), nil, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := got.KPIs["total_lead_time"]; m.Trend != "stable" {
+		t.Errorf("unitless history: trend %q, want stable", m.Trend)
+	}
+}

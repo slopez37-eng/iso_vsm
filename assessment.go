@@ -23,6 +23,15 @@ type AssessmentResult struct {
 	// computed from their parts (see CheckConsistency). The KPIs use the
 	// computed values.
 	ConsistencyIssues []ConsistencyIssue `json:"consistency_issues,omitempty"`
+	// TimeUnit is the unit of the time KPIs (the stream's reference unit),
+	// DemandPeriod and WorkingDaysPerWeek the customer's, which
+	// inventory_turns (turns per demand period) depends on. Optional: an
+	// assessment without them (older history) is taken to be in the same
+	// units as the one it is compared with. Trends and CompareAssessments
+	// convert history to the current assessment's units first.
+	TimeUnit           TimeUnit     `json:"time_unit,omitempty"`
+	DemandPeriod       DemandPeriod `json:"demand_period,omitempty"`
+	WorkingDaysPerWeek float64      `json:"working_days_per_week,omitempty"`
 }
 
 // KPIMeasure represents a measured KPI value with metadata
@@ -116,7 +125,14 @@ func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64
 		AssessmentDate:    time.Now(),
 		KPIs:              make(map[string]KPIMeasure),
 		ConsistencyIssues: CheckConsistency(vs),
+		TimeUnit:          a.calculator.ReferenceTimeUnit(vs.Processes),
 	}
+	if vs.Customer != nil {
+		result.DemandPeriod = vs.Customer.DemandPeriod
+		result.WorkingDaysPerWeek = vs.Customer.WorkingDaysPerWeek
+	}
+	// Compare like with like: history in this assessment's units.
+	history = normalizeHistory(history, result)
 
 	// Calculate current KPIs
 	currentKPIs := a.calculator.CalculateKPIs(vs)
@@ -135,6 +151,12 @@ func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64
 		// Set target and unit
 		measure.Target = target
 		measure.Unit = a.getKPIUnit(name)
+		if measure.Unit == "time" && result.TimeUnit != "" {
+			measure.Unit = string(result.TimeUnit)
+		}
+		if name == "inventory_turns" && result.DemandPeriod != "" {
+			measure.Unit = "turns per " + string(result.DemandPeriod)
+		}
 
 		// Determine status
 		measure.Status = a.determineKPIStatus(name, value, target)
@@ -310,6 +332,41 @@ func (a *Assessor) analyzeTrend(kpiName string, history []AssessmentResult) (str
 	}
 
 	return trendLabel(GetKPIDirection(kpiName), sign), change
+}
+
+// normalizeHistory returns copies of history with KPI values converted to
+// the units of to: time KPIs to to.TimeUnit, inventory_turns to to's demand
+// period (see periodFactor). An assessment or side that records no unit or
+// period is taken to be in to's. A value that cannot be converted (unknown
+// unit, a month or year period against a day or week) is left out.
+func normalizeHistory(history []AssessmentResult, to *AssessmentResult) []AssessmentResult {
+	c := NewCalculator()
+	out := make([]AssessmentResult, len(history))
+	for i, h := range history {
+		out[i] = h
+		kpis := make(map[string]KPIMeasure, len(h.KPIs))
+		for name, m := range h.KPIs {
+			v, ok := m.Value, true
+			switch {
+			case kpiUnit(name) == "time" && h.TimeUnit != "" && to.TimeUnit != "" && h.TimeUnit != to.TimeUnit:
+				ok = isKnownTimeUnit(h.TimeUnit) && isKnownTimeUnit(to.TimeUnit)
+				v = c.ConvertTimeUnit(v, h.TimeUnit, to.TimeUnit)
+			case name == "inventory_turns" && h.DemandPeriod != "" && to.DemandPeriod != "":
+				var factor float64
+				factor, ok = periodFactor(
+					&Customer{DemandPeriod: h.DemandPeriod, WorkingDaysPerWeek: h.WorkingDaysPerWeek},
+					&Customer{DemandPeriod: to.DemandPeriod, WorkingDaysPerWeek: to.WorkingDaysPerWeek})
+				v *= factor
+			}
+			if ok {
+				m.Value = v
+				kpis[name] = m
+			}
+		}
+		out[i].KPIs = kpis
+		out[i].TimeUnit, out[i].DemandPeriod, out[i].WorkingDaysPerWeek = to.TimeUnit, to.DemandPeriod, to.WorkingDaysPerWeek
+	}
+	return out
 }
 
 // chronological returns a copy of history sorted by AssessmentDate, oldest
@@ -632,13 +689,15 @@ func (a *Assessor) generateAssessmentRecommendations(result *AssessmentResult) [
 	return recommendations
 }
 
-// CompareAssessments compares two assessment results
+// CompareAssessments compares two assessment results. previous is
+// converted to current's units first (see normalizeHistory).
 func (a *Assessor) CompareAssessments(current, previous *AssessmentResult) map[string]float64 {
 	comparison := make(map[string]float64)
 
 	if current == nil || previous == nil {
 		return comparison
 	}
+	previous = &normalizeHistory([]AssessmentResult{*previous}, current)[0]
 
 	for name, currentKPI := range current.KPIs {
 		if previousKPI, exists := previous.KPIs[name]; exists {
