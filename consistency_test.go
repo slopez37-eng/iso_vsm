@@ -35,19 +35,21 @@ func TestResolveRelationships(t *testing.T) {
 		issue     string // field of the expected issue, "" for none
 		issueFrom float64
 	}{
-		// Process time (A.2, with A.8 handling time as the rest).
+		// Process time (A.2): strict, the parts sum is used when any part is given.
 		{"PT parts only", ProcessParameters{ProcessingTime: 6, SetupTime: 2, AncillaryTime: 1}, "process_time", 9, "", 0},
 		{"PT total only", ProcessParameters{ProcessTime: 12}, "process_time", 12, "", 0},
 		{"PT complete parts agree", ProcessParameters{ProcessTime: 12, ProcessingTime: 6, SetupTime: 2, HandlingTime: 4}, "process_time", 12, "", 0},
 		{"PT complete parts disagree", ProcessParameters{ProcessTime: 20, ProcessingTime: 6, SetupTime: 2, HandlingTime: 4}, "process_time", 12, "process_time", 20},
-		{"PT partial parts within total (rest is handling, A.8)", ProcessParameters{ProcessTime: 20, SetupTime: 4}, "process_time", 20, "", 0},
-		{"PT partial parts exceed total", ProcessParameters{ProcessTime: 5, ProcessingTime: 6, SetupTime: 2}, "process_time", 8, "process_time", 5},
+		{"PT parts fall short of total", ProcessParameters{ProcessTime: 20, SetupTime: 4}, "process_time", 4, "process_time", 20},
+		{"PT parts exceed total", ProcessParameters{ProcessTime: 5, ProcessingTime: 6, SetupTime: 2}, "process_time", 8, "process_time", 5},
 		{"PT within 0.5% tolerance", ProcessParameters{ProcessTime: 12.05, ProcessingTime: 6, SetupTime: 2, HandlingTime: 4}, "process_time", 12, "", 0},
 		// Repetitive process time (A.6).
 		{"A.6 parts only", ProcessParameters{SetupTime: 5, RepetitionTime: 2, RepetitionCount: 3}, "process_time", 11, "", 0},
 		{"A.6 agrees with stored PT", ProcessParameters{ProcessTime: 11, SetupTime: 5, RepetitionTime: 2, RepetitionCount: 3}, "process_time", 11, "", 0},
 		{"A.6 disagrees with stored PT", ProcessParameters{ProcessTime: 30, SetupTime: 5, RepetitionTime: 2, RepetitionCount: 3}, "process_time", 11, "process_time", 30},
-		{"A.6 disagrees with complete A.2 parts", ProcessParameters{SetupTime: 5, HandlingTime: 1, ProcessingTime: 10, RepetitionTime: 2, RepetitionCount: 3}, "process_time", 16, fieldRepetitiveSum, 11},
+		{"A.6 with A.2 parts above it", ProcessParameters{SetupTime: 5, HandlingTime: 1, ProcessingTime: 10, RepetitionTime: 2, RepetitionCount: 3}, "process_time", 11, fieldProcessParts, 16},
+		{"A.6 with A.2 parts below it", ProcessParameters{SetupTime: 5, HandlingTime: 1, RepetitionTime: 2, RepetitionCount: 3}, "process_time", 11, fieldProcessParts, 6},
+		{"A.6 agrees with A.2 parts", ProcessParameters{SetupTime: 5, ProcessingTime: 6, RepetitionTime: 2, RepetitionCount: 3}, "process_time", 11, "", 0},
 		// Idle time.
 		{"IT parts only", ProcessParameters{TransportTime: 2, WaitingTime: 3, StorageTime: 1}, "idle_time", 6, "", 0},
 		{"IT total only", ProcessParameters{IdleTime: 40}, "idle_time", 40, "", 0},
@@ -112,6 +114,25 @@ func TestResolveRelationships(t *testing.T) {
 				t.Errorf("issue = %+v, want field %s stored %v", is, tt.issue, tt.issueFrom)
 			}
 		})
+	}
+}
+
+// TestProcessTimeShortfallMessage: a stored process time larger than its
+// parts is reported in plain terms, naming the parts that were given.
+func TestProcessTimeShortfallMessage(t *testing.T) {
+	_, issues := NewCalculator().resolveParameters(ProcessParameters{ProcessTime: 20, SetupTime: 4})
+	if len(issues) != 1 {
+		t.Fatalf("got %+v, want one issue", issues)
+	}
+	want := "process_time: stored 20, but its parts sum to 4 (only setup_time given) — enter the missing parts, " +
+		"or clear the given parts to use the stored total; calculations use 4"
+	if issues[0].Message != want {
+		t.Errorf("message = %q\nwant      %q", issues[0].Message, want)
+	}
+	_, issues = NewCalculator().resolveParameters(ProcessParameters{ProcessTime: 5, ProcessingTime: 6, SetupTime: 2})
+	if len(issues) != 1 || !strings.Contains(issues[0].Message, "correct the parts or the stored value") ||
+		!strings.Contains(issues[0].Message, "processing_time + setup_time") {
+		t.Errorf("excess issue = %+v", issues)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 )
 
 // ConsistencyTolerance is the relative difference (0.5%) below which a
@@ -35,22 +36,22 @@ type ConsistencyIssue struct {
 
 // Relationship rules (used in ConsistencyIssue.Rule).
 const (
-	ruleTransport      = "transport_time = transport_repetition_time × transport_repetition_count (A.10)"
-	ruleWaiting        = "waiting_time = stock_quantity × cycle_time (A.11)"
-	ruleRange          = "range_of_inventory = stock_quantity × cycle_time"
-	ruleProcessing     = "processing_time = cycle_time × order_quantity ÷ resource_count (A.5)"
-	ruleProcessParts   = "process_time = processing_time + setup_time + handling_time + waiting_time_process + ancillary_time (A.2)"
-	ruleRepetitive     = "process_time = setup_time + repetition_time × repetition_count (A.6)"
-	ruleIdle           = "idle_time = transport_time + waiting_time + storage_time"
-	ruleVATp           = "value_adding_time = value_adding_time_process (A.9)"
-	ruleVATWithinPT    = "value_adding_time is part of process_time, so it cannot exceed it"
-	ruleLeadFlow       = "lead_time = process_time + idle_time"
-	ruleLeadClass      = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time = lead_time = process_time + idle_time (A.3)"
-	ruleYield          = "yield_factor = 1 − (scrap_rate + rework_rate) (A.17)"
-	ruleTakt           = "takt_time = available_time ÷ demand (A.12)"
-	ruleStoredKPI      = "stored KPI = KPI computed from the processes (CalculateKPIs)"
-	fieldClassSum      = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time"
-	fieldRepetitiveSum = "setup_time + repetition_time × repetition_count"
+	ruleTransport     = "transport_time = transport_repetition_time × transport_repetition_count (A.10)"
+	ruleWaiting       = "waiting_time = stock_quantity × cycle_time (A.11)"
+	ruleRange         = "range_of_inventory = stock_quantity × cycle_time"
+	ruleProcessing    = "processing_time = cycle_time × order_quantity ÷ resource_count (A.5)"
+	ruleProcessParts  = "process_time = processing_time + setup_time + handling_time + waiting_time_process + ancillary_time (A.2)"
+	ruleRepetitive    = "process_time = setup_time + repetition_time × repetition_count (A.6)"
+	ruleIdle          = "idle_time = transport_time + waiting_time + storage_time"
+	ruleVATp          = "value_adding_time = value_adding_time_process (A.9)"
+	ruleVATWithinPT   = "value_adding_time is part of process_time, so it cannot exceed it"
+	ruleLeadFlow      = "lead_time = process_time + idle_time"
+	ruleLeadClass     = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time = lead_time = process_time + idle_time (A.3)"
+	ruleYield         = "yield_factor = 1 − (scrap_rate + rework_rate) (A.17)"
+	ruleTakt          = "takt_time = available_time ÷ demand (A.12)"
+	ruleStoredKPI     = "stored KPI = KPI computed from the processes (CalculateKPIs)"
+	fieldClassSum     = "value_adding_time + non_value_adding_time + necessary_non_value_adding_time"
+	fieldProcessParts = "processing_time + setup_time + handling_time + waiting_time_process + ancillary_time"
 )
 
 // consistent reports whether a and b agree within ConsistencyTolerance.
@@ -73,20 +74,17 @@ func consistent(a, b float64) bool {
 //   - waiting_time and range_of_inventory = stock_quantity × cycle_time (A.11)
 //   - processing_time = cycle_time × order_quantity ÷ resource_count (A.5)
 //   - process_time = processing + setup + handling + waiting (process) +
-//     ancillary time (A.2). When handling_time is not given, it is by A.8
-//     the rest of process_time, so a stored (or A.6) process_time that is at
-//     least the sum of the other parts is used as is; parts that add up to
-//     more replace it. When handling_time is given, the parts are complete
-//     and their sum is used. A.6 (setup + repetition_time ×
-//     repetition_count) gives process_time when repetition data is set.
+//     ancillary time (A.2): when any part is given, the sum of the parts,
+//     and a stored process_time that differs in either direction is
+//     reported. When repetition data is set, A.6 (setup + repetition_time ×
+//     repetition_count) gives process_time instead, and A.2 parts beyond
+//     setup_time that add up to something else are reported.
 //   - idle_time = transport + waiting + storage time
 //   - value_adding_time = value_adding_time_process when that is set (A.9)
 //   - lead_time = process_time + idle_time; when neither is given, the value
 //     classification VAT + NVAT + NNVAT (A.3); when neither is given, the
 //     stored lead_time
 //   - yield_factor = 1 − (scrap_rate + rework_rate) (A.17)
-//
-// Handling time implied by A.8 is not written into handling_time.
 func (c *Calculator) ResolveParameters(params ProcessParameters) ProcessParameters {
 	p, _ := c.resolveParameters(params)
 	return p
@@ -131,29 +129,38 @@ func (c *Calculator) resolveParameters(in ProcessParameters) (ProcessParameters,
 			p.CycleTime*p.OrderQuantity/float64(p.ResourceCount), ruleProcessing)
 	}
 
-	// Process time (A.2, A.6, A.8).
+	// Process time (A.2, A.6).
 	parts := c.CalculateProcessTime(p)
-	repetitive := p.RepetitionTime > 0 && p.RepetitionCount > 0
-	var a6 float64
-	if repetitive {
-		a6 = c.CalculateRepetitiveProcessTime(p.SetupTime, p.RepetitionTime, p.RepetitionCount)
+	given := processPartsGiven(p)
+	if p.RepetitionTime > 0 && p.RepetitionCount > 0 {
+		// A.6 gives process time. Setup time is in both A.6 and A.2, so the
+		// A.2 parts are a second, complete breakdown only when a part other
+		// than setup is given; then they must add up to the same value.
+		a6 := c.CalculateRepetitiveProcessTime(p.SetupTime, p.RepetitionTime, p.RepetitionCount)
+		if p.ProcessTime > 0 && !consistent(p.ProcessTime, a6) {
+			report("process_time", p.ProcessTime, a6, ruleRepetitive, replaced)
+		}
+		if parts > p.SetupTime && !consistent(parts, a6) {
+			issues = append(issues, ConsistencyIssue{
+				Field: fieldProcessParts, StoredValue: parts, ComputedValue: a6, Unit: unit, Rule: ruleRepetitive,
+				Message: fmt.Sprintf("process time parts (%s) sum to %g, but repetition data gives "+
+					"setup_time + repetition_time × repetition_count = %g; correct the parts or the "+
+					"repetition data; calculations use %[3]g", strings.Join(given, " + "), parts, a6),
+			})
+		}
+		p.ProcessTime = a6
+	} else if parts > 0 {
+		if p.ProcessTime > 0 && !consistent(p.ProcessTime, parts) {
+			fix := "correct the parts or the stored value"
+			if parts < p.ProcessTime {
+				fix = "enter the missing parts, or clear the given parts to use the stored total"
+			}
+			report("process_time", p.ProcessTime, parts, ruleProcessParts,
+				"%s: stored %g, but its parts sum to %g (only "+strings.Join(given, " + ")+
+					" given) — "+fix+"; calculations use %[3]g")
+		}
+		p.ProcessTime = parts
 	}
-	pt, ptRule := parts, ruleProcessParts
-	switch {
-	case p.HandlingTime > 0: // complete A.2 breakdown
-	case repetitive && (parts <= a6 || consistent(parts, a6)):
-		pt, ptRule = a6, ruleRepetitive
-	case !repetitive && p.ProcessTime > 0 && (parts <= p.ProcessTime || consistent(parts, p.ProcessTime)):
-		pt = p.ProcessTime
-	}
-	if p.ProcessTime > 0 && !consistent(p.ProcessTime, pt) {
-		report("process_time", p.ProcessTime, pt, ptRule, replaced)
-	}
-	if repetitive && !consistent(a6, pt) {
-		report(fieldRepetitiveSum, a6, pt, ruleProcessParts,
-			"%s: repetition data gives %g, but the process time parts give %g; calculations use %[3]g")
-	}
-	p.ProcessTime = pt
 
 	// Idle time.
 	if idle := c.CalculateTotalIdleTime(p.TransportTime, p.WaitingTime, p.StorageTime); idle > 0 {
@@ -202,6 +209,26 @@ func (c *Calculator) resolveParameters(in ProcessParameters) (ProcessParameters,
 		}
 	}
 	return p, issues
+}
+
+// processPartsGiven lists the A.2 process time parts that are given (> 0).
+func processPartsGiven(p ProcessParameters) []string {
+	var given []string
+	for _, f := range []struct {
+		name  string
+		value float64
+	}{
+		{"processing_time", p.ProcessingTime},
+		{"setup_time", p.SetupTime},
+		{"handling_time", p.HandlingTime},
+		{"waiting_time_process", p.WaitingTimeProcess},
+		{"ancillary_time", p.AncillaryTime},
+	} {
+		if f.value > 0 {
+			given = append(given, f.name)
+		}
+	}
+	return given
 }
 
 // customerTakt returns the takt the model uses: AvailableTime ÷ Demand when

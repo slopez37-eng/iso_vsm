@@ -2,6 +2,7 @@ package vsm
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,7 +17,7 @@ func targetStream() *ValueStream {
 		Customer: &Customer{ID: "c", Demand: 100, DemandPeriod: DemandPeriodDay, AvailableTime: 480},
 		Processes: []Process{
 			{ID: "p1", Name: "Cut", Parameters: ProcessParameters{
-				TimeUnit: TimeUnitMinutes, ProcessTime: 10, SetupTime: 4, CycleTime: 3,
+				TimeUnit: TimeUnitMinutes, ProcessTime: 10, SetupTime: 4, HandlingTime: 6, CycleTime: 3,
 				IdleTime: 30, WaitingTime: 20, TransportTime: 10, ValueAddingTime: 5,
 				ScrapRate: 0.05, ReworkRate: 0.05, YieldFactor: 0.9,
 			}},
@@ -194,7 +195,7 @@ func TestDesignResultWithoutNewFieldsStillLoads(t *testing.T) {
 }
 
 // richStream is a consistent stream that exercises every relationship:
-// A.2 parts with implied handling time, complete A.2 parts, A.5 processing
+// A.2 parts with a stored total, A.2 parts alone, A.5 processing
 // time, A.6 repetition, A.10 transport repetitions, A.11 stock-driven
 // waiting time, a value classification and scrap/rework.
 func richStream() *ValueStream {
@@ -297,8 +298,8 @@ func TestTargetsFollowFormulas(t *testing.T) {
 		t.Errorf("idle target: IT %v TT %v WT %v SQ %v", p3.IdleTime, p3.TransportTime, p3.WaitingTime, p3.StockQuantity)
 	}
 
-	// Process time target on p1 (PT 10 = setup 4 + implied handling 6):
-	// −50% scales both; with setup also targeted to 1, the rest takes it.
+	// Process time target on p1 (PT 10 = setup 4 + handling 6): −50%
+	// scales both; with setup also targeted to 1, handling takes the rest.
 	p1 := run(&FutureStateTargets{Processes: map[string]ProcessTargets{"p1": {ProcessTime: ReductionTarget(50)}}}).Processes[0].Parameters
 	if !approx(p1.ProcessTime, 5) || !approx(p1.SetupTime, 2) {
 		t.Errorf("PT −50%%: PT %v ST %v, want 5 and 2", p1.ProcessTime, p1.SetupTime)
@@ -375,5 +376,69 @@ func TestTargetsFromContradictingCurrentState(t *testing.T) {
 	}
 	if it := future.Processes[0].Parameters.IdleTime; !approx(it, 20) {
 		t.Errorf("p1 idle = %v, want 20 (10 transport + 10 waiting)", it)
+	}
+}
+
+// Process time is strict (A.2): a stored total that its parts do not
+// explain is replaced by the parts sum in the future state; a total-only
+// process can take a process_time target but not a target on one of its
+// parts; a repetitive process (A.6) whose A.2 parts agree stays consistent.
+func TestTargetsStrictProcessTime(t *testing.T) {
+	stream := func(params ...ProcessParameters) *ValueStream {
+		vs := &ValueStream{ID: "vs"}
+		for i, p := range params {
+			p.TimeUnit = TimeUnitMinutes
+			vs.Processes = append(vs.Processes, Process{ID: fmt.Sprintf("p%d", i+1), Parameters: p})
+		}
+		return vs
+	}
+	design := func(vs *ValueStream, targets *ProcessTargets) (*ValueStream, error) {
+		return NewDesigner().DesignFutureStateFromTargets(vs, &FutureStateTargets{Default: targets})
+	}
+
+	// Shortfall in the current state (stored 20, parts 4): the future uses
+	// the parts and is consistent.
+	future, err := design(stream(ProcessParameters{ProcessTime: 20, SetupTime: 4, IdleTime: 10}),
+		&ProcessTargets{SetupTime: ReductionTarget(50)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues := CheckConsistency(future); len(issues) != 0 {
+		t.Errorf("shortfall future issues: %+v", issues)
+	}
+	if pt := NewCalculator().ResolveParameters(future.Processes[0].Parameters).ProcessTime; !approx(pt, 2) {
+		t.Errorf("shortfall future PT = %v, want 2", pt)
+	}
+
+	// Total only: a process_time target sets the total.
+	future, err = design(stream(ProcessParameters{ProcessTime: 12, IdleTime: 10}),
+		&ProcessTargets{ProcessTime: ReductionTarget(25)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pt := future.Processes[0].Parameters.ProcessTime; !approx(pt, 9) {
+		t.Errorf("total-only PT = %v, want 9", pt)
+	}
+	if issues := CheckConsistency(future); len(issues) != 0 {
+		t.Errorf("total-only future issues: %+v", issues)
+	}
+	// Total only: a setup target would replace the total with a part.
+	if _, err := design(stream(ProcessParameters{ProcessTime: 12}),
+		&ProcessTargets{SetupTime: AbsoluteTarget(2)}); err == nil {
+		t.Error("setup target on a total-only process: expected an error")
+	}
+
+	// Repetitive with agreeing A.2 parts: setup 2 + 3 × 2 = 8 = setup 2 +
+	// processing 6. A setup target keeps A.6 and A.2 in agreement.
+	future, err = design(stream(ProcessParameters{SetupTime: 2, ProcessingTime: 6, RepetitionTime: 3, RepetitionCount: 2}),
+		&ProcessTargets{SetupTime: AbsoluteTarget(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issues := CheckConsistency(future); len(issues) != 0 {
+		t.Errorf("repetitive future issues: %+v", issues)
+	}
+	if pt := NewCalculator().ResolveParameters(future.Processes[0].Parameters).ProcessTime; !approx(pt, 7) {
+		t.Errorf("repetitive future PT = %v, want 7", pt)
 	}
 }

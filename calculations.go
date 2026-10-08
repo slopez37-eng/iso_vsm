@@ -120,14 +120,15 @@ func (c *Calculator) CalculateStockQuantity(processTime float64, processQuantity
 	return processTime * processQuantity
 }
 
-// CalculateHandlingTime derives handling time as the part of the stored
-// process time not explained by the other A.2 components (A.8).
+// CalculateHandlingTime returns the stored process time minus the other A.2
+// components, as a diagnostic.
 // HT = PT − (PRT + ST + WTp + AT)
 //
-// This is A.2 solved for HT. Downtime is not an A.2 component, so it is not
-// subtracted. A negative result means the components add up to more than
-// the stored ProcessTime, i.e. the inputs are inconsistent.
-// Not verified against ISO 22468 text; standard lean definition used.
+// This is A.2 rearranged, not a separate ISO 22468 formula (not verified
+// against the ISO text). The model does not use it: process time is the sum
+// of its parts whenever parts are given (see ResolveParameters). Downtime is
+// not an A.2 component, so it is not subtracted. A negative result means the
+// components add up to more than the stored ProcessTime.
 func (c *Calculator) CalculateHandlingTime(params ProcessParameters) float64 {
 	return params.ProcessTime - (params.ProcessingTime + params.SetupTime +
 		params.WaitingTimeProcess + params.AncillaryTime)

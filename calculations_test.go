@@ -32,8 +32,8 @@ func TestScalarFormulas(t *testing.T) {
 		{"repetitive process time A.6", c.CalculateRepetitiveProcessTime(5, 2, 3), 11},
 		// A.7: SQ = PT × PQ
 		{"stock quantity A.7", c.CalculateStockQuantity(2, 3), 6},
-		// A.8: HT = PT − (PRT + ST + WTp + AT) = 30 − (20 + 3 + 2 + 1)
-		{"handling time A.8", c.CalculateHandlingTime(ProcessParameters{
+		// A.2 rearranged: HT = PT − (PRT + ST + WTp + AT) = 30 − (20 + 3 + 2 + 1)
+		{"handling time from A.2", c.CalculateHandlingTime(ProcessParameters{
 			ProcessTime: 30, ProcessingTime: 20, SetupTime: 3, WaitingTimeProcess: 2, AncillaryTime: 1,
 			HandlingTime: 99, Downtime: 50, // neither feeds the result
 		}), 4},
@@ -194,20 +194,19 @@ func TestReferenceTimeUnitAndNormalize(t *testing.T) {
 func TestAggregatesUseComponentsOverStoredTotals(t *testing.T) {
 	c := NewCalculator()
 	procs := []Process{
-		// Stored PT 10 with only setup 4 given: handling time is the rest
-		// (A.8), so PT 10 stands. Stored IT 5 contradicts WT 100: the parts
-		// win (IT 100).
-		{Parameters: ProcessParameters{ProcessTime: 10, SetupTime: 4, IdleTime: 5, WaitingTime: 100,
+		// Stored PT 10 contradicts setup 4 + handling 2: the parts win
+		// (PT 6). Stored IT 5 contradicts WT 100: the parts win (IT 100).
+		{Parameters: ProcessParameters{ProcessTime: 10, SetupTime: 4, HandlingTime: 2, IdleTime: 5, WaitingTime: 100,
 			ValueAddingTime: 6}},
 		// No stored PT/IT: A.2 components and TT + WT + ST_T.
 		{Parameters: ProcessParameters{ProcessingTime: 3, SetupTime: 1, TransportTime: 2, WaitingTime: 3,
 			StorageTime: 1, ValueAddingTimeProcess: 2}},
 	}
-	if got := c.CalculateTotalProcessTime(procs); !approx(got, 14) {
-		t.Errorf("total process time = %v, want 14", got)
+	if got := c.CalculateTotalProcessTime(procs); !approx(got, 10) {
+		t.Errorf("total process time = %v, want 10", got)
 	}
-	if got := c.CalculateOverallLeadTime(procs); !approx(got, 10+100+4+6) {
-		t.Errorf("overall lead time = %v, want 120", got)
+	if got := c.CalculateOverallLeadTime(procs); !approx(got, 6+100+4+6) {
+		t.Errorf("overall lead time = %v, want 116", got)
 	}
 	if got := c.CalculateValueAddingTime(procs); !approx(got, 8) {
 		t.Errorf("value adding time = %v, want 8", got)

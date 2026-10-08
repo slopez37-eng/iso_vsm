@@ -75,6 +75,7 @@ func createVSMProject() *vsm.VSMProject {
 				ProcessTime:                 30, // 30 minutes
 				CycleTime:                   30, // 30 minutes
 				SetupTime:                   15, // 15 minutes
+				ProcessingTime:              15, // processing; process time = processing + setup (A.2)
 				EmployeeCount:               1,  // 1 employee
 				ResourceCount:               1,  // 1 workstation
 				TimeUnit:                    vsm.TimeUnitMinutes,
@@ -95,6 +96,7 @@ func createVSMProject() *vsm.VSMProject {
 				ProcessTime:                 45,  // 45 minutes
 				CycleTime:                   2.5, // 2.5 minutes per patty
 				SetupTime:                   10,  // 10 minutes
+				ProcessingTime:              35,  // processing; process time = processing + setup (A.2)
 				EmployeeCount:               2,   // 2 employees
 				ResourceCount:               1,   // 1 patty machine
 				TimeUnit:                    vsm.TimeUnitMinutes,
@@ -115,6 +117,7 @@ func createVSMProject() *vsm.VSMProject {
 				ProcessTime:                 60, // 60 minutes
 				CycleTime:                   5,  // 5 minutes per patty
 				SetupTime:                   5,  // 5 minutes
+				ProcessingTime:              55, // processing; process time = processing + setup (A.2)
 				EmployeeCount:               1,  // 1 grill operator
 				ResourceCount:               1,  // 1 grill
 				TimeUnit:                    vsm.TimeUnitMinutes,
@@ -135,6 +138,7 @@ func createVSMProject() *vsm.VSMProject {
 				ProcessTime:                 30,  // 30 minutes
 				CycleTime:                   1.5, // 1.5 minutes per burger
 				SetupTime:                   5,   // 5 minutes
+				ProcessingTime:              25,  // processing; process time = processing + setup (A.2)
 				EmployeeCount:               3,   // 3 assembly workers
 				ResourceCount:               1,   // 1 assembly station
 				TimeUnit:                    vsm.TimeUnitMinutes,
@@ -155,6 +159,7 @@ func createVSMProject() *vsm.VSMProject {
 				ProcessTime:                 45, // 45 minutes
 				CycleTime:                   2,  // 2 minutes per order
 				SetupTime:                   10, // 10 minutes
+				ProcessingTime:              35, // processing; process time = processing + setup (A.2)
 				EmployeeCount:               2,  // 2 packaging workers
 				ResourceCount:               1,  // 1 packaging station
 				TimeUnit:                    vsm.TimeUnitMinutes,

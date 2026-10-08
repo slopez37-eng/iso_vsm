@@ -59,8 +59,7 @@ func (t *Target) apply(current float64) (float64, error) {
 //     where those formulas apply.
 //   - A total target (process_time, idle_time, yield_factor) is met by
 //     scaling, in proportion, the parts that have no target of their own and
-//     are not computed from other inputs (for process_time this includes the
-//     handling time implied by A.8). A total of 0 zeroes its parts. Where
+//     are not computed from other inputs. A total of 0 zeroes its parts. Where
 //     waiting_time is stock_quantity × cycle_time, it is scaled through
 //     stock_quantity, and a waiting_time target sets stock_quantity.
 //   - The value classification follows the lead time: when lead time
@@ -258,14 +257,16 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 		p.ProcessingTime = 0
 	}
 
-	// Process time: the parts plus the handling time implied by A.8.
-	implied := math.Max(0, cur.ProcessTime-c.CalculateProcessTime(cur))
+	// Process time: A.6 for repetitive processes, else the A.2 parts, else
+	// the total alone.
+	repetitive := cur.RepetitionTime > 0 && cur.RepetitionCount > 0
+	hasParts := c.CalculateProcessTime(cur) > 0
 	if t := get(func(t *ProcessTargets) *Target { return t.ProcessTime }); t != nil {
 		v, err := applyField("process_time", t, cur.ProcessTime, false)
 		if err != nil {
 			return params, err
 		}
-		if cur.RepetitionTime > 0 && cur.RepetitionCount > 0 {
+		if repetitive {
 			return params, fmt.Errorf("process_time: for this process it is setup_time + repetition_time × " +
 				"repetition_count (A.6); target setup_time, or change the repetition data in the current state")
 		}
@@ -275,15 +276,25 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 			{&p.HandlingTime, false},
 			{&p.WaitingTimeProcess, false},
 			{&p.AncillaryTime, false},
-			{&implied, false},
 		})
-		if !ok {
+		if !hasParts {
+			p.ProcessTime = v
+		} else if !ok {
 			return params, fmt.Errorf("process_time: target %g cannot be met; the parts that are fixed "+
 				"(targeted setup_time, or processing_time computed from cycle_time, A.5) add up to %g",
 				v, c.CalculateProcessTime(p))
 		}
 	}
-	p.ProcessTime = c.CalculateProcessTime(p) + implied
+	switch {
+	case repetitive:
+		p.ProcessTime = c.CalculateRepetitiveProcessTime(p.SetupTime, p.RepetitionTime, p.RepetitionCount)
+	case hasParts:
+		p.ProcessTime = c.CalculateProcessTime(p)
+	case c.CalculateProcessTime(p) > 0 && cur.ProcessTime > 0:
+		return params, fmt.Errorf("process_time is given only as a total for this process, so a target " +
+			"that sets one of its parts (setup or processing time) would replace it; target process_time " +
+			"instead, or add the breakdown to the current state")
+	}
 
 	// Idle time: transport + waiting + storage time.
 	idleParts := func(q *ProcessParameters) float64 {
