@@ -9,20 +9,34 @@ import (
 
 // Prompt Handlers
 
-func handleVSMAnalysisPrompt(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-	industry := "general"
-	if args := req.Params.Arguments; args != nil {
-		if ind, exists := args["industry"]; exists {
-			industry = ind
-		}
+// promptArg returns the named prompt argument, or def when it is not set.
+func promptArg(req mcp.GetPromptRequest, key, def string) string {
+	if value, ok := req.Params.Arguments[key]; ok {
+		return value
 	}
+	return def
+}
 
-	complexity := "medium"
-	if args := req.Params.Arguments; args != nil {
-		if comp, exists := args["complexity"]; exists {
-			complexity = comp
-		}
+// promptResult returns the system context followed by the user request.
+func promptResult(description, systemMessage, userMessage string) *mcp.GetPromptResult {
+	return &mcp.GetPromptResult{
+		Description: description,
+		Messages: []mcp.PromptMessage{
+			{
+				Role:    mcp.RoleUser,
+				Content: mcp.NewTextContent(systemMessage),
+			},
+			{
+				Role:    mcp.RoleUser,
+				Content: mcp.NewTextContent(userMessage),
+			},
+		},
 	}
+}
+
+func handleVSMAnalysisPrompt(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	industry := promptArg(req, "industry", "general")
+	complexity := promptArg(req, "complexity", "medium")
 
 	systemMessage := fmt.Sprintf(`You are a Value Stream Mapping (VSM) expert helping with current state analysis according to ISO 22468:2020.
 
@@ -57,35 +71,14 @@ Always follow the structured approach:
 
 Please provide a step-by-step guide tailored to my industry context and complexity level.`
 
-	return &mcp.GetPromptResult{
-		Description: fmt.Sprintf("Comprehensive guide for VSM current state analysis in %s industry (%s complexity)", industry, complexity),
-		Messages: []mcp.PromptMessage{
-			{
-				Role:    mcp.RoleUser,
-				Content: mcp.NewTextContent(systemMessage),
-			},
-			{
-				Role:    mcp.RoleUser,
-				Content: mcp.NewTextContent(userMessage),
-			},
-		},
-	}, nil
+	return promptResult(
+		fmt.Sprintf("Comprehensive guide for VSM current state analysis in %s industry (%s complexity)", industry, complexity),
+		systemMessage, userMessage), nil
 }
 
 func handleVSMImplementationPrompt(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-	timeline := "6 months"
-	if args := req.Params.Arguments; args != nil {
-		if tl, exists := args["timeline"]; exists {
-			timeline = tl
-		}
-	}
-
-	resources := "limited"
-	if args := req.Params.Arguments; args != nil {
-		if res, exists := args["resources"]; exists {
-			resources = res
-		}
-	}
+	timeline := promptArg(req, "timeline", "6 months")
+	resources := promptArg(req, "resources", "limited")
 
 	systemMessage := fmt.Sprintf(`You are a Lean implementation expert specializing in Value Stream Management transformation.
 
@@ -115,17 +108,7 @@ Guide implementations using proven lean techniques while considering resource co
 
 Please provide practical guidance considering my timeline and resource constraints.`
 
-	return &mcp.GetPromptResult{
-		Description: fmt.Sprintf("VSM implementation guide for %s timeline with %s resources", timeline, resources),
-		Messages: []mcp.PromptMessage{
-			{
-				Role:    mcp.RoleUser,
-				Content: mcp.NewTextContent(systemMessage),
-			},
-			{
-				Role:    mcp.RoleUser,
-				Content: mcp.NewTextContent(userMessage),
-			},
-		},
-	}, nil
+	return promptResult(
+		fmt.Sprintf("VSM implementation guide for %s timeline with %s resources", timeline, resources),
+		systemMessage, userMessage), nil
 }

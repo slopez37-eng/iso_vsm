@@ -353,41 +353,35 @@ func serializeResults(project *vsm.VSMProject, analysis *vsm.AnalysisResult,
 
 	serializer := vsm.NewSerializer()
 
-	// Save project
-	if err := serializer.SaveToFile(project, "vsm_project.json"); err != nil {
-		log.Printf("Failed to save project: %v", err)
+	// Each save is independent: a failure is logged and the rest still run.
+	saves := []struct {
+		label    string
+		data     any
+		filename string
+	}{
+		{"project", project, "vsm_project.json"},
+		{"analysis", analysis, "analysis_result.json"},
+		{"design", design, "design_result.json"},
+		{"planning", planning, "planning_result.json"},
+		{"assessment", assessment, "assessment_result.json"},
 	}
-
-	// Save analysis results
-	if err := serializer.SaveToFile(analysis, "analysis_result.json"); err != nil {
-		log.Printf("Failed to save analysis: %v", err)
-	}
-
-	// Save design results
-	if err := serializer.SaveToFile(design, "design_result.json"); err != nil {
-		log.Printf("Failed to save design: %v", err)
-	}
-
-	// Save planning results
-	if err := serializer.SaveToFile(planning, "planning_result.json"); err != nil {
-		log.Printf("Failed to save planning: %v", err)
-	}
-
-	// Save assessment results
-	if err := serializer.SaveToFile(assessment, "assessment_result.json"); err != nil {
-		log.Printf("Failed to save assessment: %v", err)
+	for _, s := range saves {
+		if err := serializer.SaveToFile(s.data, s.filename); err != nil {
+			log.Printf("Failed to save %s: %v", s.label, err)
+		}
 	}
 
 	// Export value stream map
-	if project.FutureState != nil {
-		mapStr, err := serializer.ExportValueStreamMap(project.FutureState)
-		if err != nil {
-			log.Printf("Failed to export value stream map: %v", err)
-		} else {
-			if err := serializer.SaveToFile(mapStr, "value_stream_map.txt"); err != nil {
-				log.Printf("Failed to save value stream map: %v", err)
-			}
-		}
+	if project.FutureState == nil {
+		return
+	}
+	mapStr, err := serializer.ExportValueStreamMap(project.FutureState)
+	if err != nil {
+		log.Printf("Failed to export value stream map: %v", err)
+		return
+	}
+	if err := serializer.SaveToFile(mapStr, "value_stream_map.txt"); err != nil {
+		log.Printf("Failed to save value stream map: %v", err)
 	}
 }
 

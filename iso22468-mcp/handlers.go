@@ -6,108 +6,100 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	vsm "github.com/iso22468/vsm-go-sdk"
+	"github.com/mark3labs/mcp-go/mcp"
 )
+
+// requireArg returns a required string argument, or the standard error result
+// when it is missing.
+func requireArg(req mcp.CallToolRequest, name string) (string, *mcp.CallToolResult) {
+	value, err := req.RequireString(name)
+	if err != nil {
+		return "", mcp.NewToolResultError(fmt.Sprintf("Missing %s: %v", name, err))
+	}
+	return value, nil
+}
+
+// decodeArg unmarshals JSON text into a T. Invalid JSON yields the error result
+// "<label>: <err>".
+func decodeArg[T any](raw, label string) (T, *mcp.CallToolResult) {
+	var v T
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return v, mcp.NewToolResultError(fmt.Sprintf("%s: %v", label, err))
+	}
+	return v, nil
+}
+
+// jsonResult returns prefix followed by v as indented JSON.
+func jsonResult(prefix string, v any) *mcp.CallToolResult {
+	resultJSON, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to serialize result: %v", err))
+	}
+	return mcp.NewToolResultText(prefix + string(resultJSON))
+}
+
+// runAnalysis is the shared body of the analysis tools: it reads the value
+// stream, runs one analyzer method and returns the result as JSON.
+func runAnalysis[R any](req mcp.CallToolRequest, analyze func(*vsm.Analyzer, *vsm.ValueStream) (R, error), failure string, success func(R) string) (*mcp.CallToolResult, error) {
+	valueStreamJSON, errResult := requireArg(req, "value_stream_json")
+	if errResult != nil {
+		return errResult, nil
+	}
+
+	vs, errResult := decodeArg[vsm.ValueStream](valueStreamJSON, "Invalid value stream JSON")
+	if errResult != nil {
+		return errResult, nil
+	}
+
+	result, err := analyze(vsm.NewAnalyzer(), &vs)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("%s: %v", failure, err)), nil
+	}
+
+	return jsonResult(success(result), result), nil
+}
 
 // VSM Analysis Handlers
 
 func handleVSMAnalysis(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	valueStreamJSON, err := req.RequireString("value_stream_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing value_stream_json: %v", err)), nil
-	}
-
-	var vs vsm.ValueStream
-	if err := json.Unmarshal([]byte(valueStreamJSON), &vs); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid value stream JSON: %v", err)), nil
-	}
-
-	analyzer := vsm.NewAnalyzer()
-	analysisResult, err := analyzer.AnalyzeCurrentState(&vs)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Analysis failed: %v", err)), nil
-	}
-
-	resultJSON, err := json.MarshalIndent(analysisResult, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to serialize result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Analysis completed successfully:\n%s", string(resultJSON))), nil
+	return runAnalysis(req, (*vsm.Analyzer).AnalyzeCurrentState, "Analysis failed",
+		func(*vsm.AnalysisResult) string { return "Analysis completed successfully:\n" })
 }
 
 func handleBottleneckDetection(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	valueStreamJSON, err := req.RequireString("value_stream_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing value_stream_json: %v", err)), nil
-	}
-
-	var vs vsm.ValueStream
-	if err := json.Unmarshal([]byte(valueStreamJSON), &vs); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid value stream JSON: %v", err)), nil
-	}
-
-	analyzer := vsm.NewAnalyzer()
-	bottlenecks, err := analyzer.IdentifyBottlenecks(&vs)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Bottleneck detection failed: %v", err)), nil
-	}
-
-	resultJSON, err := json.MarshalIndent(bottlenecks, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to serialize result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Found %d bottlenecks:\n%s", len(bottlenecks), string(resultJSON))), nil
+	return runAnalysis(req, (*vsm.Analyzer).IdentifyBottlenecks, "Bottleneck detection failed",
+		func(bottlenecks []vsm.BottleneckInfo) string {
+			return fmt.Sprintf("Found %d bottlenecks:\n", len(bottlenecks))
+		})
 }
 
 func handleWasteAnalysis(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	valueStreamJSON, err := req.RequireString("value_stream_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing value_stream_json: %v", err)), nil
-	}
-
-	var vs vsm.ValueStream
-	if err := json.Unmarshal([]byte(valueStreamJSON), &vs); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid value stream JSON: %v", err)), nil
-	}
-
-	analyzer := vsm.NewAnalyzer()
-	wasteAnalysis, err := analyzer.AnalyzeWaste(&vs)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Waste analysis failed: %v", err)), nil
-	}
-
-	resultJSON, err := json.MarshalIndent(wasteAnalysis, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to serialize result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Waste analysis completed:\n%s", string(resultJSON))), nil
+	return runAnalysis(req, (*vsm.Analyzer).AnalyzeWaste, "Waste analysis failed",
+		func(*vsm.WasteAnalysis) string { return "Waste analysis completed:\n" })
 }
 
 // VSM Design Handlers
 
 func handleFutureStateDesign(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	currentStateJSON, err := req.RequireString("current_state_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing current_state_json: %v", err)), nil
+	currentStateJSON, errResult := requireArg(req, "current_state_json")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	analysisResultJSON, err := req.RequireString("analysis_result_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing analysis_result_json: %v", err)), nil
+	analysisResultJSON, errResult := requireArg(req, "analysis_result_json")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	var currentState vsm.ValueStream
-	if err := json.Unmarshal([]byte(currentStateJSON), &currentState); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid current state JSON: %v", err)), nil
+	currentState, errResult := decodeArg[vsm.ValueStream](currentStateJSON, "Invalid current state JSON")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	var analysisResult vsm.AnalysisResult
-	if err := json.Unmarshal([]byte(analysisResultJSON), &analysisResult); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid analysis result JSON: %v", err)), nil
+	analysisResult, errResult := decodeArg[vsm.AnalysisResult](analysisResultJSON, "Invalid analysis result JSON")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	designer := vsm.NewDesigner()
@@ -116,23 +108,18 @@ func handleFutureStateDesign(ctx context.Context, req mcp.CallToolRequest) (*mcp
 		return mcp.NewToolResultError(fmt.Sprintf("Future state design failed: %v", err)), nil
 	}
 
-	resultJSON, err := json.MarshalIndent(designResult, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to serialize result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Future state design completed:\n%s", string(resultJSON))), nil
+	return jsonResult("Future state design completed:\n", designResult), nil
 }
 
 func handleIdealStateGeneration(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	currentStateJSON, err := req.RequireString("current_state_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing current_state_json: %v", err)), nil
+	currentStateJSON, errResult := requireArg(req, "current_state_json")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	var currentState vsm.ValueStream
-	if err := json.Unmarshal([]byte(currentStateJSON), &currentState); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid current state JSON: %v", err)), nil
+	currentState, errResult := decodeArg[vsm.ValueStream](currentStateJSON, "Invalid current state JSON")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	designer := vsm.NewDesigner()
@@ -141,35 +128,30 @@ func handleIdealStateGeneration(ctx context.Context, req mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(fmt.Sprintf("Ideal state generation failed: %v", err)), nil
 	}
 
-	resultJSON, err := json.MarshalIndent(idealState, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to serialize result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Ideal state generated:\n%s", string(resultJSON))), nil
+	return jsonResult("Ideal state generated:\n", idealState), nil
 }
 
 // VSM Planning Handlers
 
 func handleImplementationPlanning(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	designResultJSON, err := req.RequireString("design_result_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing design_result_json: %v", err)), nil
+	designResultJSON, errResult := requireArg(req, "design_result_json")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	projectJSON, err := req.RequireString("project_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing project_json: %v", err)), nil
+	projectJSON, errResult := requireArg(req, "project_json")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	var designResult vsm.DesignResult
-	if err := json.Unmarshal([]byte(designResultJSON), &designResult); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid design result JSON: %v", err)), nil
+	designResult, errResult := decodeArg[vsm.DesignResult](designResultJSON, "Invalid design result JSON")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	var project vsm.VSMProject
-	if err := json.Unmarshal([]byte(projectJSON), &project); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid project JSON: %v", err)), nil
+	project, errResult := decodeArg[vsm.VSMProject](projectJSON, "Invalid project JSON")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	planner := vsm.NewPlanner()
@@ -178,42 +160,37 @@ func handleImplementationPlanning(ctx context.Context, req mcp.CallToolRequest) 
 		return mcp.NewToolResultError(fmt.Sprintf("Implementation planning failed: %v", err)), nil
 	}
 
-	resultJSON, err := json.MarshalIndent(planningResult, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to serialize result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Implementation plan created:\n%s", string(resultJSON))), nil
+	return jsonResult("Implementation plan created:\n", planningResult), nil
 }
-
 
 // VSM Assessment Handlers
 
 func handlePerformanceAssessment(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	valueStreamJSON, err := req.RequireString("value_stream_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing value_stream_json: %v", err)), nil
+	valueStreamJSON, errResult := requireArg(req, "value_stream_json")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	targetsJSON, err := req.RequireString("targets_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing targets_json: %v", err)), nil
+	targetsJSON, errResult := requireArg(req, "targets_json")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	var vs vsm.ValueStream
-	if err := json.Unmarshal([]byte(valueStreamJSON), &vs); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid value stream JSON: %v", err)), nil
+	vs, errResult := decodeArg[vsm.ValueStream](valueStreamJSON, "Invalid value stream JSON")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	var targets map[string]float64
-	if err := json.Unmarshal([]byte(targetsJSON), &targets); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid targets JSON: %v", err)), nil
+	targets, errResult := decodeArg[map[string]float64](targetsJSON, "Invalid targets JSON")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	var history []vsm.AssessmentResult
 	if historyJSON := req.GetString("history_json", ""); historyJSON != "" {
-		if err := json.Unmarshal([]byte(historyJSON), &history); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Invalid history JSON: %v", err)), nil
+		history, errResult = decodeArg[[]vsm.AssessmentResult](historyJSON, "Invalid history JSON")
+		if errResult != nil {
+			return errResult, nil
 		}
 	}
 
@@ -223,28 +200,22 @@ func handlePerformanceAssessment(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError(fmt.Sprintf("Performance assessment failed: %v", err)), nil
 	}
 
-	resultJSON, err := json.MarshalIndent(assessment, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to serialize result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Performance assessment completed:\n%s", string(resultJSON))), nil
+	return jsonResult("Performance assessment completed:\n", assessment), nil
 }
-
 
 // VSM Serialization Handlers
 
 func handleValueStreamSerialization(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	valueStreamJSON, err := req.RequireString("value_stream_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing value_stream_json: %v", err)), nil
+	valueStreamJSON, errResult := requireArg(req, "value_stream_json")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	prettyPrint := req.GetBool("pretty_print", false)
 
-	var vs vsm.ValueStream
-	if err := json.Unmarshal([]byte(valueStreamJSON), &vs); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid value stream JSON: %v", err)), nil
+	vs, errResult := decodeArg[vsm.ValueStream](valueStreamJSON, "Invalid value stream JSON")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	serializer := vsm.NewSerializer()
@@ -254,11 +225,12 @@ func handleValueStreamSerialization(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError(fmt.Sprintf("Serialization failed: %v", err)), nil
 	}
 
-	var result interface{}
+	// Pretty output round-trips through interface{} on purpose: that makes
+	// MarshalIndent sort the keys.
 	if prettyPrint {
+		var result interface{}
 		if err := json.Unmarshal(serializedData, &result); err == nil {
-			prettyData, err := json.MarshalIndent(result, "", "  ")
-			if err == nil {
+			if prettyData, err := json.MarshalIndent(result, "", "  "); err == nil {
 				serializedData = prettyData
 			}
 		}
@@ -268,9 +240,9 @@ func handleValueStreamSerialization(ctx context.Context, req mcp.CallToolRequest
 }
 
 func handleValueStreamDeserialization(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	jsonData, err := req.RequireString("json_data")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing json_data: %v", err)), nil
+	jsonData, errResult := requireArg(req, "json_data")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	serializer := vsm.NewSerializer()
@@ -279,33 +251,27 @@ func handleValueStreamDeserialization(ctx context.Context, req mcp.CallToolReque
 		return mcp.NewToolResultError(fmt.Sprintf("Deserialization failed: %v", err)), nil
 	}
 
-	resultJSON, err := json.MarshalIndent(vs, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to serialize result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Value stream deserialized successfully:\n%s", string(resultJSON))), nil
+	return jsonResult("Value stream deserialized successfully:\n", vs), nil
 }
 
 func handleSaveToFile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	valueStreamJSON, err := req.RequireString("value_stream_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing value_stream_json: %v", err)), nil
+	valueStreamJSON, errResult := requireArg(req, "value_stream_json")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	filename, err := req.RequireString("filename")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing filename: %v", err)), nil
+	filename, errResult := requireArg(req, "filename")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	var vs vsm.ValueStream
-	if err := json.Unmarshal([]byte(valueStreamJSON), &vs); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid value stream JSON: %v", err)), nil
+	vs, errResult := decodeArg[vsm.ValueStream](valueStreamJSON, "Invalid value stream JSON")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	serializer := vsm.NewSerializer()
-	err = serializer.SaveToFile(&vs, filename)
-	if err != nil {
+	if err := serializer.SaveToFile(&vs, filename); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Save to file failed: %v", err)), nil
 	}
 
@@ -313,70 +279,60 @@ func handleSaveToFile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 }
 
 func handleLoadFromFile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	filename, err := req.RequireString("filename")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing filename: %v", err)), nil
+	filename, errResult := requireArg(req, "filename")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	serializer := vsm.NewSerializer()
 	var vs vsm.ValueStream
-	err = serializer.LoadFromFile(filename, &vs)
-	if err != nil {
+	if err := serializer.LoadFromFile(filename, &vs); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Load from file failed: %v", err)), nil
 	}
 
-	resultJSON, err := json.MarshalIndent(vs, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to serialize result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Value stream loaded from file '%s':\n%s", filename, string(resultJSON))), nil
+	return jsonResult(fmt.Sprintf("Value stream loaded from file '%s':\n", filename), vs), nil
 }
 
 // VSM Utility Handlers
 
 func handleKPICalculation(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	valueStreamJSON, err := req.RequireString("value_stream_json")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing value_stream_json: %v", err)), nil
+	valueStreamJSON, errResult := requireArg(req, "value_stream_json")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	var vs vsm.ValueStream
-	if err := json.Unmarshal([]byte(valueStreamJSON), &vs); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Invalid value stream JSON: %v", err)), nil
+	vs, errResult := decodeArg[vsm.ValueStream](valueStreamJSON, "Invalid value stream JSON")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	calculator := vsm.NewCalculator()
 	kpis := calculator.CalculateKPIs(&vs)
 
-	resultJSON, err := json.MarshalIndent(kpis, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to serialize result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("KPIs calculated successfully:\n%s", string(resultJSON))), nil
+	return jsonResult("KPIs calculated successfully:\n", kpis), nil
 }
 
 func handleCreateValueStream(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	id, err := req.RequireString("id")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing id: %v", err)), nil
+	id, errResult := requireArg(req, "id")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	name, err := req.RequireString("name")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing name: %v", err)), nil
+	name, errResult := requireArg(req, "name")
+	if errResult != nil {
+		return errResult, nil
 	}
 
-	productFamily, err := req.RequireString("product_family")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Missing product_family: %v", err)), nil
+	productFamily, errResult := requireArg(req, "product_family")
+	if errResult != nil {
+		return errResult, nil
 	}
 
 	var customer *vsm.Customer
 	if customerJSON := req.GetString("customer_json", ""); customerJSON != "" {
-		if err := json.Unmarshal([]byte(customerJSON), &customer); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Invalid customer JSON: %v", err)), nil
+		customer, errResult = decodeArg[*vsm.Customer](customerJSON, "Invalid customer JSON")
+		if errResult != nil {
+			return errResult, nil
 		}
 	}
 
@@ -393,10 +349,5 @@ func handleCreateValueStream(ctx context.Context, req mcp.CallToolRequest) (*mcp
 		Version:       "1.0",
 	}
 
-	resultJSON, err := json.MarshalIndent(vs, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to serialize result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Value stream created successfully:\n%s", string(resultJSON))), nil
+	return jsonResult("Value stream created successfully:\n", vs), nil
 }
