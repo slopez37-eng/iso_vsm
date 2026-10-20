@@ -480,7 +480,7 @@ func (d *Designer) designFutureStateFromTargets(current *ValueStream, targets *F
 		// over unchanged: without targets the future state knows exactly
 		// what the current state knows.
 		WasteAssumptions:       current.WasteAssumptions.Clone(),
-		InformationFlowQuality: cloneFloat(current.InformationFlowQuality),
+		InformationFlowQuality: clonePtr(current.InformationFlowQuality),
 		CreatedAt:              time.Now(),
 		UpdatedAt:              time.Now(),
 	}

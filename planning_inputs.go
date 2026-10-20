@@ -119,11 +119,6 @@ func rate(in MeasureInput, fallbackImpact, fallbackEffort *int) (impact, effort 
 	return impact, effort, 0, "Not prioritised: " + strings.Join(missing, " and ") + " rating not entered"
 }
 
-// cloneFloat is clonePtr for a *float64 (design.go still calls it).
-func cloneFloat(p *float64) *float64 {
-	return clonePtr(p)
-}
-
 // validateMeasureInputs returns an error for an input outside its range
 // (rating not 1–5, negative or non-finite money) or keyed by an ID not in
 // known (what names the IDs, e.g. "improvement potential or continuous
