@@ -448,91 +448,78 @@ type ProcessParameters struct {
 
 #### Main Components
 
+None of the components has configuration options; create each with its `New…` function. The listings below show the main public methods.
+
 ##### Analyzer
 Performs current state analysis and bottleneck detection.
 
 ```go
-type Analyzer struct {
-    // Configuration options
-    SensitivityThreshold float64 // Bottleneck detection sensitivity (0.0-1.0)
-    IncludeWasteAnalysis bool    // Enable detailed waste analysis
-}
-
-// Methods
 func NewAnalyzer() *Analyzer
 func (a *Analyzer) AnalyzeCurrentState(vs *ValueStream) (*AnalysisResult, error)
-func (a *Analyzer) DetectBottlenecks(vs *ValueStream) ([]Bottleneck, error)
+func (a *Analyzer) IdentifyBottlenecks(vs *ValueStream) ([]BottleneckInfo, error)
+func (a *Analyzer) AnalyzeIdleTimes(vs *ValueStream) (*IdleTimeAnalysis, error)
 func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error)
+func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error)
+func (a *Analyzer) CalculateProcessLoad(process Process, vs *ValueStream) (capacity, utilization float64, ok bool)
+func (a *Analyzer) GenerateRecommendations(result *AnalysisResult) []string
+func (a *Analyzer) SelectProductFamily(products []ProductFamily) (*ProductFamily, error)
 ```
 
 ##### Designer
-Creates future state designs and improvement opportunities.
+Creates ideal and future state designs and improvement potentials.
 
 ```go
-type Designer struct {
-    // Configuration options
-    TargetEfficiency    float64 // Target process efficiency
-    MaxImprovements     int     // Maximum improvements to suggest
-    IncludeIdealState   bool    // Generate ideal state design
-}
-
-// Methods
 func NewDesigner() *Designer
-func (d *Designer) DesignFutureState(analysis *AnalysisResult, project *Project) (*DesignResult, error)
-func (d *Designer) GenerateIdealState(vs *ValueStream) (*ValueStream, error)
+func (d *Designer) DesignFutureState(current *ValueStream, analysis *AnalysisResult) (*DesignResult, error)
+func (d *Designer) DesignFutureStateWithTargets(current *ValueStream, analysis *AnalysisResult, targets *FutureStateTargets) (*DesignResult, error)
+func (d *Designer) DesignFutureStateWithInputs(current *ValueStream, analysis *AnalysisResult, targets *FutureStateTargets, inputs map[string]MeasureInput) (*DesignResult, error)
+func (d *Designer) CreateIdealState(current *ValueStream) (*ValueStream, error)
+func (d *Designer) DesignFutureStateFromIdeal(ideal, current *ValueStream) (*ValueStream, error)
+func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *FutureStateTargets) (*ValueStream, error)
+func (d *Designer) IdentifyImprovementPotentials(vs *ValueStream, analysis *AnalysisResult) ([]ImprovementPotential, error)
+func (d *Designer) PrioritizeImprovementPotentials(potentials []ImprovementPotential, inputs map[string]MeasureInput) ([]ImprovementPotential, error)
+func (d *Designer) IdentifyContinuousImprovements(vs *ValueStream, analysis *AnalysisResult) []ContinuousImprovement
+func (d *Designer) ApplyDesignPrinciples(current, future *ValueStream) []DesignPrinciple
 ```
 
 ##### Planner
-Develops implementation plans with SMART measures.
+Develops implementation plans, catalogues of measures and workshops.
 
 ```go
-type Planner struct {
-    // Configuration options
-    MeasureComplexity   MeasureComplexity // Simple, Medium, Complex
-    IncludeWorkshops    bool             // Generate workshop plans
-    TimelineBuffer      float64          // Timeline buffer percentage
-}
-
-// Methods
 func NewPlanner() *Planner
-func (p *Planner) PlanImplementation(design *DesignResult, project *Project) (*PlanningResult, error)
-func (p *Planner) GenerateSMARTMeasures(improvements []ImprovementPotential) ([]Measure, error)
+func (p *Planner) PlanImplementation(design *DesignResult, project *VSMProject) (*PlanningResult, error)
+func (p *Planner) PlanImplementationWithInputs(design *DesignResult, project *VSMProject, inputs *PlanningInputs) (*PlanningResult, error)
+func (p *Planner) CreateCatalogueOfMeasures(design *DesignResult, project *VSMProject) (*CatalogueOfMeasures, error)
+func (p *Planner) PlanWorkshop(design *DesignResult, project *VSMProject) (*WorkshopPlan, error)
+func (p *Planner) CreateImplementationPlan(catalogue *CatalogueOfMeasures) (*ImplementationPlan, error)
+func (p *Planner) AssessRisks(design *DesignResult, implementation *ImplementationPlan) []Risk
 ```
 
 ##### Assessor
-Monitors performance and manages PDCA cycles.
+Assesses performance against targets; action items come back inside the assessment result.
 
 ```go
-type Assessor struct {
-    // Configuration options
-    AssessmentPeriod    time.Duration    // Assessment period
-    TrendAnalysisPoints int             // Number of data points for trending
-    PDCAEnabled         bool            // Enable PDCA cycle management
-}
-
-// Methods
 func NewAssessor() *Assessor
-func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64, history []PerformanceData) (*Assessment, error)
-func (a *Assessor) GenerateActionItems(assessment *Assessment) ([]ActionItem, error)
+func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64, history []AssessmentResult) (*AssessmentResult, error)
+func (a *Assessor) CompareAssessments(current, previous *AssessmentResult) map[string]float64
 ```
 
 ##### Calculator
-Performs all KPI calculations according to ISO 22468:2020 Annex A.
+Performs the KPI calculations of ISO 22468:2020 Annex A.
 
 ```go
-type Calculator struct {
-    // Configuration options
-    Precision       int     // Decimal precision for calculations
-    IncludeAdvanced bool    // Calculate advanced KPIs
-}
-
-// Methods
 func NewCalculator() *Calculator
-func (c *Calculator) CalculateKPIs(vs *ValueStream) (map[string]float64, error)
-func (c *Calculator) CalculateProcessTime(p *Process) float64
-func (c *Calculator) CalculateLeadTime(vs *ValueStream) float64
-func (c *Calculator) CalculateValueAddedRatio(vs *ValueStream) float64
+func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64
+func (c *Calculator) CalculateImprovementMetrics(current, future *ValueStream) map[string]float64
+func (c *Calculator) ResolveParameters(params ProcessParameters) ProcessParameters
+func (c *Calculator) ResolveParametersInStream(params ProcessParameters, vs *ValueStream) ProcessParameters
+func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
+func (c *Calculator) CalculateProcessTime(params ProcessParameters) float64
+func (c *Calculator) CalculateLeadTime(params ProcessParameters) float64
+func (c *Calculator) CalculateValueAddedRatio(valueAddingTime, leadTime float64) float64
 ```
+
+The Calculator also offers one method per Annex A formula (for example `CalculateCustomerTakt`, `CalculateYieldFactor`, `CalculateInventoryTime`, `ConvertTimeUnit`).
 
 <a name="42-calculation-procedures"></a>
 ### 4.2 Calculation Procedures

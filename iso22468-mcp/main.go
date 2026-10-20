@@ -93,7 +93,6 @@ func setupVSMDesignTools(s *server.MCPServer) {
 		mcp.WithDescription("Design future state improvements for a value stream based on analysis results"),
 		requiredStringArg("current_state_json", "JSON representation of the current ValueStream state"),
 		requiredStringArg("analysis_result_json", "JSON representation of the analysis results"),
-		requiredStringArg("project_json", "JSON representation of the VSM project details"),
 	)
 
 	s.AddTool(designTool, handleFutureStateDesign)
@@ -140,10 +139,6 @@ func setupVSMSerializationTools(s *server.MCPServer) {
 		mcp.WithBoolean("pretty_print",
 			mcp.DefaultBool(false),
 			mcp.Description("Enable pretty-printed JSON output"),
-		),
-		mcp.WithBoolean("include_metadata",
-			mcp.DefaultBool(true),
-			mcp.Description("Include timestamps and version metadata"),
 		),
 	)
 
