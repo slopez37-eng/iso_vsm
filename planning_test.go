@@ -68,7 +68,7 @@ func TestPayback(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			months, never := NewPlanner().calculatePaybackPeriod(tt.costs)
+			months, never := calculatePayback(tt.costs)
 			if never != tt.never || (months == nil) != (tt.months == nil) || (months != nil && !approx(*months, *tt.months)) {
 				t.Errorf("got (%v, %v), want (%v, %v)", fmtPtr(months), never, fmtPtr(tt.months), tt.never)
 			}

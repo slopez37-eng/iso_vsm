@@ -3,7 +3,9 @@ package vsm
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -292,7 +294,7 @@ func (p *Planner) createCatalogue(design *DesignResult, project *VSMProject, inp
 		return nil, err
 	}
 	if inputs.StartDate != nil {
-		for _, id := range sortedInputIDs(inputs.Measures) {
+		for _, id := range slices.Sorted(maps.Keys(inputs.Measures)) {
 			if due := inputs.Measures[id].DueDate; due != nil && due.Before(*inputs.StartDate) {
 				return nil, fmt.Errorf("measure %q is due on %s, before the start date %s",
 					id, due.Format(time.DateOnly), inputs.StartDate.Format(time.DateOnly))
@@ -301,13 +303,21 @@ func (p *Planner) createCatalogue(design *DesignResult, project *VSMProject, inp
 	}
 
 	current := &project.CurrentState
+	// The stream-level KPIs of both states are the same for every measure.
+	calc := NewCalculator()
+	unit := calc.ReferenceTimeUnit(current.Processes)
+	curKPIs := calc.kpisInUnit(current, unit)
+	var futKPIs map[string]float64
+	if design.FutureState != nil {
+		futKPIs = calc.kpisInUnit(design.FutureState, unit)
+	}
 	for _, potential := range design.ImprovementPotentials {
 		catalogue.Measures = append(catalogue.Measures,
-			p.convertPotentialToMeasure(potential, inputs.Measures[potential.ID], current, design.FutureState, design.DesignedAt))
+			p.convertPotentialToMeasure(potential, inputs.Measures[potential.ID], current, design.FutureState, design.DesignedAt, curKPIs, futKPIs))
 	}
 	for _, improvement := range design.ContinuousImprovements {
 		catalogue.Measures = append(catalogue.Measures,
-			p.convertImprovementToMeasure(improvement, inputs.Measures[improvement.ID], current, design.FutureState, design.DesignedAt))
+			p.convertImprovementToMeasure(improvement, inputs.Measures[improvement.ID], current, design.FutureState, design.DesignedAt, curKPIs, futKPIs))
 	}
 
 	sort.SliceStable(catalogue.Measures, func(i, j int) bool {
@@ -328,17 +338,13 @@ func priorityRank(priority int) int {
 // measure with the user's input for it. Ratings entered in the input
 // replace the potential's; without them, the potential's ratings (entered
 // at design time) are used.
-func (p *Planner) convertPotentialToMeasure(potential ImprovementPotential, in MeasureInput, current, future *ValueStream, baseDate time.Time) ImprovementMeasure {
+func (p *Planner) convertPotentialToMeasure(potential ImprovementPotential, in MeasureInput, current, future *ValueStream, baseDate time.Time, curKPIs, futKPIs map[string]float64) ImprovementMeasure {
 	impact, effort, priority, note := rate(in, potential.ImpactRating, potential.EffortRating)
 	responsible := in.Responsible
 	if responsible == "" {
 		responsible = "TBD" // To be determined
 	}
-	var due *time.Time
-	if in.DueDate != nil {
-		d := *in.DueDate
-		due = &d
-	}
+	due := clonePtr(in.DueDate)
 	return ImprovementMeasure{
 		ID:           potential.ID,
 		Title:        p.generateMeasureTitle(potential),
@@ -352,7 +358,7 @@ func (p *Planner) convertPotentialToMeasure(potential ImprovementPotential, in M
 		Status:       "planned",
 		SMART: SMARTGoal{
 			Specific:   p.generateSpecificGoal(potential),
-			Measurable: measurableGoal(current, future, potential.ProcessID),
+			Measurable: measurableGoal(current, future, potential.ProcessID, curKPIs, futKPIs),
 			Accepted:   acceptedGoal(in.Responsible),
 			Realistic:  realisticGoal(effort),
 			TimeBound:  due,
@@ -364,7 +370,7 @@ func (p *Planner) convertPotentialToMeasure(potential ImprovementPotential, in M
 }
 
 // convertImprovementToMeasure converts a continuous improvement to a measure
-func (p *Planner) convertImprovementToMeasure(improvement ContinuousImprovement, in MeasureInput, current, future *ValueStream, baseDate time.Time) ImprovementMeasure {
+func (p *Planner) convertImprovementToMeasure(improvement ContinuousImprovement, in MeasureInput, current, future *ValueStream, baseDate time.Time, curKPIs, futKPIs map[string]float64) ImprovementMeasure {
 	potential := ImprovementPotential{
 		ID:           improvement.ID,
 		Type:         improvement.Type,
@@ -374,7 +380,7 @@ func (p *Planner) convertImprovementToMeasure(improvement ContinuousImprovement,
 		ImpactRating: improvement.ImpactRating,
 		EffortRating: improvement.EffortRating,
 	}
-	return p.convertPotentialToMeasure(potential, in, current, future, baseDate)
+	return p.convertPotentialToMeasure(potential, in, current, future, baseDate, curKPIs, futKPIs)
 }
 
 // generateMeasureTitle generates a clear title for the measure
@@ -438,7 +444,7 @@ type goalMetric struct {
 // targets, computed by the calculator: cycle time and lead time of the
 // process, or total lead time and value added ratio of the stream. A value
 // the targets do not change says "target not set"; no change is invented.
-func measurableGoal(current, future *ValueStream, processID string) string {
+func measurableGoal(current, future *ValueStream, processID string, curKPIs, futKPIs map[string]float64) string {
 	if current == nil {
 		return "Target not set: no current state"
 	}
@@ -476,11 +482,6 @@ func measurableGoal(current, future *ValueStream, processID string) string {
 			{name: "lead time at " + name, current: pick(cur, curOK, lead), future: pick(fut, futOK, lead)},
 		}
 	} else {
-		curKPIs := calc.kpisInUnit(current, unit)
-		var futKPIs map[string]float64
-		if future != nil {
-			futKPIs = calc.kpisInUnit(future, unit)
-		}
 		get := func(kpis map[string]float64, name string) *float64 {
 			if v, ok := kpis[name]; ok {
 				return F(v)
@@ -544,13 +545,6 @@ func formatNumber(v float64) string {
 	return strconv.FormatFloat(math.Round(v*1e4)/1e4, 'f', -1, 64)
 }
 
-// calculatePaybackPeriod returns the payback period in months for costs
-// (see Costs): months is nil when not estimated (an amount not entered) or
-// when the measure never pays back (never is then true).
-func (p *Planner) calculatePaybackPeriod(costs Costs) (months *float64, never bool) {
-	return calculatePayback(costs)
-}
-
 // PlanWorkshop creates a workshop plan for discussing the value stream
 // plan, not scheduled (see PlanImplementationWithInputs for the date).
 func (p *Planner) PlanWorkshop(design *DesignResult, project *VSMProject) (*WorkshopPlan, error) {
@@ -583,10 +577,7 @@ func (p *Planner) planWorkshop(design *DesignResult, project *VSMProject, date *
 			"Whiteboard and markers",
 		},
 	}
-	if date != nil {
-		d := *date
-		workshop.Date = &d
-	}
+	workshop.Date = clonePtr(date)
 
 	// Suggested participant roles
 	workshop.Participants = []WorkshopParticipant{
@@ -662,7 +653,7 @@ func (p *Planner) createImplementationPlan(catalogue *CatalogueOfMeasures, start
 		{ID: "phase_2", Name: "Core Improvements", Description: "Implement priority 2 measures (impact rated equal to effort)", Status: "planned"},
 		{ID: "phase_3", Name: "Advanced Improvements", Description: "Implement priority 3 measures (effort rated above impact)", Status: "planned"},
 	}
-	chain := cloneTime(start)
+	chain := clonePtr(start)
 	for i := range plan.Phases {
 		phase := &plan.Phases[i]
 		measures := byPriority[i+1]
@@ -673,7 +664,7 @@ func (p *Planner) createImplementationPlan(catalogue *CatalogueOfMeasures, start
 		if len(measures) == 0 {
 			continue
 		}
-		phase.StartDate = cloneTime(chain)
+		phase.StartDate = clonePtr(chain)
 		if phase.StartDate != nil {
 			for _, m := range measures {
 				if due := m.SMART.TimeBound; due != nil && due.Before(*phase.StartDate) {
@@ -684,11 +675,11 @@ func (p *Planner) createImplementationPlan(catalogue *CatalogueOfMeasures, start
 			}
 		}
 		phase.EndDate = latestDueDate(measures)
-		chain = cloneTime(phase.EndDate)
+		chain = clonePtr(phase.EndDate)
 	}
 
 	plan.Timeline = Timeline{
-		StartDate:     cloneTime(start),
+		StartDate:     clonePtr(start),
 		EndDate:       latestDueDate(catalogue.Measures),
 		CriticalPath:  append([]string{}, plan.Phases[0].Measures...),
 		KeyMilestones: []string{"milestone_quick_wins", "milestone_mid_term", "milestone_full_implementation"},
@@ -700,11 +691,11 @@ func (p *Planner) createImplementationPlan(catalogue *CatalogueOfMeasures, start
 
 	plan.Milestones = []Milestone{
 		{ID: "milestone_quick_wins", Name: "Quick Wins Completed",
-			Description: "All priority 1 measures implemented", Date: cloneTime(plan.Phases[0].EndDate)},
+			Description: "All priority 1 measures implemented", Date: clonePtr(plan.Phases[0].EndDate)},
 		{ID: "milestone_mid_term", Name: "Mid-term Review",
 			Description: "Review progress (date to be set by the team)"},
 		{ID: "milestone_full_implementation", Name: "Full Implementation",
-			Description: "All measures implemented and stable", Date: cloneTime(plan.Timeline.EndDate)},
+			Description: "All measures implemented and stable", Date: clonePtr(plan.Timeline.EndDate)},
 	}
 
 	totals := calculateCostTotals(catalogue.Measures)
@@ -750,15 +741,7 @@ func latestDueDate(measures []ImprovementMeasure) *time.Time {
 			latest = due
 		}
 	}
-	return cloneTime(latest)
-}
-
-func cloneTime(t *time.Time) *time.Time {
-	if t == nil {
-		return nil
-	}
-	v := *t
-	return &v
+	return clonePtr(latest)
 }
 
 // riskChecklist is the list of typical implementation risks the plan
@@ -798,7 +781,7 @@ func (p *Planner) assessRisks(inputs map[string]RiskInput) ([]Risk, error) {
 	}
 	for i := range risks {
 		in := inputs[risks[i].ID]
-		risks[i].Probability, risks[i].Impact = cloneFloat(in.Probability), cloneFloat(in.Impact)
+		risks[i].Probability, risks[i].Impact = clonePtr(in.Probability), clonePtr(in.Impact)
 		if in.Probability != nil && in.Impact != nil {
 			risks[i].Severity = F(*in.Probability * *in.Impact)
 		} else {
