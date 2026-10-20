@@ -88,7 +88,7 @@ Each formula is also a plain function. Use these when you only need one calculat
 
 Every number in the model is optional. `nil` means "not entered" and a pointer to 0 means an entered zero (`vsm.F(0)`). The evaluator never treats a missing number as zero.
 
-`Evaluate` repeatedly applies the formulas and records the formula behind each derived value as its `Source`. For the sums (A.1, A.2, A.3, A.6, A.8, A.9 and A.17), whenever all terms but one are known it derives the missing one. For the products and quotients (A.5, A.7, A.10, A.11 and A.12), it derives only the result, never a missing factor. Once nothing more can be derived, it checks every formula whose terms are all known. A mismatch becomes a **warning** that names the formula; your entered value is kept. Invalid input becomes an **error**, and that value is ignored. Examples are negative times, rates above 1, duplicate ids and references to unknown processes. A **note** explains a gap, for example which segments still lack a time so that the lead time is unknown.
+`Evaluate` repeatedly applies the formulas and records the formula behind each derived value as its `Source`. For the sums (A.1, A.2, A.3, A.6, A.8, A.9 and A.17), whenever all terms but one are known it derives the missing one. For the products and quotients (A.7, A.10, A.11 and A.12), it derives only the result, never a missing factor. Once nothing more can be derived, it checks every formula whose terms are all known. A mismatch becomes a **warning** that names the formula; your entered value is kept. Invalid input becomes an **error**, and that value is ignored. Examples are negative times, rates above 1, duplicate ids and references to unknown processes. A **note** explains a gap, for example which segments still lack a time so that the lead time is unknown.
 
 All times in one value stream use its `time_unit` (`s`, `min`, `h` or `d`, where a day is 24 hours). Rates are fractions: 25 % is `0.25`.
 
@@ -98,7 +98,9 @@ The test suite reproduces the standard's worked example (A.3.4) step by step wit
 
 The standard leaves some points open, and a few of its formulas read oddly. This library resolves them as follows.
 
-**A.5** is implemented exactly as printed: process time = cycle time × (process quantity × number of resources). Common lean practice divides by resources instead. Because of this, the evaluator uses A.5 only as a last resort, when nothing else gives the process time, and adds a note each time it does.
+**Cycle time** is the observed interval at which the whole process completes products, losses included. This is the classic lean definition, the one you plot against takt. It is not a single machine's own cycle, and it is not divided by the number of resources: the observed interval already reflects any parallel machines.
+
+**A.5** is available exactly as printed, as `ProcessTimeFromCycleTime`: process time = cycle time × (process quantity × number of resources). The evaluator never applies it. With the cycle time above, Little's law gives process time = cycle time × work in process, with no resources term. A.5 matches that only if process quantity means the work in process *per resource*. Table A.2 instead defines it as the total number of orders being processed, and read that way A.5 overstates process time by the number of resources. The law also relates steady-state averages, and process quantity counts orders while cycle time is per product, so A.5 additionally assumes one product per order. When a process lacks a process time but has the A.5 inputs, a note shows what A.5 would give, so you can judge it and enter `process_time` yourself.
 
 **Process time** is made of setup, processing, waiting (within the process), handling and down time, following A.8. Ancillary time runs in parallel to process time and is not part of it (Figure A.1, Table A.2).
 
@@ -110,7 +112,7 @@ The standard leaves some points open, and a few of its formulas read oddly. This
 
 **Idle segments** add no value from the customer's view (clause 4.5.2). They therefore carry only non-value-adding and necessary non-value-adding time. For a process, process lead time equals process time (Table A.2), so VAT + NVAT + NNVAT of a process must equal its process time.
 
-**Bottleneck** (definition 3.2) is the process with the highest cycle time per resource. **Utilization** is cycle time ÷ (resources × customer takt). When resources are not entered, both treat them as 1.
+**Takt load** is cycle time ÷ customer takt: how much of a process's capacity customer demand takes up, as on a leveling chart. Above 100 % the process cannot keep up. It is not equipment utilization, which would need each resource's busy time. **Bottleneck** (definition 3.2) is the process with the longest cycle time. That identifies the most heavily loaded process because every process in one value stream shares the stream's operating time and product family.
 
 **Rework rate** is stored as entered (Table A.2 defines it as a share). The A.15 form, the change of yield between iterations, is available as `ReworkRate`. The stream's scrap rate and yield factor come from the `quality` counts. The process yield factor and scrap rate are linked by A.17.
 

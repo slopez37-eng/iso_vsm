@@ -97,9 +97,9 @@ func TestEvaluateIdleTime(t *testing.T) {
 	wantValue(t, "storage", i.StorageTime, 3, "A.9")
 	wantValue(t, "idle", i.IdleTime, 5.2, "A.2")
 	wantValue(t, "lead time", r.Totals.LeadTime, 5.95, "A.4")
-	wantValue(t, "P2 utilization", r.Processes[1].Utilization, 0.6, "3.2")
-	if r.Bottleneck != "P1" {
-		t.Errorf("bottleneck = %q, want P1 (0.4 per resource beats 0.6 over 2 resources)", r.Bottleneck)
+	wantValue(t, "P2 takt load", r.Processes[1].TaktLoad, 1.2, "A.12")
+	if r.Bottleneck != "P2" {
+		t.Errorf("bottleneck = %q, want P2 (cycle time 0.6 beats 0.4)", r.Bottleneck)
 	}
 }
 
@@ -118,13 +118,15 @@ func TestEvaluateRangeNeedsPeriodLength(t *testing.T) {
 	}
 }
 
-func TestEvaluateA5IsLastResort(t *testing.T) {
+func TestEvaluateNeverAppliesA5(t *testing.T) {
 	vs := &ValueStream{Name: "x", TimeUnit: Second, Processes: []Process{
 		{ID: "P1", CycleTime: F(2), ProcessQuantity: F(3), Resources: F(4)},
 		{ID: "P2", CycleTime: F(2), ProcessQuantity: F(3), Resources: F(4), SetupTime: F(1), RepetitionTime: F(1), Repetitions: F(5)},
 	}}
 	r := Evaluate(vs)
-	wantValue(t, "P1 process time", r.Processes[0].ProcessTime, 24, "A.5")
+	if r.Processes[0].ProcessTime.Known {
+		t.Errorf("P1 process time %v was derived; A.5 must not be applied", r.Processes[0].ProcessTime)
+	}
 	wantValue(t, "P2 process time", r.Processes[1].ProcessTime, 6, "A.6")
 	if n := len(issuesWith(r, SeverityNote, "A.5")); n != 1 {
 		t.Errorf("want one A.5 note, got %d", n)

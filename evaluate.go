@@ -97,9 +97,10 @@ type ProcessResult struct {
 	NecessaryNonValueAdding Value  `json:"necessary_non_value_adding_time"`
 	ScrapRate               Value  `json:"scrap_rate"`
 	YieldFactor             Value  `json:"yield_factor"`
-	// Utilization is cycle time ÷ (resources × customer takt). Above 1 the
-	// process cannot meet demand.
-	Utilization Value `json:"utilization"`
+	// TaktLoad is cycle time ÷ customer takt: the share of the process's
+	// capacity that customer demand takes up. Above 1 the process cannot meet
+	// demand. It says nothing about how busy each resource is.
+	TaktLoad Value `json:"takt_load"`
 }
 
 // IdleResult holds the resolved times of one idle segment.
@@ -202,17 +203,11 @@ func Evaluate(vs *ValueStream) Result {
 	for i := range vs.Idles {
 		e.idles = append(e.idles, e.idleCells(&vs.Idles[i]))
 	}
-	for {
-		if e.derive() {
-			continue
-		}
-		if e.applyA5() {
-			continue
-		}
-		break
+	for e.derive() {
 	}
 	e.checking = true
 	e.derive()
+	e.noteA5()
 	return e.result()
 }
 
@@ -475,17 +470,17 @@ func (e *evaluator) derive() bool {
 	return changed
 }
 
-// applyA5 fills a still-unknown process time from A.5, one process at a time.
-func (e *evaluator) applyA5() bool {
+// noteA5 reports what A.5 would give for a process whose process time is
+// still unknown. A.5 is never applied: it holds only if process quantity is
+// the work in process per resource, which Table A.2 does not say.
+func (e *evaluator) noteA5() {
 	for _, c := range e.procs {
 		if !c.pt.known && c.ct.known && c.pq.known && c.res.known {
-			c.pt.set(ProcessTimeFromCycleTime(c.ct.v, c.pq.v, c.res.v), "A.5")
 			e.add(SeverityNote, c.subject, "A.5",
-				"process time %g comes from A.5 as printed (cycle time × process quantity × resources); enter process_time if that is not what you measured", c.pt.v)
-			return true
+				"A.5 as printed would give a process time of %g (cycle time × process quantity × resources), but it holds only if process quantity is the work in process per resource, so it is not applied; enter process_time",
+				ProcessTimeFromCycleTime(c.ct.v, c.pq.v, c.res.v))
 		}
 	}
-	return false
 }
 
 // sumRel applies total = Σ parts. With every term known it checks the
@@ -587,11 +582,7 @@ func (e *evaluator) result() Result {
 			NecessaryNonValueAdding: c.nnvat.value(), ScrapRate: c.sr.value(), YieldFactor: c.yf.value(),
 		}
 		if c.ct.known && e.takt.known && e.takt.v > 0 {
-			res := 1.0
-			if c.res.known && c.res.v > 0 {
-				res = c.res.v
-			}
-			pr.Utilization = Value{Value: c.ct.v / (res * e.takt.v), Known: true, Source: "3.2"}
+			pr.TaktLoad = Value{Value: c.ct.v / e.takt.v, Known: true, Source: "A.12"}
 		}
 		r.Processes = append(r.Processes, pr)
 		pts = append(pts, c.pt)
@@ -692,21 +683,20 @@ func (e *evaluator) result() Result {
 	return r
 }
 
-// bottleneck returns the process with the highest load, cycle time per
-// resource (definition 3.2). Processes without a cycle time are skipped.
+// bottleneck returns the most heavily loaded process (definition 3.2). Cycle
+// time is the interval at which the whole process completes products, and all
+// processes share the stream's operating time and product family, so the
+// longest cycle time carries the highest load. Processes without a cycle time
+// are skipped.
 func (e *evaluator) bottleneck() string {
-	best, bestLoad, skipped := "", -1.0, 0
+	best, bestCT, skipped := "", -1.0, 0
 	for _, c := range e.procs {
 		if !c.ct.known {
 			skipped++
 			continue
 		}
-		res := 1.0
-		if c.res.known && c.res.v > 0 {
-			res = c.res.v
-		}
-		if load := c.ct.v / res; load > bestLoad {
-			best, bestLoad = c.p.ID, load
+		if c.ct.v > bestCT {
+			best, bestCT = c.p.ID, c.ct.v
 		}
 	}
 	if best != "" && skipped > 0 {

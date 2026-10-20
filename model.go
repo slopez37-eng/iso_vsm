@@ -102,7 +102,7 @@ type Process struct {
 	Resources *float64 `json:"resources,omitempty"` // #RES
 
 	ProcessTime    *float64  `json:"process_time,omitempty"`    // PT
-	CycleTime      *float64  `json:"cycle_time,omitempty"`      // CT
+	CycleTime      *float64  `json:"cycle_time,omitempty"`      // CT, observed interval between products leaving the whole process
 	SetupTime      *float64  `json:"setup_time,omitempty"`      // ST
 	ProcessingTime *float64  `json:"processing_time,omitempty"` // PRT
 	HandlingTime   *float64  `json:"handling_time,omitempty"`   // HT
