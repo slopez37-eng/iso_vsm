@@ -167,17 +167,14 @@ func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64
 			Name:        name,
 			Value:       value,
 			MeasuredAt:  time.Now(),
-			Description: a.getKPIDescription(name),
+			Description: kpiDescription(name),
 		}
 
 		// Set target and unit
 		if hasTarget {
 			measure.Target = F(target)
 		}
-		measure.Unit = a.getKPIUnit(name)
-		if measure.Unit == "time" && result.TimeUnit != "" {
-			measure.Unit = string(result.TimeUnit)
-		}
+		measure.Unit = kpiUnitIn(name, result.TimeUnit)
 		if name == "inventory_turns" && result.DemandPeriod != "" {
 			measure.Unit = "turns per " + string(result.DemandPeriod)
 		}
@@ -231,30 +228,6 @@ func (a *Assessor) AssessValueStream(vs *ValueStream, targets map[string]float64
 	}
 
 	return result, nil
-}
-
-// getKPIDescription returns description for a KPI
-func (a *Assessor) getKPIDescription(name string) string {
-	descriptions := map[string]string{
-		"customer_takt":           "Time interval corresponding to customer demand",
-		"total_lead_time":         "Total time from order to delivery",
-		"total_value_adding_time": "Total time adding value to product",
-		"value_added_ratio":       "Ratio of value-adding time to total lead time",
-		"process_efficiency":      "Efficiency of process operations",
-		"inventory_turns":         "Number of times inventory turns over",
-		"average_yield_factor":    "Average yield factor across processes",
-	}
-
-	if desc, exists := descriptions[name]; exists {
-		return desc
-	}
-	return "Key performance indicator"
-}
-
-// getKPIUnit returns the unit for a KPI. Ratio KPIs are fractions (0.25 =
-// 25%) and are labelled "ratio", not "%".
-func (a *Assessor) getKPIUnit(name string) string {
-	return kpiUnit(name)
 }
 
 // determineKPIStatus rates value against target in the KPI's better
@@ -565,15 +538,11 @@ func periodName(days float64) string {
 	return "monthly"
 }
 
-// calculateSlope calculates the slope of a linear trend
-func (a *Assessor) calculateSlope(dataPoints []DataPoint) float64 {
-	if len(dataPoints) < 2 {
-		return 0
-	}
-
-	n := float64(len(dataPoints))
-	sumX, sumY, sumXY, sumXX := 0.0, 0.0, 0.0, 0.0
-
+// regressionSums returns the number of points and the sums the linear
+// trend and the correlation are computed from. x is days since the first
+// point and y is the value. dataPoints must not be empty.
+func regressionSums(dataPoints []DataPoint) (n, sumX, sumY, sumXY, sumXX, sumYY float64) {
+	n = float64(len(dataPoints))
 	baseTime := dataPoints[0].Date.Unix()
 
 	for _, point := range dataPoints {
@@ -584,7 +553,18 @@ func (a *Assessor) calculateSlope(dataPoints []DataPoint) float64 {
 		sumY += y
 		sumXY += x * y
 		sumXX += x * x
+		sumYY += y * y
 	}
+	return n, sumX, sumY, sumXY, sumXX, sumYY
+}
+
+// calculateSlope calculates the slope of a linear trend
+func (a *Assessor) calculateSlope(dataPoints []DataPoint) float64 {
+	if len(dataPoints) < 2 {
+		return 0
+	}
+
+	n, sumX, sumY, sumXY, sumXX, _ := regressionSums(dataPoints)
 
 	numerator := n*sumXY - sumX*sumY
 	denominator := n*sumXX - sumX*sumX
@@ -602,21 +582,7 @@ func (a *Assessor) calculateCorrelation(dataPoints []DataPoint) float64 {
 		return 0
 	}
 
-	n := float64(len(dataPoints))
-	sumX, sumY, sumXY, sumXX, sumYY := 0.0, 0.0, 0.0, 0.0, 0.0
-
-	baseTime := dataPoints[0].Date.Unix()
-
-	for _, point := range dataPoints {
-		x := float64(point.Date.Unix()-baseTime) / (24 * 3600) // Days since first point
-		y := point.Value
-
-		sumX += x
-		sumY += y
-		sumXY += x * y
-		sumXX += x * x
-		sumYY += y * y
-	}
+	n, sumX, sumY, sumXY, sumXX, sumYY := regressionSums(dataPoints)
 
 	numerator := n*sumXY - sumX*sumY
 	denominator := math.Sqrt((n*sumXX - sumX*sumX) * (n*sumYY - sumY*sumY))
@@ -628,37 +594,49 @@ func (a *Assessor) calculateCorrelation(dataPoints []DataPoint) float64 {
 	return numerator / denominator
 }
 
+// actionRule is the action item a KPI status calls for.
+type actionRule struct {
+	description string // printf format: KPI name, current value, target
+	priority    int
+	assignedTo  string
+	days        int // days until due
+}
+
+// actionRules gives the action item for each KPI status that needs one.
+var actionRules = map[string]actionRule{
+	StatusCritical: {
+		description: "Address critical %s KPI (current: %.2f, target: %.2f)",
+		priority:    1,
+		assignedTo:  "VSM Coordinator",
+		days:        7, // 1 week
+	},
+	StatusWarning: {
+		description: "Improve %s KPI performance (current: %.2f, target: %.2f)",
+		priority:    2,
+		assignedTo:  "Process Owner",
+		days:        14, // 2 weeks
+	},
+}
+
 // generateActionItems generates action items based on KPI assessment
 func (a *Assessor) generateActionItems(kpis map[string]KPIMeasure, vs *ValueStream) []ActionItem {
 	items := []ActionItem{}
 	now := time.Now()
 
 	for name, kpi := range kpis {
-		if kpi.Status == StatusCritical {
-			item := ActionItem{
-				ID: fmt.Sprintf("action_%s_%d", name, now.Unix()),
-				Description: fmt.Sprintf("Address critical %s KPI (current: %.2f, target: %.2f)",
-					name, kpi.Value, num(kpi.Target)),
-				Priority:   1,
-				AssignedTo: "VSM Coordinator",
-				DueDate:    now.AddDate(0, 0, 7), // 1 week
-				Status:     "open",
-				CreatedAt:  now,
-			}
-			items = append(items, item)
-		} else if kpi.Status == StatusWarning {
-			item := ActionItem{
-				ID: fmt.Sprintf("action_%s_%d", name, now.Unix()),
-				Description: fmt.Sprintf("Improve %s KPI performance (current: %.2f, target: %.2f)",
-					name, kpi.Value, num(kpi.Target)),
-				Priority:   2,
-				AssignedTo: "Process Owner",
-				DueDate:    now.AddDate(0, 0, 14), // 2 weeks
-				Status:     "open",
-				CreatedAt:  now,
-			}
-			items = append(items, item)
+		rule, ok := actionRules[kpi.Status]
+		if !ok {
+			continue
 		}
+		items = append(items, ActionItem{
+			ID:          fmt.Sprintf("action_%s_%d", name, now.Unix()),
+			Description: fmt.Sprintf(rule.description, name, kpi.Value, num(kpi.Target)),
+			Priority:    rule.priority,
+			AssignedTo:  rule.assignedTo,
+			DueDate:     now.AddDate(0, 0, rule.days),
+			Status:      "open",
+			CreatedAt:   now,
+		})
 	}
 
 	return items

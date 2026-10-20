@@ -115,6 +115,15 @@ func F(v float64) *float64 { return &v }
 // I is F for the optional integer fields (counts).
 func I(v int) *int { return &v }
 
+// clonePtr returns a pointer to a copy of *p, or nil when p is nil.
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
 // Clone returns a copy of p that shares no pointers with p, so changing a
 // value in one (*copy.SetupTime = 3) does not change the other. Results
 // that are new states (resolved parameters, designed future and ideal
@@ -139,6 +148,16 @@ func (inv Inventory) Clone() Inventory {
 // cloneOptionals replaces every non-nil *float64 and *int field of the
 // struct v points to with a pointer to a copy of its value.
 func cloneOptionals(v any) {
+	eachOptional(v, func(f reflect.Value) {
+		c := reflect.New(f.Elem().Type())
+		c.Elem().Set(f.Elem())
+		f.Set(c)
+	})
+}
+
+// eachOptional calls fn with each settable, non-nil *float64 and *int field
+// of the struct v points to.
+func eachOptional(v any, fn func(f reflect.Value)) {
 	s := reflect.ValueOf(v).Elem()
 	for i := 0; i < s.NumField(); i++ {
 		f := s.Field(i)
@@ -146,9 +165,7 @@ func cloneOptionals(v any) {
 			continue
 		}
 		if k := f.Elem().Kind(); k == reflect.Float64 || k == reflect.Int {
-			c := reflect.New(f.Elem().Type())
-			c.Elem().Set(f.Elem())
-			f.Set(c)
+			fn(f)
 		}
 	}
 }

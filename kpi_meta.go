@@ -63,11 +63,14 @@ var kpiDirections = map[string]KPIDirection{
 	"inventory_turns":      HigherIsBetter,
 }
 
+// kpiNameReplacer turns the spaces and hyphens of a KPI name into underscores.
+var kpiNameReplacer = strings.NewReplacer(" ", "_", "-", "_")
+
 // normalizeKPIName lower-cases a KPI name and turns spaces and hyphens into
 // underscores, so "Lead Time" and "lead-time" match "lead_time".
 func normalizeKPIName(name string) string {
 	n := strings.ToLower(strings.TrimSpace(name))
-	return strings.NewReplacer(" ", "_", "-", "_").Replace(n)
+	return kpiNameReplacer.Replace(n)
 }
 
 // GetKPIDirection returns whether a higher or lower value of the named KPI
@@ -100,6 +103,35 @@ func kpiUnit(name string) string {
 		return unit
 	}
 	return "unit"
+}
+
+// kpiUnitIn is kpiUnit for an assessment with time unit unit: time KPIs take
+// the assessment's unit when it has one.
+func kpiUnitIn(name string, unit TimeUnit) string {
+	if u := kpiUnit(name); u != "time" || unit == "" {
+		return u
+	}
+	return string(unit)
+}
+
+// kpiDescriptions describes the KPIs CalculateKPIs produces.
+var kpiDescriptions = map[string]string{
+	"customer_takt":           "Time interval corresponding to customer demand",
+	"total_lead_time":         "Total time from order to delivery",
+	"total_value_adding_time": "Total time adding value to product",
+	"value_added_ratio":       "Ratio of value-adding time to total lead time",
+	"process_efficiency":      "Efficiency of process operations",
+	"inventory_turns":         "Number of times inventory turns over",
+	"average_yield_factor":    "Average yield factor across processes",
+}
+
+// kpiDescription returns the description of a KPI, or a generic one when
+// unknown.
+func kpiDescription(name string) string {
+	if desc, ok := kpiDescriptions[name]; ok {
+		return desc
+	}
+	return "Key performance indicator"
 }
 
 // formatKPIValue formats a KPI value for human-readable text: ratio KPIs

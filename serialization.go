@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
-	"sort"
+	"slices"
+	"strings"
 )
 
 // File format.
@@ -129,19 +131,11 @@ func migrateLegacyStream(vs *ValueStream, data []byte) error {
 // clearZeros sets every *float64 and *int field of the struct v points to
 // that holds 0 to nil (legacy "not entered").
 func clearZeros(v any) {
-	s := reflect.ValueOf(v).Elem()
-	for i := 0; i < s.NumField(); i++ {
-		f := s.Field(i)
-		if f.Kind() != reflect.Pointer || f.IsNil() || !f.CanSet() {
-			continue
+	eachOptional(v, func(f reflect.Value) {
+		if f.Elem().IsZero() {
+			f.Set(reflect.Zero(f.Type()))
 		}
-		switch e := f.Elem(); e.Kind() {
-		case reflect.Float64, reflect.Int:
-			if e.IsZero() {
-				f.Set(reflect.Zero(f.Type()))
-			}
-		}
-	}
+	})
 }
 
 // MarshalJSON writes project with "format_version" (see FormatVersion).
@@ -387,75 +381,70 @@ func refreshStreamIssues(streams ...*ValueStream) {
 	}
 }
 
-// SerializeAnalysisResult serializes analysis results to JSON
-func (s *Serializer) SerializeAnalysisResult(result *AnalysisResult) ([]byte, error) {
+// serializeResult writes a result of any kind as indented JSON. what names
+// the kind of result in the nil error.
+func serializeResult[T any](result *T, what string) ([]byte, error) {
 	if result == nil {
-		return nil, errors.New("analysis result cannot be nil")
+		return nil, errors.New(what + " result cannot be nil")
 	}
 	return json.MarshalIndent(result, "", "  ")
 }
 
-// DeserializeAnalysisResult deserializes analysis results from JSON
-func (s *Serializer) DeserializeAnalysisResult(data []byte) (*AnalysisResult, error) {
-	var result AnalysisResult
+// deserializeResult reads a result of any kind from JSON. what names the
+// kind of result in the error.
+func deserializeResult[T any](data []byte, what string) (*T, error) {
+	var result T
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal analysis result: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal %s result: %w", what, err)
 	}
 	return &result, nil
 }
 
+// SerializeAnalysisResult serializes analysis results to JSON
+func (s *Serializer) SerializeAnalysisResult(result *AnalysisResult) ([]byte, error) {
+	return serializeResult(result, "analysis")
+}
+
+// DeserializeAnalysisResult deserializes analysis results from JSON
+func (s *Serializer) DeserializeAnalysisResult(data []byte) (*AnalysisResult, error) {
+	return deserializeResult[AnalysisResult](data, "analysis")
+}
+
 // SerializeDesignResult serializes design results to JSON
 func (s *Serializer) SerializeDesignResult(result *DesignResult) ([]byte, error) {
-	if result == nil {
-		return nil, errors.New("design result cannot be nil")
-	}
-	return json.MarshalIndent(result, "", "  ")
+	return serializeResult(result, "design")
 }
 
 // DeserializeDesignResult deserializes design results from JSON. The
 // ConsistencyIssues of its future and ideal states are recomputed (see
 // CheckConsistency).
 func (s *Serializer) DeserializeDesignResult(data []byte) (*DesignResult, error) {
-	var result DesignResult
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal design result: %w", err)
+	result, err := deserializeResult[DesignResult](data, "design")
+	if err != nil {
+		return nil, err
 	}
 	refreshStreamIssues(result.FutureState, result.IdealState)
-	return &result, nil
+	return result, nil
 }
 
 // SerializePlanningResult serializes planning results to JSON
 func (s *Serializer) SerializePlanningResult(result *PlanningResult) ([]byte, error) {
-	if result == nil {
-		return nil, errors.New("planning result cannot be nil")
-	}
-	return json.MarshalIndent(result, "", "  ")
+	return serializeResult(result, "planning")
 }
 
 // DeserializePlanningResult deserializes planning results from JSON
 func (s *Serializer) DeserializePlanningResult(data []byte) (*PlanningResult, error) {
-	var result PlanningResult
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal planning result: %w", err)
-	}
-	return &result, nil
+	return deserializeResult[PlanningResult](data, "planning")
 }
 
 // SerializeAssessmentResult serializes assessment results to JSON
 func (s *Serializer) SerializeAssessmentResult(result *AssessmentResult) ([]byte, error) {
-	if result == nil {
-		return nil, errors.New("assessment result cannot be nil")
-	}
-	return json.MarshalIndent(result, "", "  ")
+	return serializeResult(result, "assessment")
 }
 
 // DeserializeAssessmentResult deserializes assessment results from JSON
 func (s *Serializer) DeserializeAssessmentResult(data []byte) (*AssessmentResult, error) {
-	var result AssessmentResult
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal assessment result: %w", err)
-	}
-	return &result, nil
+	return deserializeResult[AssessmentResult](data, "assessment")
 }
 
 // SaveToFile saves any serializable object to a JSON file
@@ -522,16 +511,18 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		return "", errors.New("value stream cannot be nil")
 	}
 	calc := NewCalculator()
+	ctx := calc.contextOf(vs)
 	kpis := calc.CalculateKPIs(vs)
 	timeUnit := string(calc.ReferenceTimeUnit(vs.Processes))
 	if timeUnit == "" {
 		timeUnit = "time units"
 	}
 
-	mapStr := fmt.Sprintf("Value Stream Map: %s\n", vs.Name)
-	mapStr += fmt.Sprintf("Product Family: %s\n", vs.ProductFamily)
-	mapStr += fmt.Sprintf("State: %s\n", vs.State)
-	mapStr += "═" + "═══════════════════════════════════════════════\n\n"
+	var b strings.Builder
+	fmt.Fprintf(&b, "Value Stream Map: %s\n", vs.Name)
+	fmt.Fprintf(&b, "Product Family: %s\n", vs.ProductFamily)
+	fmt.Fprintf(&b, "State: %s\n", vs.State)
+	b.WriteString("═" + "═══════════════════════════════════════════════\n\n")
 
 	// Customer
 	if vs.Customer != nil {
@@ -539,68 +530,67 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		if period == "" {
 			period = "period"
 		}
-		mapStr += fmt.Sprintf("Customer: %s\n", vs.Customer.Name)
-		mapStr += fmt.Sprintf("Demand: %s\n", optional(vs.Customer.Demand, "%.2f units/"+period))
+		fmt.Fprintf(&b, "Customer: %s\n", vs.Customer.Name)
+		fmt.Fprintf(&b, "Demand: %s\n", optional(vs.Customer.Demand, "%.2f units/"+period))
 		if w := vs.Customer.WorkingDaysPerWeek; w != nil {
-			mapStr += fmt.Sprintf("Working Days: %g working days/week (inventory ranges are calendar time)\n", *w)
+			fmt.Fprintf(&b, "Working Days: %g working days/week (inventory ranges are calendar time)\n", *w)
 		}
 		if a := vs.Customer.AvailableTime; a != nil {
-			mapStr += fmt.Sprintf("Available Time: %.2f %s/%s\n", *a, timeUnit, period)
+			fmt.Fprintf(&b, "Available Time: %.2f %s/%s\n", *a, timeUnit, period)
 		}
 		// Same takt the KPIs use: AvailableTime ÷ Demand, else stored TaktTime.
 		var takt *float64
 		if v, ok := kpis["customer_takt"]; ok {
 			takt = &v
 		}
-		mapStr += fmt.Sprintf("Takt Time: %s\n\n", optional(takt, "%.2f "+timeUnit))
+		fmt.Fprintf(&b, "Takt Time: %s\n\n", optional(takt, "%.2f "+timeUnit))
 	}
 
 	// Supplier
 	if vs.Supplier != nil {
-		mapStr += fmt.Sprintf("Supplier: %s\n", vs.Supplier.Name)
-		mapStr += fmt.Sprintf("Delivery Time: %.2f time units\n\n", vs.Supplier.DeliveryTime)
+		fmt.Fprintf(&b, "Supplier: %s\n", vs.Supplier.Name)
+		fmt.Fprintf(&b, "Delivery Time: %.2f time units\n\n", vs.Supplier.DeliveryTime)
 	}
 
 	// Processes
-	mapStr += "Processes:\n"
+	b.WriteString("Processes:\n")
 	for i, process := range vs.Processes {
 		// Resolved values: totals computed from their parts.
-		params := calc.ResolveParametersInStream(process.Parameters, vs)
+		params, _ := calc.resolveParameters(process.Parameters, ctx)
 		unit := string(params.TimeUnit)
 		if unit == "" {
 			unit = timeUnit
 		}
-		mapStr += fmt.Sprintf("  %d. %s (%s)\n", i+1, process.Name, process.Type)
-		mapStr += fmt.Sprintf("     Process Time: %s\n", optional(params.ProcessTime, "%.2f "+unit))
-		mapStr += fmt.Sprintf("     Cycle Time: %s\n", optional(params.CycleTime, "%.2f "+unit))
+		fmt.Fprintf(&b, "  %d. %s (%s)\n", i+1, process.Name, process.Type)
+		fmt.Fprintf(&b, "     Process Time: %s\n", optional(params.ProcessTime, "%.2f "+unit))
+		fmt.Fprintf(&b, "     Cycle Time: %s\n", optional(params.CycleTime, "%.2f "+unit))
 		q := process.Parameters
 		switch {
 		case params.YieldFactor != nil:
-			mapStr += fmt.Sprintf("     Yield Factor: %.2f%%\n", *params.YieldFactor*100)
+			fmt.Fprintf(&b, "     Yield Factor: %.2f%%\n", *params.YieldFactor*100)
 		case defectsImpossible(q):
-			mapStr += "     Yield Factor: unknown (scrap + rework above 100%)\n"
+			b.WriteString("     Yield Factor: unknown (scrap + rework above 100%)\n")
 		case q.YieldFactor != nil || q.ScrapRate != nil || q.ReworkRate != nil:
-			mapStr += "     Yield Factor: unknown (impossible quality values)\n"
+			b.WriteString("     Yield Factor: unknown (impossible quality values)\n")
 		default:
-			mapStr += "     Yield Factor: not given\n"
+			b.WriteString("     Yield Factor: not given\n")
 		}
 
 		if r := process.Parameters.ScrapRate; r != nil {
-			mapStr += fmt.Sprintf("     Scrap Rate: %.2f%%\n", *r*100)
+			fmt.Fprintf(&b, "     Scrap Rate: %.2f%%\n", *r*100)
 		}
 		if r := process.Parameters.ReworkRate; r != nil {
-			mapStr += fmt.Sprintf("     Rework Rate: %.2f%%\n", *r*100)
+			fmt.Fprintf(&b, "     Rework Rate: %.2f%%\n", *r*100)
 		}
-		mapStr += "\n"
+		b.WriteString("\n")
 	}
 
 	// Inventory: range is quantity ÷ customer demand rate when that is
 	// known; the time each inventory adds to the lead time is the one the
 	// KPIs count (stream figures, totals.go).
 	if len(vs.Inventory) > 0 {
-		ctx := calc.contextOf(vs)
 		figures := calc.figures(vs)
-		mapStr += "Inventory:\n"
+		b.WriteString("Inventory:\n")
 		for i, inv := range vs.Inventory {
 			inf := figures.inventories[i]
 			r := inv.Range
@@ -617,40 +607,40 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 			case inf.counted:
 				rangeText = "range unknown"
 			}
-			mapStr += fmt.Sprintf("  %s: %s (%s)", inv.Name, optional(inv.Quantity, "%.2f units"), rangeText)
+			fmt.Fprintf(&b, "  %s: %s (%s)", inv.Name, optional(inv.Quantity, "%.2f units"), rangeText)
 			if holder, linked := stockHolder(vs, inv); linked {
 				if inf.counted {
-					mapStr += fmt.Sprintf(" — stock of process %s, whose waiting time is not known, so this "+
+					fmt.Fprintf(&b, " — stock of process %s, whose waiting time is not known, so this "+
 						"range is counted", holder.ID)
 				} else {
-					mapStr += fmt.Sprintf(" — stock of process %s, counted in its waiting time", holder.ID)
+					fmt.Fprintf(&b, " — stock of process %s, counted in its waiting time", holder.ID)
 				}
 			}
-			mapStr += "\n"
+			b.WriteString("\n")
 		}
-		mapStr += "\n"
+		b.WriteString("\n")
 	}
 
 	// Flow Elements
 	if len(vs.FlowElements) > 0 {
-		mapStr += "Flow Control Elements:\n"
+		b.WriteString("Flow Control Elements:\n")
 		for _, element := range vs.FlowElements {
 			capacity := "to be sized"
 			if element.Capacity != nil {
 				capacity = fmt.Sprintf("%.2f", *element.Capacity)
 			}
-			mapStr += fmt.Sprintf("  %s (%s): Capacity %s\n", element.ID, element.Type, capacity)
+			fmt.Fprintf(&b, "  %s (%s): Capacity %s\n", element.ID, element.Type, capacity)
 		}
-		mapStr += "\n"
+		b.WriteString("\n")
 	}
 
 	// KPIs (computed; sorted by name; ratios shown as percent)
 	if len(kpis) > 0 {
-		mapStr += "Key Performance Indicators:\n"
-		for _, key := range sortedKeys(kpis) {
-			mapStr += fmt.Sprintf("  %s: %s\n", key, formatKPIValue(key, kpis[key]))
+		b.WriteString("Key Performance Indicators:\n")
+		for _, key := range slices.Sorted(maps.Keys(kpis)) {
+			fmt.Fprintf(&b, "  %s: %s\n", key, formatKPIValue(key, kpis[key]))
 		}
-		mapStr += "\n"
+		b.WriteString("\n")
 	}
 	other := map[string]float64{}
 	for key, value := range vs.KPIs {
@@ -659,11 +649,11 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		}
 	}
 	if len(other) > 0 {
-		mapStr += "Other KPIs (as stored; not computed by the library):\n"
-		for _, key := range sortedKeys(other) {
-			mapStr += fmt.Sprintf("  %s: %s\n", key, formatKPIValue(key, other[key]))
+		b.WriteString("Other KPIs (as stored; not computed by the library):\n")
+		for _, key := range slices.Sorted(maps.Keys(other)) {
+			fmt.Fprintf(&b, "  %s: %s\n", key, formatKPIValue(key, other[key]))
 		}
-		mapStr += "\n"
+		b.WriteString("\n")
 	}
 
 	// Consistency issues: contradictions, then missing data.
@@ -676,22 +666,22 @@ func (s *Serializer) ExportValueStreamMap(vs *ValueStream) (string, error) {
 		}
 	}
 	if len(contradictions) > 0 {
-		mapStr += fmt.Sprintf("Consistency issues (%d): stored values that disagree with the computed "+
+		fmt.Fprintf(&b, "Consistency issues (%d): stored values that disagree with the computed "+
 			"values shown above, or are impossible\n", len(contradictions))
 		for _, issue := range contradictions {
-			mapStr += fmt.Sprintf("  - %s\n", issue.Message)
+			fmt.Fprintf(&b, "  - %s\n", issue.Message)
 		}
-		mapStr += "\n"
+		b.WriteString("\n")
 	}
 	if len(missing) > 0 {
-		mapStr += fmt.Sprintf("Missing data (%d): KPIs that need these values are not shown\n", len(missing))
+		fmt.Fprintf(&b, "Missing data (%d): KPIs that need these values are not shown\n", len(missing))
 		for _, issue := range missing {
-			mapStr += fmt.Sprintf("  - %s\n", issue.Message)
+			fmt.Fprintf(&b, "  - %s\n", issue.Message)
 		}
-		mapStr += "\n"
+		b.WriteString("\n")
 	}
 
-	return mapStr, nil
+	return b.String(), nil
 }
 
 // optional formats *v with format, or "not given" when v is nil.
@@ -700,16 +690,6 @@ func optional(v *float64, format string) string {
 		return "not given"
 	}
 	return fmt.Sprintf(format, *v)
-}
-
-// sortedKeys returns m's keys in order.
-func sortedKeys(m map[string]float64) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // ImportFromCSV imports basic value stream data from CSV format

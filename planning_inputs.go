@@ -3,8 +3,9 @@ package vsm
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -98,7 +99,7 @@ func rate(in MeasureInput, fallbackImpact, fallbackEffort *int) (impact, effort 
 	if impact == nil && effort == nil {
 		impact, effort = fallbackImpact, fallbackEffort
 	}
-	impact, effort = cloneInt(impact), cloneInt(effort)
+	impact, effort = clonePtr(impact), clonePtr(effort)
 	if !ratingValid(impact) {
 		impact = nil
 	}
@@ -118,19 +119,9 @@ func rate(in MeasureInput, fallbackImpact, fallbackEffort *int) (impact, effort 
 	return impact, effort, 0, "Not prioritised: " + strings.Join(missing, " and ") + " rating not entered"
 }
 
-func cloneInt(p *int) *int {
-	if p == nil {
-		return nil
-	}
-	v := *p
-	return &v
-}
-
+// cloneFloat is clonePtr for a *float64 (design.go still calls it).
 func cloneFloat(p *float64) *float64 {
-	if p == nil {
-		return nil
-	}
-	return F(*p)
+	return clonePtr(p)
 }
 
 // validateMeasureInputs returns an error for an input outside its range
@@ -138,7 +129,7 @@ func cloneFloat(p *float64) *float64 {
 // known (what names the IDs, e.g. "improvement potential or continuous
 // improvement").
 func validateMeasureInputs(inputs map[string]MeasureInput, known map[string]bool, what string) error {
-	for _, id := range sortedInputIDs(inputs) {
+	for _, id := range slices.Sorted(maps.Keys(inputs)) {
 		in := inputs[id]
 		if !known[id] {
 			return fmt.Errorf("measure input %q: no %s has this ID", id, what)
@@ -164,22 +155,13 @@ func validateMeasureInputs(inputs map[string]MeasureInput, known map[string]bool
 	return nil
 }
 
-func sortedInputIDs(m map[string]MeasureInput) []string {
-	ids := make([]string, 0, len(m))
-	for id := range m {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
-}
-
 // measureCosts returns the costs of a measure from its entered amounts,
 // with the payback computed (see Costs).
 func measureCosts(in MeasureInput) Costs {
 	costs := Costs{
-		Investment:          cloneFloat(in.Investment),
-		AnnualBenefit:       cloneFloat(in.AnnualBenefit),
-		AnnualOperatingCost: cloneFloat(in.AnnualOperatingCost),
+		Investment:          clonePtr(in.Investment),
+		AnnualBenefit:       clonePtr(in.AnnualBenefit),
+		AnnualOperatingCost: clonePtr(in.AnnualOperatingCost),
 	}
 	costs.PaybackMonths, costs.NeverPaysBack = calculatePayback(costs)
 	costs.Note = costsNote(costs)
@@ -277,12 +259,7 @@ func calculateCostTotals(measures []ImprovementMeasure) CostTotals {
 // validateRiskInputs returns an error for a probability or impact outside
 // 0–1 or a risk ID not in known.
 func validateRiskInputs(inputs map[string]RiskInput, known map[string]bool) error {
-	ids := make([]string, 0, len(inputs))
-	for id := range inputs {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
+	for _, id := range slices.Sorted(maps.Keys(inputs)) {
 		if !known[id] {
 			return fmt.Errorf("risk input %q: no risk in the checklist has this ID", id)
 		}
