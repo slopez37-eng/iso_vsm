@@ -1,316 +1,69 @@
 package vsm
 
-// SymbolCategory represents the category of VSM symbols
+// SymbolCategory is a category of Table A.1.
 type SymbolCategory string
 
 const (
-	CategoryProcess SymbolCategory = "process"
-	CategoryFlow    SymbolCategory = "flow"
-	CategoryControl SymbolCategory = "control"
+	CategoryProcesses       SymbolCategory = "processes"
+	CategoryProductFlow     SymbolCategory = "product_flow"
+	CategoryPlanningControl SymbolCategory = "planning_control"
+	CategoryGeneral         SymbolCategory = "general"
 )
 
-// Symbol represents a VSM symbol according to ISO 22468:2020 Table A.1
+// Symbol is one value stream symbol of Table A.1. Information summarises the
+// table's "additional information / position" column in our own words.
 type Symbol struct {
+	ID          string         `json:"id"`
 	Category    SymbolCategory `json:"category"`
-	Code        string         `json:"code"`        // Symbol code/representation
-	Name        string         `json:"name"`        // Symbol name
-	Description string         `json:"description"` // Description of what the symbol represents
-	Position    string         `json:"position"`    // Position in value stream diagram
+	Term        string         `json:"term"`
+	Information string         `json:"information,omitempty"`
 }
 
-// VSMSymbols contains all standard VSM symbols
-var VSMSymbols = map[string]Symbol{
-	// Process symbols
-	"process": {
-		Category:    CategoryProcess,
-		Code:        "[]",
-		Name:        "Process",
-		Description: "Material-, energy- or data-driven process",
-		Position:    "Main process flow",
-	},
-	"customer": {
-		Category:    CategoryProcess,
-		Code:        "@",
-		Name:        "Customer",
-		Description: "End customer or external source",
-		Position:    "Top right",
-	},
-	"supplier": {
-		Category:    CategoryProcess,
-		Code:        "A",
-		Name:        "Supplier",
-		Description: "External source or supplier",
-		Position:    "Top left",
-	},
-	"business_process": {
-		Category:    CategoryProcess,
-		Code:        "☐",
-		Name:        "Business Process",
-		Description: "Business process with communication means",
-		Position:    "Process flow",
-	},
-	"shared_process": {
-		Category:    CategoryProcess,
-		Code:        "[[]]",
-		Name:        "Shared Process",
-		Description: "Process with shared resources",
-		Position:    "Process flow",
-	},
-	"data_box": {
-		Category:    CategoryProcess,
-		Code:        "□",
-		Name:        "Data Box",
-		Description: "Process parameters and data",
-		Position:    "Within process symbol",
-	},
-	"repetitive_process": {
-		Category:    CategoryProcess,
-		Code:        "[—]",
-		Name:        "Repetitive Process",
-		Description: "Process with repetitions",
-		Position:    "Above process symbol",
-	},
-	"bottleneck": {
-		Category:    CategoryProcess,
-		Code:        "X",
-		Name:        "Bottleneck",
-		Description: "Bottleneck process",
-		Position:    "Above process symbol",
-	},
-	"operator": {
-		Category:    CategoryProcess,
-		Code:        "👤",
-		Name:        "Operator",
-		Description: "Number of operators (FTE)",
-		Position:    "Within process symbol",
-	},
-	"resources": {
-		Category:    CategoryProcess,
-		Code:        "⚙",
-		Name:        "Resources",
-		Description: "Machines, tools, equipment",
-		Position:    "Within process symbol",
-	},
-
-	// Flow symbols
-	"push_flow": {
-		Category:    CategoryFlow,
-		Code:        "→",
-		Name:        "Push Flow",
-		Description: "Product flow controlled by upstream processes",
-		Position:    "Between processes",
-	},
-	"pull_flow": {
-		Category:    CategoryFlow,
-		Code:        "←",
-		Name:        "Pull Flow",
-		Description: "Product flow controlled by downstream processes",
-		Position:    "Between processes",
-	},
-	"external_flow": {
-		Category:    CategoryFlow,
-		Code:        "⇒",
-		Name:        "External Product Flow",
-		Description: "Shipments, external logistics",
-		Position:    "Between external entities",
-	},
-	"fifo_lane": {
-		Category:    CategoryFlow,
-		Code:        "□",
-		Name:        "FIFO Lane",
-		Description: "First-in-first-out flow control",
-		Position:    "Between processes",
-	},
-	"lifo_lane": {
-		Category:    CategoryFlow,
-		Code:        "▽",
-		Name:        "LIFO Lane",
-		Description: "Last-in-first-out flow control",
-		Position:    "Between processes",
-	},
-	"jit_delivery": {
-		Category:    CategoryFlow,
-		Code:        "🚚",
-		Name:        "JIT Delivery",
-		Description: "Just-in-time delivery",
-		Position:    "Between processes",
-	},
-	"jis_delivery": {
-		Category:    CategoryFlow,
-		Code:        "🚛",
-		Name:        "JIS Delivery",
-		Description: "Just-in-sequence delivery",
-		Position:    "Between processes",
-	},
-	"inventory": {
-		Category:    CategoryFlow,
-		Code:        "△",
-		Name:        "Inventory",
-		Description: "Stock or inventory triangle",
-		Position:    "Between processes",
-	},
-	"warehouse": {
-		Category:    CategoryFlow,
-		Code:        "□",
-		Name:        "Warehouse",
-		Description: "Organized warehouse",
-		Position:    "Between processes",
-	},
-	"supermarket": {
-		Category:    CategoryFlow,
-		Code:        "▨",
-		Name:        "Supermarket",
-		Description: "Pull system supermarket",
-		Position:    "Between processes",
-	},
-	"withdrawal": {
-		Category:    CategoryFlow,
-		Code:        "⇄",
-		Name:        "Withdrawal",
-		Description: "Product withdrawal from supermarket",
-		Position:    "Between processes",
-	},
-	"truck": {
-		Category:    CategoryFlow,
-		Code:        "🚛",
-		Name:        "Truck Transport",
-		Description: "Truck transport",
-		Position:    "Between processes",
-	},
-	"other_transport": {
-		Category:    CategoryFlow,
-		Code:        "🚐",
-		Name:        "Other Transport",
-		Description: "Other transport means",
-		Position:    "Between processes",
-	},
-	"milkrun": {
-		Category:    CategoryFlow,
-		Code:        "🔄",
-		Name:        "Milkrun",
-		Description: "Milkrun delivery concept",
-		Position:    "Between processes",
-	},
-	"express_delivery": {
-		Category:    CategoryFlow,
-		Code:        "⚡",
-		Name:        "Express Delivery",
-		Description: "Exceptional delivery with reduced time",
-		Position:    "Between processes",
-	},
-	"cross_dock": {
-		Category:    CategoryFlow,
-		Code:        "⊞",
-		Name:        "Cross-Dock",
-		Description: "Cross-docking warehouse",
-		Position:    "Between processes",
-	},
-	"external_warehouse": {
-		Category:    CategoryFlow,
-		Code:        "⊟",
-		Name:        "External Warehouse",
-		Description: "External warehouse",
-		Position:    "Between processes",
-	},
-
-	// Control symbols
-	"manual_info_flow": {
-		Category:    CategoryControl,
-		Code:        "📄",
-		Name:        "Manual Information Flow",
-		Description: "Manual information flow (phone, fax, mail)",
-		Position:    "Above processes",
-	},
-	"electronic_info_flow": {
-		Category:    CategoryControl,
-		Code:        "💻",
-		Name:        "Electronic Information Flow",
-		Description: "Electronic information flow (EDI, systems)",
-		Position:    "Above processes",
-	},
-	"data_set": {
-		Category:    CategoryControl,
-		Code:        "📋",
-		Name:        "Data Set",
-		Description: "Documents, lists, labels",
-		Position:    "Above processes",
-	},
-	"synchronization": {
-		Category:    CategoryControl,
-		Code:        "🔗",
-		Name:        "Synchronization",
-		Description: "Synchronization between main and ancillary routes",
-		Position:    "Above processes",
-	},
-	"production_kanban": {
-		Category:    CategoryControl,
-		Code:        "📊",
-		Name:        "Production Kanban",
-		Description: "Production control ticket",
-		Position:    "Above processes",
-	},
-	"withdrawal_kanban": {
-		Category:    CategoryControl,
-		Code:        "📈",
-		Name:        "Withdrawal Kanban",
-		Description: "Withdrawal control ticket",
-		Position:    "Above processes",
-	},
-	"signal_kanban": {
-		Category:    CategoryControl,
-		Code:        "📉",
-		Name:        "Signal Kanban",
-		Description: "Signal kanban for production",
-		Position:    "Above processes",
-	},
-	"load_levelling": {
-		Category:    CategoryControl,
-		Code:        "⚖",
-		Name:        "Load Levelling",
-		Description: "Load levelling / production sequencing",
-		Position:    "Above processes",
-	},
-	"gosee_planning": {
-		Category:    CategoryControl,
-		Code:        "👁",
-		Name:        "Go-See Planning",
-		Description: "Manual observation of process flow",
-		Position:    "Above processes",
-	},
-	"order_backlog": {
-		Category:    CategoryControl,
-		Code:        "📚",
-		Name:        "Order Backlog",
-		Description: "Order backlog inventory",
-		Position:    "Above processes",
-	},
-	"improvement_flash": {
-		Category:    CategoryControl,
-		Code:        "💡",
-		Name:        "Improvement Flash",
-		Description: "Continuous improvement flash",
-		Position:    "Above processes",
-	},
+// Symbols is the catalogue of Table A.1, in the table's order.
+var Symbols = []Symbol{
+	{"process", CategoryProcesses, "process", "material-, energy- or data-driven process"},
+	{"customer", CategoryProcesses, "customer process", "end customer or customer plant; top right of the map"},
+	{"supplier", CategoryProcesses, "supplier process / external source", "top left of the map; a supplier that is also a customer uses the customer symbol"},
+	{"business_process", CategoryProcesses, "business process, indirect area", "details communication means such as telephone, mail or IT system; optionally number of operators"},
+	{"shared_process", CategoryProcesses, "shared process / shared resources", "process symbol with double frame"},
+	{"operators", CategoryProcesses, "operators", "number of operators or FTE, inside the process symbol"},
+	{"resources", CategoryProcesses, "resources", "machines, area, tools and so on, inside the process symbol"},
+	{"data_box", CategoryProcesses, "data box", "selected process parameters for the process type, inside the process symbol"},
+	{"repetitive_process", CategoryProcesses, "repetitive process", "number of repetitions, above the process symbol"},
+	{"bottleneck", CategoryProcesses, "bottleneck", "above the process symbol"},
+	{"push_flow", CategoryProductFlow, "push product flow", "product flow controlled by upstream processes"},
+	{"external_flow", CategoryProductFlow, "external product flow", "shipments and external logistics"},
+	{"fifo_lifo_lane", CategoryProductFlow, "FIFO or LIFO lane", "process flow control; shows the process quantity"},
+	{"jit_jis_delivery", CategoryProductFlow, "just-in-time or just-in-sequence delivery", "process flow control; shows the process quantity"},
+	{"stock", CategoryProductFlow, "stock", "inventory triangle; shows number of products or range"},
+	{"warehouse", CategoryProductFlow, "warehouse", "organised warehouse or safety stock; shows number of products or range"},
+	{"supermarket", CategoryProductFlow, "supermarket", "pull system element; shows number of products or range"},
+	{"withdrawal", CategoryProductFlow, "withdrawal", "pull system element"},
+	{"truck_transport", CategoryProductFlow, "truck transport", "shows delivery frequency"},
+	{"other_transport", CategoryProductFlow, "other transport means", "shows delivery frequency"},
+	{"distribution_center", CategoryProductFlow, "distribution center / hub / cross-dock", "external logistics and distribution"},
+	{"external_warehouse", CategoryProductFlow, "external warehouse", "external storage and distribution; shows number of products or range"},
+	{"milk_run", CategoryProductFlow, "milk run", "delivery concept"},
+	{"express_delivery", CategoryProductFlow, "express delivery", "exceptional delivery with shorter delivery time"},
+	{"manual_information", CategoryPlanningControl, "manual information flow", "for example list, label or document"},
+	{"electronic_information", CategoryPlanningControl, "electronic information flow", "for example telephone, fax, mail or EDI"},
+	{"information", CategoryPlanningControl, "information", "detail as data set, document or list"},
+	{"synchronization", CategoryPlanningControl, "synchronization", "links main and ancillary routes of branched value streams"},
+	{"production_control_ticket", CategoryPlanningControl, "production control-ticket", "control from supermarket to the upstream process; shows release unit"},
+	{"withdrawal_control_ticket", CategoryPlanningControl, "withdrawal control-ticket", "control from downstream process to supermarket, shaded; shows release unit"},
+	{"batch_control_ticket", CategoryPlanningControl, "control-ticket in batch size", "collection of production control-tickets"},
+	{"load_levelling", CategoryPlanningControl, "load levelling", "balancing of the product mix"},
+	{"gosee", CategoryPlanningControl, "GoSee production planning", "manual observation of the process flow"},
+	{"order_backlog", CategoryPlanningControl, "order backlog", "for business processes, like the inventory triangle for production"},
+	{"improvement_flash", CategoryGeneral, "continuous improvement flash", "with description and number, optionally coloured"},
 }
 
-// GetSymbol returns the symbol for a given symbol code
-func GetSymbol(code string) (Symbol, bool) {
-	symbol, exists := VSMSymbols[code]
-	return symbol, exists
-}
-
-// GetSymbolsByCategory returns all symbols for a given category
-func GetSymbolsByCategory(category SymbolCategory) []Symbol {
-	var symbols []Symbol
-	for _, symbol := range VSMSymbols {
-		if symbol.Category == category {
-			symbols = append(symbols, symbol)
+// SymbolByID returns the Table A.1 symbol with the given id.
+func SymbolByID(id string) (Symbol, bool) {
+	for _, s := range Symbols {
+		if s.ID == id {
+			return s, true
 		}
 	}
-	return symbols
-}
-
-// GetAllSymbols returns all available VSM symbols
-func GetAllSymbols() map[string]Symbol {
-	return VSMSymbols
+	return Symbol{}, false
 }

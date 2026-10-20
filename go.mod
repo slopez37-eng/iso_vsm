@@ -1,3 +1,3 @@
-module github.com/iso22468/vsm-go-sdk
+module github.com/slopez37-eng/iso_vsm
 
-go 1.24.3
+go 1.24
