@@ -1,6 +1,7 @@
 package vsm
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -122,5 +123,28 @@ func TestSymbols(t *testing.T) {
 	}
 	if s, ok := SymbolByID("improvement_flash"); !ok || s.Category != CategoryGeneral {
 		t.Errorf("improvement flash: %+v", s)
+	}
+}
+
+func TestInfiniteRatioMarshals(t *testing.T) {
+	p := exampleProject()
+	p.Measures[0].Cost = F(0)
+	data, err := json.Marshal(EvaluateProject(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"+Inf"`) {
+		t.Error("infinite benefit-cost ratio not written as +Inf")
+	}
+	if got := Prioritize(p.Measures); got[0] != 1 {
+		t.Errorf("a free measure should rank first, got %v", got)
+	}
+}
+
+func TestReadRejectsTrailingData(t *testing.T) {
+	for _, in := range []string{`{"name":"x"}}`, `{"name":"x"}]`, `{"name":"x"} {}`} {
+		if _, err := ReadValueStream(strings.NewReader(in)); err == nil {
+			t.Errorf("%s accepted", in)
+		}
 	}
 }

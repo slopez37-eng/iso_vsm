@@ -184,3 +184,30 @@ func TestValueJSON(t *testing.T) {
 		t.Errorf("got %s, want %s", got, want)
 	}
 }
+
+func TestEvaluateRejectsZeroOperatingTimeAndPeriod(t *testing.T) {
+	vs := &ValueStream{Name: "x", TimeUnit: Minute,
+		Customer:  Customer{Demand: F(400), OperatingTime: F(0), PeriodLength: F(0)},
+		Processes: []Process{{ID: "P1", ProcessTime: F(1)}},
+		Idles:     []Idle{{ID: "I1", From: "P1", TransportTime: F(0), WaitingOrders: F(50), Inventories: []Inventory{{Kind: InventoryStock, Quantity: F(800)}}}},
+	}
+	r := Evaluate(vs)
+	if r.Totals.LeadTime.Known {
+		t.Errorf("lead time %v computed from a zero operating time or period length", r.Totals.LeadTime)
+	}
+	if n := len(issuesWith(r, SeverityError, "")); n != 2 {
+		t.Errorf("want 2 errors, got %v", r.Issues)
+	}
+}
+
+func TestEvaluateProcessTypeParts(t *testing.T) {
+	vs := &ValueStream{Name: "x", TimeUnit: Minute, Processes: []Process{
+		{ID: "M", Type: ProcessManual, ProcessTime: F(10), SetupTime: F(2), ProcessingTime: F(5), HandlingTime: F(1), WaitingTime: F(1)},
+		{ID: "D", Type: ProcessData, ProcessTime: F(10), SetupTime: F(2), ProcessingTime: F(5)},
+	}}
+	r := Evaluate(vs)
+	if n := len(issuesWith(r, SeverityWarning, "A.8")); n != 1 {
+		t.Errorf("want one A.8 warning for the manual process, got %v", r.Issues)
+	}
+	wantValue(t, "data waiting time", r.Processes[1].WaitingTime, 3, "A.8")
+}

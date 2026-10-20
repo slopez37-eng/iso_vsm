@@ -43,3 +43,15 @@ func TestCheckExitsOneOnErrors(t *testing.T) {
 		t.Errorf("JSON report has no error:\n%s", out.String())
 	}
 }
+
+func TestCheckProjectWithoutCurrent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "project.json")
+	if err := os.WriteFile(path, []byte(`{"schema_version":1,"name":"p"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	code, err := check([]string{path}, &out)
+	if err != nil || code != 1 || !strings.Contains(out.String(), "needs a current state") {
+		t.Fatalf("code %d, err %v\n%s", code, err, out.String())
+	}
+}

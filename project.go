@@ -198,7 +198,7 @@ func decodeStrict(r io.Reader, v any) error {
 	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("vsm: %w", err)
 	}
-	if dec.More() {
+	if _, err := dec.Token(); err != io.EOF {
 		return fmt.Errorf("vsm: unexpected data after the JSON value")
 	}
 	return nil

@@ -65,7 +65,7 @@ func check(args []string, w io.Writer) (int, error) {
 	}
 	var report any
 	var issues []vsm.Issue
-	if _, isProject := probe["current"]; isProject {
+	if _, isStream := probe["processes"]; !isStream {
 		p, err := vsm.ReadProject(bytes.NewReader(data))
 		if err != nil {
 			return 0, err

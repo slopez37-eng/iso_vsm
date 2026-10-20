@@ -32,7 +32,7 @@ vsm check -json project.json  # the same report as JSON
 vsm symbols                   # the value stream symbols of Table A.1
 ```
 
-`vsm check` exits with status 1 when the file has errors (invalid input that was ignored), 2 when it cannot read the file, and 0 otherwise.
+A file with a top-level `processes` list is read as one value stream; any other file is read as a project. `vsm check` exits with status 1 when the file has errors (invalid input that was ignored), 2 when it cannot read the file, and 0 otherwise.
 
 ## Library
 
@@ -88,11 +88,11 @@ Each formula is also a plain function. Use these when you only need one calculat
 
 Every number in the model is optional. `nil` means "not entered" and a pointer to 0 means an entered zero (`vsm.F(0)`). The evaluator never treats a missing number as zero.
 
-`Evaluate` repeatedly applies the formulas. Whenever all terms but one of a formula are known, it derives the missing term and records the formula as the value's `Source`. Once nothing more can be derived, it checks every formula whose terms are all known. A mismatch becomes a **warning** that names the formula; your entered value is kept. Invalid input becomes an **error**, and that value is ignored. Examples are negative times, rates above 1, duplicate ids and references to unknown processes. A **note** explains a gap, for example which segments still lack a time so that the lead time is unknown.
+`Evaluate` repeatedly applies the formulas and records the formula behind each derived value as its `Source`. For the sums (A.1, A.2, A.3, A.6, A.8, A.9 and A.17), whenever all terms but one are known it derives the missing one. For the products and quotients (A.5, A.7, A.10, A.11 and A.12), it derives only the result, never a missing factor. Once nothing more can be derived, it checks every formula whose terms are all known. A mismatch becomes a **warning** that names the formula; your entered value is kept. Invalid input becomes an **error**, and that value is ignored. Examples are negative times, rates above 1, duplicate ids and references to unknown processes. A **note** explains a gap, for example which segments still lack a time so that the lead time is unknown.
 
 All times in one value stream use its `time_unit` (`s`, `min`, `h` or `d`, where a day is 24 hours). Rates are fractions: 25 % is `0.25`.
 
-The test suite reproduces the standard's worked example (A.3.4) and the customer takt of application example B.2.
+The test suite reproduces the standard's worked example (A.3.4) step by step with the formula functions, evaluates the same process as a value stream, and checks the customer takt of application example B.2.
 
 ## Interpretation choices
 
@@ -106,6 +106,8 @@ The standard leaves some points open, and a few of its formulas read oddly. This
 
 **Waiting time (A.11)** uses an idle segment's `waiting_orders`, which is kept separate from its inventories. This way the same stock is not counted as both storage and waiting time.
 
+**Process types** follow the cases of Figure A.1. A manual process has no downtime, and a data-related process has neither downtime nor handling time. For those types, these parts count as 0 in A.8 unless you enter them. A gap in A.8 therefore shows up as a warning instead of being booked as downtime. With no type set, no part is assumed.
+
 **Idle segments** add no value from the customer's view (clause 4.5.2). They therefore carry only non-value-adding and necessary non-value-adding time. For a process, process lead time equals process time (Table A.2), so VAT + NVAT + NNVAT of a process must equal its process time.
 
 **Bottleneck** (definition 3.2) is the process with the highest cycle time per resource. **Utilization** is cycle time ÷ (resources × customer takt). When resources are not entered, both treat them as 1.
@@ -115,6 +117,8 @@ The standard leaves some points open, and a few of its formulas read oddly. This
 **Prioritisation** of measures (clause 4.5.2) sorts by benefit ÷ cost, then by net benefit. Measures without both figures come last, and done or cancelled measures are left out.
 
 **Typos in the worked example (A.3.4).** It labels customer demand as a time and calls the number of transport repetitions a time. The library reads these as the quantities the parameter table defines.
+
+**Two bases for idle time.** A.7 measures a range against demand per period, which the library converts to time with the calendar `period_length`. A.11 measures waiting against customer takt, which is based on operating time. The same number of pieces therefore gives a different time depending on whether it is entered as stock or as waiting orders. This follows the standard's two formulas as written.
 
 ## Scope
 

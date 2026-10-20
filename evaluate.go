@@ -22,10 +22,14 @@ func (v Value) MarshalJSON() ([]byte, error) {
 	if !v.Known {
 		return []byte("null"), nil
 	}
+	var value any = v.Value
+	if math.IsInf(v.Value, 0) {
+		value = fmt.Sprint(v.Value) // JSON has no infinity; write "+Inf" or "-Inf"
+	}
 	return json.Marshal(struct {
-		Value  float64 `json:"value"`
-		Source string  `json:"source"`
-	}{v.Value, v.Source})
+		Value  any    `json:"value"`
+		Source string `json:"source"`
+	}{value, v.Source})
 }
 
 func (v Value) String() string {
@@ -330,6 +334,12 @@ func (e *evaluator) customer() {
 	e.demand = e.entered("customer", "demand", c.Demand, false)
 	ot := e.entered("customer", "operating_time", c.OperatingTime, false)
 	e.period = e.entered("customer", "period_length", c.PeriodLength, false)
+	for _, c := range []*cell{ot, e.period} {
+		if c.known && c.v == 0 {
+			e.add(SeverityError, "customer", "", "%s is 0; it must be positive, so it is ignored", c.name)
+			c.known = false
+		}
+	}
 	e.takt = &cell{name: "customer takt"}
 	switch {
 	case !e.demand.known || !ot.known:
@@ -370,6 +380,17 @@ func (e *evaluator) processCells(p *Process) *processCells {
 		{"batch_size", p.BatchSize}, {"variants", p.Variants},
 	} {
 		e.entered(s, f.name, f.p, false)
+	}
+	// Figure A.1: downtime is part of process time only for automated
+	// processes (case B), and handling time is not part of it for data-related
+	// processes (case C). Those parts count as 0 unless entered.
+	if p.Type == ProcessManual || p.Type == ProcessData {
+		if !c.dt.known && len(p.TimesToRepair) == 0 {
+			c.dt.set(0, "Figure A.1")
+		}
+	}
+	if p.Type == ProcessData && !c.ht.known {
+		c.ht.set(0, "Figure A.1")
 	}
 	c.ttr = &cell{name: "Σ times_to_repair"}
 	if len(p.TimesToRepair) > 0 {
