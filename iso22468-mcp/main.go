@@ -36,6 +36,11 @@ func main() {
 	}
 }
 
+// requiredStringArg declares a required string tool argument.
+func requiredStringArg(name, description string) mcp.ToolOption {
+	return mcp.WithString(name, mcp.Required(), mcp.Description(description))
+}
+
 func setupVSMTools(s *server.MCPServer) {
 	// VSM Analysis Tools
 	setupVSMAnalysisTools(s)
@@ -60,10 +65,7 @@ func setupVSMAnalysisTools(s *server.MCPServer) {
 	// Create Value Stream Analysis Tool
 	analyzeTool := mcp.NewTool("vsm_analyze_current_state",
 		mcp.WithDescription("Analyze the current state of a value stream to identify bottlenecks, waste, and improvement opportunities"),
-		mcp.WithString("value_stream_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the ValueStream to analyze"),
-		),
+		requiredStringArg("value_stream_json", "JSON representation of the ValueStream to analyze"),
 	)
 
 	s.AddTool(analyzeTool, handleVSMAnalysis)
@@ -71,10 +73,7 @@ func setupVSMAnalysisTools(s *server.MCPServer) {
 	// Detect Bottlenecks Tool
 	bottleneckTool := mcp.NewTool("vsm_detect_bottlenecks",
 		mcp.WithDescription("Detect bottlenecks in a value stream based on process cycle times and customer demand"),
-		mcp.WithString("value_stream_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the ValueStream to analyze for bottlenecks"),
-		),
+		requiredStringArg("value_stream_json", "JSON representation of the ValueStream to analyze for bottlenecks"),
 	)
 
 	s.AddTool(bottleneckTool, handleBottleneckDetection)
@@ -82,10 +81,7 @@ func setupVSMAnalysisTools(s *server.MCPServer) {
 	// Waste Analysis Tool
 	wasteTool := mcp.NewTool("vsm_analyze_waste",
 		mcp.WithDescription("Perform detailed waste analysis on a value stream to identify the 8 types of waste (Muda)"),
-		mcp.WithString("value_stream_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the ValueStream to analyze for waste"),
-		),
+		requiredStringArg("value_stream_json", "JSON representation of the ValueStream to analyze for waste"),
 	)
 
 	s.AddTool(wasteTool, handleWasteAnalysis)
@@ -95,18 +91,9 @@ func setupVSMDesignTools(s *server.MCPServer) {
 	// Future State Design Tool
 	designTool := mcp.NewTool("vsm_design_future_state",
 		mcp.WithDescription("Design future state improvements for a value stream based on analysis results"),
-		mcp.WithString("current_state_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the current ValueStream state"),
-		),
-		mcp.WithString("analysis_result_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the analysis results"),
-		),
-		mcp.WithString("project_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the VSM project details"),
-		),
+		requiredStringArg("current_state_json", "JSON representation of the current ValueStream state"),
+		requiredStringArg("analysis_result_json", "JSON representation of the analysis results"),
+		requiredStringArg("project_json", "JSON representation of the VSM project details"),
 	)
 
 	s.AddTool(designTool, handleFutureStateDesign)
@@ -114,10 +101,7 @@ func setupVSMDesignTools(s *server.MCPServer) {
 	// Ideal State Generation Tool
 	idealTool := mcp.NewTool("vsm_generate_ideal_state",
 		mcp.WithDescription("Generate an ideal state value stream design with minimal waste and optimal flow"),
-		mcp.WithString("current_state_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the current ValueStream to base ideal state on"),
-		),
+		requiredStringArg("current_state_json", "JSON representation of the current ValueStream to base ideal state on"),
 	)
 
 	s.AddTool(idealTool, handleIdealStateGeneration)
@@ -127,51 +111,32 @@ func setupVSMPlanningTools(s *server.MCPServer) {
 	// Implementation Planning Tool
 	planTool := mcp.NewTool("vsm_plan_implementation",
 		mcp.WithDescription("Create implementation plans with SMART measures and timelines"),
-		mcp.WithString("design_result_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the design results"),
-		),
-		mcp.WithString("project_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the VSM project details"),
-		),
+		requiredStringArg("design_result_json", "JSON representation of the design results"),
+		requiredStringArg("project_json", "JSON representation of the VSM project details"),
 	)
 
 	s.AddTool(planTool, handleImplementationPlanning)
-
-
 }
 
 func setupVSMAssessmentTools(s *server.MCPServer) {
 	// Performance Assessment Tool
 	assessTool := mcp.NewTool("vsm_assess_performance",
 		mcp.WithDescription("Assess value stream performance against targets and generate action items"),
-		mcp.WithString("value_stream_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the ValueStream to assess"),
-		),
-		mcp.WithString("targets_json",
-			mcp.Required(),
-			mcp.Description("JSON object with KPI target values"),
-		),
+		requiredStringArg("value_stream_json", "JSON representation of the ValueStream to assess"),
+		requiredStringArg("targets_json", "JSON object with KPI target values"),
 		mcp.WithString("history_json",
 			mcp.Description("JSON array of historical AssessmentResult (optional)"),
 		),
 	)
 
 	s.AddTool(assessTool, handlePerformanceAssessment)
-
-
 }
 
 func setupVSMSerializationTools(s *server.MCPServer) {
 	// Serialize Value Stream Tool
 	serializeTool := mcp.NewTool("vsm_serialize_value_stream",
 		mcp.WithDescription("Serialize a value stream to JSON format"),
-		mcp.WithString("value_stream_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the ValueStream to serialize"),
-		),
+		requiredStringArg("value_stream_json", "JSON representation of the ValueStream to serialize"),
 		mcp.WithBoolean("pretty_print",
 			mcp.DefaultBool(false),
 			mcp.Description("Enable pretty-printed JSON output"),
@@ -187,10 +152,7 @@ func setupVSMSerializationTools(s *server.MCPServer) {
 	// Deserialize Value Stream Tool
 	deserializeTool := mcp.NewTool("vsm_deserialize_value_stream",
 		mcp.WithDescription("Deserialize a value stream from JSON format"),
-		mcp.WithString("json_data",
-			mcp.Required(),
-			mcp.Description("JSON string containing serialized ValueStream data"),
-		),
+		requiredStringArg("json_data", "JSON string containing serialized ValueStream data"),
 	)
 
 	s.AddTool(deserializeTool, handleValueStreamDeserialization)
@@ -198,14 +160,8 @@ func setupVSMSerializationTools(s *server.MCPServer) {
 	// Save to File Tool
 	saveTool := mcp.NewTool("vsm_save_to_file",
 		mcp.WithDescription("Save a value stream to a JSON file"),
-		mcp.WithString("value_stream_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the ValueStream to save"),
-		),
-		mcp.WithString("filename",
-			mcp.Required(),
-			mcp.Description("Filename to save the value stream to"),
-		),
+		requiredStringArg("value_stream_json", "JSON representation of the ValueStream to save"),
+		requiredStringArg("filename", "Filename to save the value stream to"),
 	)
 
 	s.AddTool(saveTool, handleSaveToFile)
@@ -213,10 +169,7 @@ func setupVSMSerializationTools(s *server.MCPServer) {
 	// Load from File Tool
 	loadTool := mcp.NewTool("vsm_load_from_file",
 		mcp.WithDescription("Load a value stream from a JSON file"),
-		mcp.WithString("filename",
-			mcp.Required(),
-			mcp.Description("Filename to load the value stream from"),
-		),
+		requiredStringArg("filename", "Filename to load the value stream from"),
 	)
 
 	s.AddTool(loadTool, handleLoadFromFile)
@@ -226,10 +179,7 @@ func setupVSMUtilityTools(s *server.MCPServer) {
 	// Calculate KPIs Tool
 	kpiTool := mcp.NewTool("vsm_calculate_kpis",
 		mcp.WithDescription("Calculate key performance indicators for a value stream"),
-		mcp.WithString("value_stream_json",
-			mcp.Required(),
-			mcp.Description("JSON representation of the ValueStream to calculate KPIs for"),
-		),
+		requiredStringArg("value_stream_json", "JSON representation of the ValueStream to calculate KPIs for"),
 	)
 
 	s.AddTool(kpiTool, handleKPICalculation)
@@ -237,18 +187,9 @@ func setupVSMUtilityTools(s *server.MCPServer) {
 	// Create Value Stream Tool
 	createTool := mcp.NewTool("vsm_create_value_stream",
 		mcp.WithDescription("Create a new value stream with basic structure"),
-		mcp.WithString("id",
-			mcp.Required(),
-			mcp.Description("Unique identifier for the value stream"),
-		),
-		mcp.WithString("name",
-			mcp.Required(),
-			mcp.Description("Display name for the value stream"),
-		),
-		mcp.WithString("product_family",
-			mcp.Required(),
-			mcp.Description("Product family this value stream serves"),
-		),
+		requiredStringArg("id", "Unique identifier for the value stream"),
+		requiredStringArg("name", "Display name for the value stream"),
+		requiredStringArg("product_family", "Product family this value stream serves"),
 		mcp.WithString("customer_json",
 			mcp.Description("JSON representation of the customer (optional)"),
 		),

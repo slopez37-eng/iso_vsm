@@ -4,54 +4,13 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	vsm "github.com/iso22468/vsm-go-sdk"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// Resource Handlers
-
-func handleSymbolsResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	// Get all VSM symbols
-	symbols := []map[string]interface{}{}
-
-	// Add process symbols
-	processSymbols := vsm.GetSymbolsByCategory(vsm.CategoryProcess)
-	for _, symbol := range processSymbols {
-		symbols = append(symbols, map[string]interface{}{
-			"code":        symbol.Code,
-			"name":        symbol.Name,
-			"description": symbol.Description,
-			"category":    symbol.Category,
-			"position":    symbol.Position,
-		})
-	}
-
-	// Add control symbols (similar to inventory)
-	controlSymbols := vsm.GetSymbolsByCategory(vsm.CategoryControl)
-	for _, symbol := range controlSymbols {
-		symbols = append(symbols, map[string]interface{}{
-			"code":        symbol.Code,
-			"name":        symbol.Name,
-			"description": symbol.Description,
-			"category":    symbol.Category,
-			"position":    symbol.Position,
-		})
-	}
-
-	// Add flow symbols
-	flowSymbols := vsm.GetSymbolsByCategory(vsm.CategoryFlow)
-	for _, symbol := range flowSymbols {
-		symbols = append(symbols, map[string]interface{}{
-			"code":        symbol.Code,
-			"name":        symbol.Name,
-			"description": symbol.Description,
-			"category":    symbol.Category,
-			"position":    symbol.Position,
-		})
-	}
-
-
-	symbolsJSON, err := json.MarshalIndent(symbols, "", "  ")
+// jsonResource returns v as indented JSON for the requested resource.
+func jsonResource(req mcp.ReadResourceRequest, v any) ([]mcp.ResourceContents, error) {
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return nil, err
 	}
@@ -60,38 +19,58 @@ func handleSymbolsResource(ctx context.Context, req mcp.ReadResourceRequest) ([]
 		mcp.TextResourceContents{
 			URI:      req.Params.URI,
 			MIMEType: "application/json",
-			Text:     string(symbolsJSON),
+			Text:     string(data),
 		},
 	}, nil
+}
+
+// Resource Handlers
+
+func handleSymbolsResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	// Get all VSM symbols: process, then control (similar to inventory), then flow
+	symbols := []map[string]interface{}{}
+	for _, category := range []vsm.SymbolCategory{vsm.CategoryProcess, vsm.CategoryControl, vsm.CategoryFlow} {
+		for _, symbol := range vsm.GetSymbolsByCategory(category) {
+			symbols = append(symbols, map[string]interface{}{
+				"code":        symbol.Code,
+				"name":        symbol.Name,
+				"description": symbol.Description,
+				"category":    symbol.Category,
+				"position":    symbol.Position,
+			})
+		}
+	}
+
+	return jsonResource(req, symbols)
 }
 
 func handleStandardsResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 	standards := map[string]interface{}{
 		"standard": "ISO 22468:2020",
-		"title": "Value stream management (VSM)",
+		"title":    "Value stream management (VSM)",
 		"compliance_matrix": map[string]interface{}{
 			"core_methodology": map[string]interface{}{
-				"status": "Fully Implemented",
+				"status":      "Fully Implemented",
 				"description": "Complete VSM 4-phase methodology (Analysis, Design, Planning, Assessment)",
 			},
 			"annex_a_calculations": map[string]interface{}{
-				"status": "Fully Implemented",
+				"status":      "Fully Implemented",
 				"description": "All calculation procedures for KPIs, process parameters, and performance metrics",
 			},
 			"annex_b_data_boxes": map[string]interface{}{
-				"status": "Fully Implemented",
+				"status":      "Fully Implemented",
 				"description": "Standard data box formats for process information and inventory",
 			},
 			"annex_c_symbols": map[string]interface{}{
-				"status": "Fully Implemented",
+				"status":      "Fully Implemented",
 				"description": "Complete set of VSM symbols for mapping and visualization",
 			},
 			"seven_types_of_waste": map[string]interface{}{
-				"status": "Fully Implemented",
+				"status":      "Fully Implemented",
 				"description": "Transportation, Inventory, Motion, Waiting, Over-processing, Over-production, Defects",
 			},
 			"eight_design_principles": map[string]interface{}{
-				"status": "Fully Implemented",
+				"status":      "Fully Implemented",
 				"description": "Takt time, Supermarket, Continuous flow, Pull systems, Pacemaker, Levelling, Release, Continuous improvement",
 			},
 		},
@@ -115,18 +94,7 @@ func handleStandardsResource(ctx context.Context, req mcp.ReadResourceRequest) (
 		},
 	}
 
-	standardsJSON, err := json.MarshalIndent(standards, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-
-	return []mcp.ResourceContents{
-		mcp.TextResourceContents{
-			URI:      req.Params.URI,
-			MIMEType: "application/json",
-			Text:     string(standardsJSON),
-		},
-	}, nil
+	return jsonResource(req, standards)
 }
 
 func handleTemplatesResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
@@ -229,16 +197,5 @@ func handleTemplatesResource(ctx context.Context, req mcp.ReadResourceRequest) (
 		},
 	}
 
-	templatesJSON, err := json.MarshalIndent(templates, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-
-	return []mcp.ResourceContents{
-		mcp.TextResourceContents{
-			URI:      req.Params.URI,
-			MIMEType: "application/json",
-			Text:     string(templatesJSON),
-		},
-	}, nil
+	return jsonResource(req, templates)
 }
