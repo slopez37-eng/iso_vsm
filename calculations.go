@@ -478,41 +478,13 @@ func (c *Calculator) normalizeTimes(params ProcessParameters, to TimeUnit) Proce
 		return params
 	}
 	p := params
-	for _, field := range timeFields {
-		if v := *field(&p); v != nil {
-			*field(&p) = F(c.ConvertTimeUnit(*v, from, to))
+	for _, b := range boundedFloats {
+		if v := *b.value(&p); b.time && v != nil {
+			*b.value(&p) = F(c.ConvertTimeUnit(*v, from, to))
 		}
 	}
 	p.TimeUnit = to
 	return p
-}
-
-// timeFields are the ProcessParameters fields that are times (in the
-// process's TimeUnit).
-var timeFields = []func(*ProcessParameters) **float64{
-	func(p *ProcessParameters) **float64 { return &p.ProcessTime },
-	func(p *ProcessParameters) **float64 { return &p.CycleTime },
-	func(p *ProcessParameters) **float64 { return &p.SetupTime },
-	func(p *ProcessParameters) **float64 { return &p.Downtime },
-	func(p *ProcessParameters) **float64 { return &p.IdleTime },
-	func(p *ProcessParameters) **float64 { return &p.WaitingTime },
-	func(p *ProcessParameters) **float64 { return &p.WaitingTimeProcess },
-	func(p *ProcessParameters) **float64 { return &p.TransportTime },
-	func(p *ProcessParameters) **float64 { return &p.TransportRepetitionTime },
-	func(p *ProcessParameters) **float64 { return &p.StorageTime },
-	func(p *ProcessParameters) **float64 { return &p.HandlingTime },
-	func(p *ProcessParameters) **float64 { return &p.AncillaryTime },
-	func(p *ProcessParameters) **float64 { return &p.TimeBetweenFailures },
-	func(p *ProcessParameters) **float64 { return &p.TimeToRepair },
-	func(p *ProcessParameters) **float64 { return &p.RepetitionTime },
-	func(p *ProcessParameters) **float64 { return &p.ValueAddingTime },
-	func(p *ProcessParameters) **float64 { return &p.NonValueAddingTime },
-	func(p *ProcessParameters) **float64 { return &p.NecessaryNonValueAddingTime },
-	func(p *ProcessParameters) **float64 { return &p.ValueAddingTimeProcess },
-	func(p *ProcessParameters) **float64 { return &p.LeadTime },
-	func(p *ProcessParameters) **float64 { return &p.OperatingTime },
-	func(p *ProcessParameters) **float64 { return &p.ProcessingTime },
-	func(p *ProcessParameters) **float64 { return &p.RangeOfInventory },
 }
 
 // ValidateProcessParameters validates that process parameters are consistent.
@@ -619,18 +591,22 @@ func (c *Calculator) ValidateProcessParameters(params ProcessParameters) []error
 // totals that disagree with their parts do not change the KPIs; see
 // CheckConsistency for those disagreements.
 func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
-	kpis := make(map[string]float64)
-
 	if vs == nil {
-		return kpis
+		return make(map[string]float64)
 	}
+	return c.calculateKPIs(vs, c.figures(vs))
+}
+
+// calculateKPIs is CalculateKPIs for a non-nil vs whose stream figures are
+// f.
+func (c *Calculator) calculateKPIs(vs *ValueStream, f streamFigures) map[string]float64 {
+	kpis := make(map[string]float64)
 
 	// Customer takt = available operating time ÷ customer demand.
 	if takt, ok := c.customerTakt(vs.Customer); ok {
 		kpis["customer_takt"] = takt
 	}
 
-	f := c.figures(vs)
 	if len(vs.Processes) > 0 {
 		if f.leadTime != nil {
 			kpis["total_lead_time"] = *f.leadTime
@@ -655,8 +631,10 @@ func (c *Calculator) CalculateKPIs(vs *ValueStream) map[string]float64 {
 	// of 0 included).
 	var totalYield float64
 	processCount := 0
-	for _, process := range vs.Processes {
-		yield := c.ResolveParametersInStream(process.Parameters, vs).YieldFactor
+	for _, pf := range f.processes {
+		// Resolved in the stream; the yield does not depend on the time
+		// unit or waiting time the figures adjust.
+		yield := pf.params.YieldFactor
 		if yield == nil {
 			continue // no quality data, or unknown (impossible values)
 		}

@@ -177,36 +177,26 @@ func (a *Analyzer) AnalyzeCurrentState(vs *ValueStream) (*AnalysisResult, error)
 		KPIs:          make(map[string]float64),
 	}
 
+	// Every step reads the same stream figures (totals.go).
+	f := a.calculator.figures(vs)
+
 	// Identify bottlenecks
-	bottlenecks, err := a.IdentifyBottlenecks(vs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to identify bottlenecks: %w", err)
-	}
-	result.Bottlenecks = bottlenecks
+	result.Bottlenecks = a.identifyBottlenecks(vs, f)
 
 	// Analyze idle times
-	idleAnalysis, err := a.AnalyzeIdleTimes(vs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to analyze idle times: %w", err)
-	}
+	idleAnalysis := analyzeIdleTimes(vs, f)
 	result.IdleTimeAnalysis = *idleAnalysis
 
 	// Analyze waste
-	wasteAnalysis, err := a.AnalyzeWaste(vs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to analyze waste: %w", err)
-	}
+	wasteAnalysis := a.analyzeWaste(vs, f)
 	result.WasteAnalysis = *wasteAnalysis
 
 	// Analyze flow
-	flowAnalysis, err := a.AnalyzeFlow(vs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to analyze flow: %w", err)
-	}
+	flowAnalysis := analyzeFlow(vs, f)
 	result.FlowAnalysis = *flowAnalysis
 
 	// Calculate KPIs
-	result.KPIs = a.calculator.CalculateKPIs(vs)
+	result.KPIs = a.calculator.calculateKPIs(vs, f)
 
 	// Generate recommendations
 	result.Recommendations = a.GenerateRecommendations(result)
@@ -217,7 +207,7 @@ func (a *Analyzer) AnalyzeCurrentState(vs *ValueStream) (*AnalysisResult, error)
 	result.Notes = append(result.Notes, wasteAnalysis.Notes...)
 	result.Notes = append(result.Notes, flowAnalysis.Notes...)
 
-	result.ConsistencyIssues = CheckConsistency(vs)
+	result.ConsistencyIssues = checkConsistency(vs, f)
 	result.Notes = append(result.Notes, issueNotes(result.ConsistencyIssues)...)
 
 	return result, nil
@@ -230,33 +220,34 @@ func (a *Analyzer) AnalyzeCurrentState(vs *ValueStream) (*AnalysisResult, error)
 // CalculateProcessLoad). Processes whose utilization cannot be computed are
 // skipped, so with those inputs missing the result is empty.
 func (a *Analyzer) IdentifyBottlenecks(vs *ValueStream) ([]BottleneckInfo, error) {
+	return a.identifyBottlenecks(vs, a.calculator.figures(vs)), nil
+}
+
+// identifyBottlenecks is IdentifyBottlenecks for vs whose stream figures
+// are f.
+func (a *Analyzer) identifyBottlenecks(vs *ValueStream, f streamFigures) []BottleneckInfo {
 	var bottlenecks []BottleneckInfo
 
 	// Calculate utilization for each process
-	for _, process := range vs.Processes {
-		capacity, utilization, ok := a.CalculateProcessLoad(process, vs)
-		if !ok {
+	for i, process := range vs.Processes {
+		capacity, utilization, ok := a.processLoad(vs, f, i)
+		// Consider processes with >70% utilization as potential bottlenecks
+		if !ok || utilization <= 0.7 {
 			continue
 		}
-
-		bottleneckLevel := "low"
+		bottleneckLevel := "medium"
 		if utilization > 0.9 {
 			bottleneckLevel = "high"
-		} else if utilization > 0.7 {
-			bottleneckLevel = "medium"
 		}
-
-		if utilization > 0.7 { // Consider processes with >70% utilization as potential bottlenecks
-			bottlenecks = append(bottlenecks, BottleneckInfo{
-				ProcessID:       process.ID,
-				ProcessName:     process.Name,
-				Capacity:        capacity,
-				CapacityPeriod:  vs.Customer.DemandPeriod,
-				Utilization:     utilization,
-				BottleneckLevel: bottleneckLevel,
-				Description:     fmt.Sprintf("Process %s has %.1f%% utilization", process.Name, utilization*100),
-			})
-		}
+		bottlenecks = append(bottlenecks, BottleneckInfo{
+			ProcessID:       process.ID,
+			ProcessName:     process.Name,
+			Capacity:        capacity,
+			CapacityPeriod:  vs.Customer.DemandPeriod,
+			Utilization:     utilization,
+			BottleneckLevel: bottleneckLevel,
+			Description:     fmt.Sprintf("Process %s has %.1f%% utilization", process.Name, utilization*100),
+		})
 	}
 
 	// Sort by utilization (highest first)
@@ -264,7 +255,7 @@ func (a *Analyzer) IdentifyBottlenecks(vs *ValueStream) ([]BottleneckInfo, error
 		return bottlenecks[i].Utilization > bottlenecks[j].Utilization
 	})
 
-	return bottlenecks, nil
+	return bottlenecks
 }
 
 // missingLoadInputsNote is reported when utilization cannot be computed.
@@ -283,20 +274,13 @@ const missingDataNoteFormat = "%d value(s) needed for stream totals are missing;
 // issueNotes returns the notes for issues: one counting contradictions,
 // one counting missing data.
 func issueNotes(issues []ConsistencyIssue) []string {
-	var contradictions, missing int
-	for _, issue := range issues {
-		if issue.Kind == IssueMissingData {
-			missing++
-		} else {
-			contradictions++
-		}
-	}
+	contradictions, missing := splitIssues(issues)
 	var notes []string
-	if contradictions > 0 {
-		notes = append(notes, fmt.Sprintf(consistencyNoteFormat, contradictions))
+	if len(contradictions) > 0 {
+		notes = append(notes, fmt.Sprintf(consistencyNoteFormat, len(contradictions)))
 	}
-	if missing > 0 {
-		notes = append(notes, fmt.Sprintf(missingDataNoteFormat, missing))
+	if len(missing) > 0 {
+		notes = append(notes, fmt.Sprintf(missingDataNoteFormat, len(missing)))
 	}
 	return notes
 }
@@ -334,34 +318,64 @@ func (a *Analyzer) CalculateProcessLoad(process Process, vs *ValueStream) (capac
 	if vs == nil || !a.hasLoadInputs(vs) {
 		return 0, 0, false
 	}
-	effective, ok := a.effectiveCycleTime(process, a.calculator.contextOf(vs))
-	if !ok || effective <= 0 {
-		return 0, 0, false
-	}
-	available := *vs.Customer.AvailableTime
-	return available / effective, *vs.Customer.Demand * effective / available, true
+	params, unitOK := a.calculator.resolvedIn(process.Parameters, a.calculator.contextOf(vs))
+	effective, known := cycleTimePerResource(params, unitOK, process.Parameters)
+	return load(vs.Customer, effective, known)
 }
 
-// effectiveCycleTime returns a process's cycle time per resource, CT ÷
+// processLoad is CalculateProcessLoad for process i of vs, whose stream
+// figures are f.
+func (a *Analyzer) processLoad(vs *ValueStream, f streamFigures, i int) (capacity, utilization float64, ok bool) {
+	if vs == nil || !a.hasLoadInputs(vs) {
+		return 0, 0, false
+	}
+	effective, known := effectiveCycleTime(vs, f, i)
+	return load(vs.Customer, effective, known)
+}
+
+// load returns capacity and utilization at an effective cycle time (see
+// CalculateProcessLoad) for cust, which has the load inputs
+// (hasLoadInputs); ok is false when the cycle time is unknown or 0.
+func load(cust *Customer, effective float64, known bool) (capacity, utilization float64, ok bool) {
+	if !known || effective <= 0 {
+		return 0, 0, false
+	}
+	available := *cust.AvailableTime
+	return available / effective, *cust.Demand * effective / available, true
+}
+
+// effectiveCycleTime returns the cycle time per resource of process i of
+// vs, whose stream figures are f (see cycleTimePerResource).
+func effectiveCycleTime(vs *ValueStream, f streamFigures, i int) (float64, bool) {
+	pf := f.processes[i]
+	return cycleTimePerResource(pf.params, pf.unitOK, vs.Processes[i].Parameters)
+}
+
+// cycleTimePerResource returns a process's cycle time per resource, CT ÷
 // #RES, in the reference time unit: the time between two units leaving
 // the process, the one figure that capacity (available time ÷ CT ÷ #RES,
-// see CalculateProcessLoad) depends on. ok is false when it is unknown:
-// cycle_time not entered or impossible, resource_count entered as 0 or
-// less (see resourceCount), or a time unit that is not supported. A
-// cycle_time entered as 0 gives 0.
-func (a *Analyzer) effectiveCycleTime(process Process, ctx streamContext) (float64, bool) {
-	params, unitOK := a.calculator.resolvedIn(process.Parameters, ctx)
-	resources, resourcesOK := resourceCount(process.Parameters)
-	if !unitOK || !resourcesOK || params.CycleTime == nil {
+// see CalculateProcessLoad) depends on. resolved are its parameters
+// resolved in the reference unit (unitOK as from resolvedIn), entered its
+// parameters as entered. ok is false when it is unknown: cycle_time not
+// entered or impossible, resource_count entered as 0 or less (see
+// resourceCount), or a time unit that is not supported. A cycle_time
+// entered as 0 gives 0.
+func cycleTimePerResource(resolved ProcessParameters, unitOK bool, entered ProcessParameters) (float64, bool) {
+	resources, resourcesOK := resourceCount(entered)
+	if !unitOK || !resourcesOK || resolved.CycleTime == nil {
 		return 0, false
 	}
-	return *params.CycleTime / resources, true
+	return *resolved.CycleTime / resources, true
 }
 
 // AnalyzeIdleTimes analyzes idle times across all processes and inventory
 // points, from the stream figures CalculateKPIs uses (see IdleTimeAnalysis).
 func (a *Analyzer) AnalyzeIdleTimes(vs *ValueStream) (*IdleTimeAnalysis, error) {
-	f := a.calculator.figures(vs)
+	return analyzeIdleTimes(vs, a.calculator.figures(vs)), nil
+}
+
+// analyzeIdleTimes is AnalyzeIdleTimes for vs whose stream figures are f.
+func analyzeIdleTimes(vs *ValueStream, f streamFigures) *IdleTimeAnalysis {
 	analysis := &IdleTimeAnalysis{
 		IdleTimeByProcess: make(map[string]float64),
 		TotalIdleTime:     f.idleTime,
@@ -387,7 +401,7 @@ func (a *Analyzer) AnalyzeIdleTimes(vs *ValueStream) (*IdleTimeAnalysis, error) 
 	if e, ok := f.processEfficiency(); ok {
 		analysis.IdleTimeEfficiency = F(e)
 	}
-	return analysis, nil
+	return analysis
 }
 
 // wasteKinds are the 7 types of waste, in the order they are added.
@@ -396,6 +410,11 @@ var wasteKinds = []string{"transportation", "inventory", "motion", "waiting", "o
 // AnalyzeWaste analyzes the 7 types of waste (Muda) in the value stream
 // (see WasteAnalysis).
 func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
+	return a.analyzeWaste(vs, a.calculator.figures(vs)), nil
+}
+
+// analyzeWaste is AnalyzeWaste for vs whose stream figures are f.
+func (a *Analyzer) analyzeWaste(vs *ValueStream, f streamFigures) *WasteAnalysis {
 	analysis := &WasteAnalysis{
 		WasteByType:    make(map[string]float64),
 		WasteByProcess: make(map[string]float64),
@@ -410,7 +429,6 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 	reduction, reductionOK := assumption(vs, func(w *WasteAssumptions) *float64 { return w.ReductionPotential })
 
 	// The times the lead time counts, in the reference unit (totals.go).
-	f := a.calculator.figures(vs)
 	known := f.leadTime != nil
 	// byType sums the types that need no split; motionKnown and
 	// overProductionKnown are false when a process's part of them is not
@@ -445,7 +463,7 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 		}
 		// Over-production waste (unused capacity × operating time); only
 		// when utilization can be computed (see CalculateProcessLoad).
-		if _, utilization, loadKnown := a.CalculateProcessLoad(process, vs); loadKnown && utilization < overProductionUtilization {
+		if _, utilization, loadKnown := a.processLoad(vs, f, i); loadKnown && utilization < overProductionUtilization {
 			if params.OperatingTime != nil {
 				waste["over_production"] = (1 - utilization) * *params.OperatingTime
 			} else {
@@ -483,7 +501,7 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 	}
 
 	if !known {
-		return analysis, nil
+		return analysis
 	}
 	analysis.WaitingAndInventoryWaste = F(waiting)
 	total := waiting
@@ -513,7 +531,7 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 		analysis.Notes = append(analysis.Notes, noteOperatingTime)
 	}
 	if !motionKnown || !overProductionKnown {
-		return analysis, nil
+		return analysis
 	}
 	analysis.TotalWaste = F(total)
 	if reductionOK {
@@ -521,7 +539,7 @@ func (a *Analyzer) AnalyzeWaste(vs *ValueStream) (*WasteAnalysis, error) {
 	} else {
 		analysis.Notes = append(analysis.Notes, noteReduction)
 	}
-	return analysis, nil
+	return analysis
 }
 
 // overProductionUtilization is the utilization below which a process's
@@ -562,6 +580,11 @@ var (
 // reported as missing data by CheckConsistency where a stream total needs
 // it).
 func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
+	return analyzeFlow(vs, a.calculator.figures(vs)), nil
+}
+
+// analyzeFlow is AnalyzeFlow for vs whose stream figures are f.
+func analyzeFlow(vs *ValueStream, f streamFigures) *FlowAnalysis {
 	analysis := &FlowAnalysis{
 		FlowInterruptions: []FlowInterruption{},
 	}
@@ -573,14 +596,9 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 	// Resolved values in the reference time unit (the stream figures,
 	// totals.go). A process whose time unit is not supported is left out:
 	// its times cannot be compared with the others.
-	f := a.calculator.figures(vs)
-	resolved := make([]ProcessParameters, len(vs.Processes))
-	for i, pf := range f.processes {
-		resolved[i] = pf.params
-	}
-
-	for i, params := range resolved {
-		waiting, ok := knownWaiting(f.processes[i])
+	for _, pf := range f.processes {
+		params := pf.params
+		waiting, ok := knownWaiting(pf)
 		if !ok || params.ProcessTime == nil {
 			continue // not known: counts toward neither side
 		}
@@ -608,12 +626,11 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 	}
 
 	// Identify flow interruptions
-	ctx := a.calculator.contextOf(vs)
 	for i, process := range vs.Processes {
 		if !f.processes[i].unitOK {
 			continue
 		}
-		params := resolved[i]
+		params := f.processes[i].params
 		scrap, rework := num(params.ScrapRate), num(params.ReworkRate)
 
 		// Check for quality issues (high scrap/rework rates)
@@ -630,8 +647,8 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 		// Check for capacity bottlenecks
 		if i < len(vs.Processes)-1 {
 			nextProcess := vs.Processes[i+1]
-			this, thisOK := a.effectiveCycleTime(process, ctx)
-			next, nextOK := a.effectiveCycleTime(nextProcess, ctx)
+			this, thisOK := effectiveCycleTime(vs, f, i)
+			next, nextOK := effectiveCycleTime(vs, f, i+1)
 			if thisOK && nextOK && exceeds(this, next*1.5) {
 				analysis.FlowInterruptions = append(analysis.FlowInterruptions, FlowInterruption{
 					Type:      "capacity",
@@ -670,7 +687,7 @@ func (a *Analyzer) AnalyzeFlow(vs *ValueStream) (*FlowAnalysis, error) {
 		analysis.Notes = append(analysis.Notes, noteInfoFlowQuality)
 	}
 
-	return analysis, nil
+	return analysis
 }
 
 // pullWaitingShare: a process whose waiting time is below this share of its

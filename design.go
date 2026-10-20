@@ -3,7 +3,8 @@ package vsm
 import (
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 )
@@ -158,7 +159,7 @@ func (d *Designer) DesignFutureStateWithInputs(current *ValueStream, analysis *A
 	result.IdealState = idealState
 
 	// Design future state from the supplied targets
-	futureState, err := d.DesignFutureStateFromTargets(current, targets)
+	futureState, err := d.designFutureStateFromTargets(current, targets, result.ConsistencyIssues)
 	if err != nil {
 		return nil, fmt.Errorf("failed to design future state: %w", err)
 	}
@@ -189,10 +190,7 @@ func (d *Designer) DesignFutureStateWithInputs(current *ValueStream, analysis *A
 	if err := validateMeasureInputs(inputs, known, "improvement potential or continuous improvement"); err != nil {
 		return nil, err
 	}
-	for i := range result.ImprovementPotentials {
-		p := &result.ImprovementPotentials[i]
-		p.ImpactRating, p.EffortRating, p.Priority, p.PriorityNote = rate(inputs[p.ID], nil, nil)
-	}
+	prioritizePotentials(result.ImprovementPotentials, inputs)
 	prioritizeContinuousImprovements(improvements, inputs)
 	result.ContinuousImprovements = improvements
 
@@ -237,12 +235,7 @@ func (d *Designer) IdentifyImprovementPotentials(vs *ValueStream, analysis *Anal
 	}
 
 	// Based on waste analysis (sorted, so the order is stable)
-	wasteTypes := make([]string, 0, len(analysis.WasteAnalysis.WasteByType))
-	for wasteType := range analysis.WasteAnalysis.WasteByType {
-		wasteTypes = append(wasteTypes, wasteType)
-	}
-	sort.Strings(wasteTypes)
-	for _, wasteType := range wasteTypes {
+	for _, wasteType := range slices.Sorted(maps.Keys(analysis.WasteAnalysis.WasteByType)) {
 		if amount := analysis.WasteAnalysis.WasteByType[wasteType]; amount > 0 {
 			potentials = append(potentials, ImprovementPotential{
 				ID:          fmt.Sprintf("waste_%s", wasteType),
@@ -309,11 +302,17 @@ func (d *Designer) PrioritizeImprovementPotentials(potentials []ImprovementPoten
 		return nil, err
 	}
 	out := append([]ImprovementPotential(nil), potentials...)
-	for i := range out {
-		p := &out[i]
+	prioritizePotentials(out, inputs)
+	return out, nil
+}
+
+// prioritizePotentials applies the ratings to potentials as
+// PrioritizeImprovementPotentials does (inputs already validated).
+func prioritizePotentials(potentials []ImprovementPotential, inputs map[string]MeasureInput) {
+	for i := range potentials {
+		p := &potentials[i]
 		p.ImpactRating, p.EffortRating, p.Priority, p.PriorityNote = rate(inputs[p.ID], nil, nil)
 	}
-	return out, nil
 }
 
 // prioritizeContinuousImprovements applies the ratings to improvements as
@@ -343,13 +342,14 @@ func (d *Designer) CreateIdealState(current *ValueStream) (*ValueStream, error) 
 	// Lead time = Value-adding time only (no waste)
 	var idealProcesses []Process
 
+	ctx := d.calculator.contextOf(current)
 	for _, process := range current.Processes {
 		idealProcess := process
 		idealProcess.ID = process.ID + "_ideal"
 		idealProcess.Name = process.Name + " (Ideal)"
 
 		// In ideal state: only value-adding time remains
-		idealProcess.Parameters = d.calculator.idealParameters(process.Parameters, d.calculator.contextOf(current)).Clone()
+		idealProcess.Parameters = d.calculator.idealParameters(process.Parameters, ctx).Clone()
 
 		idealProcesses = append(idealProcesses, idealProcess)
 	}
@@ -446,6 +446,13 @@ func (d *Designer) DesignFutureStateFromIdeal(ideal, current *ValueStream) (*Val
 // time target below the range of an inventory that is the process's stock;
 // target the process's stock_quantity to move that inventory with it).
 func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *FutureStateTargets) (*ValueStream, error) {
+	return d.designFutureStateFromTargets(current, targets, nil)
+}
+
+// designFutureStateFromTargets is DesignFutureStateFromTargets with
+// currentIssues = CheckConsistency(current) when already computed (nil:
+// computed here when needed).
+func (d *Designer) designFutureStateFromTargets(current *ValueStream, targets *FutureStateTargets, currentIssues []ConsistencyIssue) (*ValueStream, error) {
 	if current == nil {
 		return nil, errors.New("current value stream cannot be nil")
 	}
@@ -478,6 +485,7 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 		UpdatedAt:              time.Now(),
 	}
 
+	ctx := d.calculator.contextOf(current)
 	var futureProcesses []Process
 	for _, process := range current.Processes {
 		futureProcess := process
@@ -488,7 +496,7 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 		if t, ok := targets.Processes[process.ID]; ok {
 			own = &t
 		}
-		params, err := d.calculator.applyProcessTargets(process.Parameters, own, targets.Default, d.calculator.contextOf(current))
+		params, err := d.calculator.applyProcessTargets(process.Parameters, own, targets.Default, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("process %s: %w", process.ID, err)
 		}
@@ -517,7 +525,6 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 			own, def = nil, nil
 			futureStock := num(futureProcesses[processIndex(current, holder.ID)].Parameters.StockQuantity)
 			currentStock := *holder.Parameters.StockQuantity
-			ctx := d.calculator.contextOf(current)
 			_, rateKnown := ctx.demandRate(ctx.unit)
 			switch {
 			case inv.Quantity != nil || (inv.Range != nil && rateKnown):
@@ -532,7 +539,7 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 				own = &InventoryTargets{Range: AbsoluteTarget(0)}
 			}
 		}
-		futureInv, err := d.calculator.applyInventoryTargets(inv, own, def, d.calculator.contextOf(current))
+		futureInv, err := d.calculator.applyInventoryTargets(inv, own, def, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("inventory %s: %w", inv.ID, err)
 		}
@@ -569,7 +576,10 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 	// across elements (an inventory linked to a process, see
 	// Inventory.ProcessID): reject a contradiction the current state does
 	// not have.
-	if err := newContradiction(current, future); err != nil {
+	if currentIssues == nil {
+		currentIssues = CheckConsistency(current)
+	}
+	if err := newContradiction(currentIssues, future); err != nil {
 		return nil, err
 	}
 
@@ -580,9 +590,10 @@ func (d *Designer) DesignFutureStateFromTargets(current *ValueStream, targets *F
 }
 
 // newContradiction returns an error naming the first contradiction (see
-// CheckConsistency) in future that current does not have. Future process
-// IDs are the current ones + "_future"; inventory IDs are the same.
-func newContradiction(current, future *ValueStream) error {
+// CheckConsistency) in future that the current state, whose issues are
+// currentIssues, does not have. Future process IDs are the current ones +
+// "_future"; inventory IDs are the same.
+func newContradiction(currentIssues []ConsistencyIssue, future *ValueStream) error {
 	key := func(issue ConsistencyIssue) string {
 		id := issue.ID
 		if issue.Element == "process" {
@@ -591,7 +602,7 @@ func newContradiction(current, future *ValueStream) error {
 		return issue.Element + "\x00" + id + "\x00" + issue.Field
 	}
 	had := map[string]bool{}
-	for _, issue := range CheckConsistency(current) {
+	for _, issue := range currentIssues {
 		had[key(issue)] = true
 	}
 	for _, issue := range CheckConsistency(future) {
@@ -691,7 +702,10 @@ func (d *Designer) ApplyDesignPrinciples(current, future *ValueStream) []DesignP
 // else the stored TaktTime), compared with cycle times in the same
 // reference time unit.
 func (d *Designer) checkTaktTimePrinciple(vs *ValueStream) bool {
-	takt, ok := d.calculator.CalculateKPIs(vs)["customer_takt"]
+	if vs == nil {
+		return false
+	}
+	takt, ok := d.calculator.customerTakt(vs.Customer)
 	if !ok || takt <= 0 {
 		return false
 	}
@@ -752,9 +766,13 @@ func (d *Designer) checkPullSystemPrinciple(vs *ValueStream) bool {
 // checkPacemakerPrinciple checks if pacemaker principle is properly defined
 func (d *Designer) checkPacemakerPrinciple(vs *ValueStream) bool {
 	// Pacemaker should have the highest utilization or be explicitly defined
+	if !d.analyzer.hasLoadInputs(vs) {
+		return false // no utilization is known
+	}
+	f := d.calculator.figures(vs)
 	maxUtilization := 0.0
-	for _, process := range vs.Processes {
-		_, utilization, ok := d.analyzer.CalculateProcessLoad(process, vs)
+	for i := range vs.Processes {
+		_, utilization, ok := d.analyzer.processLoad(vs, f, i)
 		if ok && utilization > maxUtilization {
 			maxUtilization = utilization
 		}

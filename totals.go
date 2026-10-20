@@ -138,10 +138,17 @@ func (c *Calculator) figures(vs *ValueStream) streamFigures {
 
 	// Which processes have an inventory counted on its own as their stock
 	// (see timeThroughProcess): that inventory carries the stock's time.
+	// through[i] is true when inventory i is a process's stock whose time
+	// is in that process's lead time.
 	linkedInv, duplicateOf := linkedInventories(vs)
+	through := make([]bool, len(vs.Inventory))
 	carried := map[string]bool{}
 	for i, inv := range vs.Inventory {
-		if holder, _ := stockHolder(vs, inv); linkedInv[i] && duplicateOf[i] == "" && !c.timeThroughProcess(holder, ctx) {
+		if !linkedInv[i] || duplicateOf[i] != "" {
+			continue
+		}
+		holder, _ := stockHolder(vs, inv)
+		if through[i] = c.timeThroughProcess(holder, ctx); !through[i] {
 			carried[holder.ID] = true
 		}
 	}
@@ -228,8 +235,7 @@ func (c *Calculator) figures(vs *ValueStream) streamFigures {
 		case inv.Quantity == nil && rng != nil && (*rng == 0 || rateKnown):
 			inf.stock = F(*rng * rate)
 		}
-		holder, _ := stockHolder(vs, inv)
-		inf.counted = !linkedInv[i] || !c.timeThroughProcess(holder, ctx)
+		inf.counted = !linkedInv[i] || !through[i]
 		if inf.counted {
 			if r, ok := ctx.inventoryRange(inv); ok {
 				inf.time = F(r)

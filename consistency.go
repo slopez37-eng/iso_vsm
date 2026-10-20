@@ -2,8 +2,9 @@ package vsm
 
 import (
 	"fmt"
+	"maps"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -340,10 +341,7 @@ func (r *resolution) total(name string, field **float64, parts []part, check fun
 	case !started:
 		return false
 	case !known:
-		r.unknownParts[name] = unknownNames(parts)
-		if *field == nil {
-			r.unknown[name] = true
-		}
+		r.markUnknown(name, *field, unknownNames(parts))
 		return false
 	}
 	if *field != nil && check != nil {
@@ -351,6 +349,16 @@ func (r *resolution) total(name string, field **float64, parts []part, check fun
 	}
 	*field = F(sum)
 	return true
+}
+
+// markUnknown records that the parts named unknownParts cannot give the
+// total name; the total is unknown too when field (its stored value) is
+// blank.
+func (r *resolution) markUnknown(name string, field *float64, unknownParts []string) {
+	r.unknownParts[name] = unknownParts
+	if field == nil {
+		r.unknown[name] = true
+	}
 }
 
 // Bounds of entered values (see "Impossible values" at ResolveParameters).
@@ -370,55 +378,38 @@ type boundedFloat struct {
 
 // boundedFloats are every optional number of ProcessParameters: all are at
 // least 0, the rates at most 1.
-var boundedFloats = func() []boundedFloat {
-	var out []boundedFloat
-	for _, f := range []struct {
-		name string
-		get  func(*ProcessParameters) **float64
-	}{
-		{"process_time", func(p *ProcessParameters) **float64 { return &p.ProcessTime }},
-		{"cycle_time", func(p *ProcessParameters) **float64 { return &p.CycleTime }},
-		{"setup_time", func(p *ProcessParameters) **float64 { return &p.SetupTime }},
-		{"downtime", func(p *ProcessParameters) **float64 { return &p.Downtime }},
-		{"idle_time", func(p *ProcessParameters) **float64 { return &p.IdleTime }},
-		{"waiting_time", func(p *ProcessParameters) **float64 { return &p.WaitingTime }},
-		{"waiting_time_process", func(p *ProcessParameters) **float64 { return &p.WaitingTimeProcess }},
-		{"transport_time", func(p *ProcessParameters) **float64 { return &p.TransportTime }},
-		{"transport_repetition_time", func(p *ProcessParameters) **float64 { return &p.TransportRepetitionTime }},
-		{"storage_time", func(p *ProcessParameters) **float64 { return &p.StorageTime }},
-		{"handling_time", func(p *ProcessParameters) **float64 { return &p.HandlingTime }},
-		{"ancillary_time", func(p *ProcessParameters) **float64 { return &p.AncillaryTime }},
-		{"time_between_failures", func(p *ProcessParameters) **float64 { return &p.TimeBetweenFailures }},
-		{"time_to_repair", func(p *ProcessParameters) **float64 { return &p.TimeToRepair }},
-		{"repetition_time", func(p *ProcessParameters) **float64 { return &p.RepetitionTime }},
-		{"value_adding_time", func(p *ProcessParameters) **float64 { return &p.ValueAddingTime }},
-		{"non_value_adding_time", func(p *ProcessParameters) **float64 { return &p.NonValueAddingTime }},
-		{"necessary_non_value_adding_time", func(p *ProcessParameters) **float64 { return &p.NecessaryNonValueAddingTime }},
-		{"value_adding_time_process", func(p *ProcessParameters) **float64 { return &p.ValueAddingTimeProcess }},
-		{"lead_time", func(p *ProcessParameters) **float64 { return &p.LeadTime }},
-		{"operating_time", func(p *ProcessParameters) **float64 { return &p.OperatingTime }},
-		{"processing_time", func(p *ProcessParameters) **float64 { return &p.ProcessingTime }},
-		{"range_of_inventory", func(p *ProcessParameters) **float64 { return &p.RangeOfInventory }},
-	} {
-		out = append(out, boundedFloat{name: f.name, value: f.get, time: true})
-	}
-	for _, f := range []struct {
-		name     string
-		get      func(*ProcessParameters) **float64
-		fraction bool
-	}{
-		{"customer_demand", func(p *ProcessParameters) **float64 { return &p.CustomerDemand }, false},
-		{"order_quantity", func(p *ProcessParameters) **float64 { return &p.OrderQuantity }, false},
-		{"stock_quantity", func(p *ProcessParameters) **float64 { return &p.StockQuantity }, false},
-		{"employee_count", func(p *ProcessParameters) **float64 { return &p.EmployeeCount }, false},
-		{"yield_factor", func(p *ProcessParameters) **float64 { return &p.YieldFactor }, true},
-		{"scrap_rate", func(p *ProcessParameters) **float64 { return &p.ScrapRate }, true},
-		{"rework_rate", func(p *ProcessParameters) **float64 { return &p.ReworkRate }, true},
-	} {
-		out = append(out, boundedFloat{name: f.name, value: f.get, fraction: f.fraction})
-	}
-	return out
-}()
+var boundedFloats = []boundedFloat{
+	{"process_time", func(p *ProcessParameters) **float64 { return &p.ProcessTime }, true, false},
+	{"cycle_time", func(p *ProcessParameters) **float64 { return &p.CycleTime }, true, false},
+	{"setup_time", func(p *ProcessParameters) **float64 { return &p.SetupTime }, true, false},
+	{"downtime", func(p *ProcessParameters) **float64 { return &p.Downtime }, true, false},
+	{"idle_time", func(p *ProcessParameters) **float64 { return &p.IdleTime }, true, false},
+	{"waiting_time", func(p *ProcessParameters) **float64 { return &p.WaitingTime }, true, false},
+	{"waiting_time_process", func(p *ProcessParameters) **float64 { return &p.WaitingTimeProcess }, true, false},
+	{"transport_time", func(p *ProcessParameters) **float64 { return &p.TransportTime }, true, false},
+	{"transport_repetition_time", func(p *ProcessParameters) **float64 { return &p.TransportRepetitionTime }, true, false},
+	{"storage_time", func(p *ProcessParameters) **float64 { return &p.StorageTime }, true, false},
+	{"handling_time", func(p *ProcessParameters) **float64 { return &p.HandlingTime }, true, false},
+	{"ancillary_time", func(p *ProcessParameters) **float64 { return &p.AncillaryTime }, true, false},
+	{"time_between_failures", func(p *ProcessParameters) **float64 { return &p.TimeBetweenFailures }, true, false},
+	{"time_to_repair", func(p *ProcessParameters) **float64 { return &p.TimeToRepair }, true, false},
+	{"repetition_time", func(p *ProcessParameters) **float64 { return &p.RepetitionTime }, true, false},
+	{"value_adding_time", func(p *ProcessParameters) **float64 { return &p.ValueAddingTime }, true, false},
+	{"non_value_adding_time", func(p *ProcessParameters) **float64 { return &p.NonValueAddingTime }, true, false},
+	{"necessary_non_value_adding_time", func(p *ProcessParameters) **float64 { return &p.NecessaryNonValueAddingTime }, true, false},
+	{"value_adding_time_process", func(p *ProcessParameters) **float64 { return &p.ValueAddingTimeProcess }, true, false},
+	{"lead_time", func(p *ProcessParameters) **float64 { return &p.LeadTime }, true, false},
+	{"operating_time", func(p *ProcessParameters) **float64 { return &p.OperatingTime }, true, false},
+	{"processing_time", func(p *ProcessParameters) **float64 { return &p.ProcessingTime }, true, false},
+	{"range_of_inventory", func(p *ProcessParameters) **float64 { return &p.RangeOfInventory }, true, false},
+	{"customer_demand", func(p *ProcessParameters) **float64 { return &p.CustomerDemand }, false, false},
+	{"order_quantity", func(p *ProcessParameters) **float64 { return &p.OrderQuantity }, false, false},
+	{"stock_quantity", func(p *ProcessParameters) **float64 { return &p.StockQuantity }, false, false},
+	{"employee_count", func(p *ProcessParameters) **float64 { return &p.EmployeeCount }, false, false},
+	{"yield_factor", func(p *ProcessParameters) **float64 { return &p.YieldFactor }, false, true},
+	{"scrap_rate", func(p *ProcessParameters) **float64 { return &p.ScrapRate }, false, true},
+	{"rework_rate", func(p *ProcessParameters) **float64 { return &p.ReworkRate }, false, true},
+}
 
 // boundedInts are the optional counts of ProcessParameters (at least 0).
 var boundedInts = []struct {
@@ -436,23 +427,6 @@ var boundedInts = []struct {
 // beyond float rounding (see exceeds).
 func outOfBounds(v float64, fraction bool) bool {
 	return exceeds(0, v) || (fraction && exceeds(v, 1)) || math.IsNaN(v) || math.IsInf(v, 0)
-}
-
-// impossibleFields lists the fields of p whose entered value is out of
-// bounds (see "Impossible values" at ResolveParameters).
-func impossibleFields(p ProcessParameters) []string {
-	var names []string
-	for _, b := range boundedFloats {
-		if v := *b.value(&p); v != nil && outOfBounds(*v, b.fraction) {
-			names = append(names, b.name)
-		}
-	}
-	for _, b := range boundedInts {
-		if v := *b.value(&p); v != nil && *v < 0 {
-			names = append(names, b.name)
-		}
-	}
-	return names
 }
 
 // resourceCount returns the number of parallel resources of a process:
@@ -577,11 +551,10 @@ func (c *Calculator) resolve(in ProcessParameters, ctx streamContext) resolution
 	}
 
 	// Processing time (A.5).
-	resources, resourcesOK := resourceCount(*p)
 	ordered := (p.CycleTime != nil || unk("cycle_time")) && (p.OrderQuantity != nil || unk("order_quantity"))
 	switch {
-	case p.CycleTime != nil && p.OrderQuantity != nil && resourcesOK && !unk("resource_count"):
-		derive("processing_time", &p.ProcessingTime, *p.CycleTime**p.OrderQuantity/resources, ruleProcessing)
+	case processingFormula(*p) && !unk("resource_count"):
+		derive("processing_time", &p.ProcessingTime, processingTime(*p), ruleProcessing)
 	case ordered && p.ProcessingTime == nil:
 		r.unknown["processing_time"] = true
 	}
@@ -595,12 +568,9 @@ func (c *Calculator) resolve(in ProcessParameters, ctx streamContext) resolution
 	}
 
 	// Process time (A.2, A.6).
-	a2 := []part{
-		r.part("processing_time", p.ProcessingTime),
-		r.part("setup_time", p.SetupTime),
-		r.part("handling_time", p.HandlingTime),
-		r.part("waiting_time_process", p.WaitingTimeProcess),
-		r.part("ancillary_time", p.AncillaryTime),
+	a2 := make([]part, len(processParts))
+	for i, f := range processParts {
+		a2[i] = r.part(f.name, *f.value(p))
 	}
 	given := processPartsGiven(*p)
 	if (p.RepetitionTime != nil || unk("repetition_time")) && (p.RepetitionCount != nil || unk("repetition_count")) {
@@ -612,10 +582,7 @@ func (c *Calculator) resolve(in ProcessParameters, ctx streamContext) resolution
 			a6Parts = append(a6Parts, part{name: "repetition_count", unknown: true})
 		}
 		if _, _, known := sumParts(a6Parts); !known {
-			r.unknownParts["process_time"] = unknownNames(a6Parts)
-			if p.ProcessTime == nil {
-				r.unknown["process_time"] = true
-			}
+			r.markUnknown("process_time", p.ProcessTime, unknownNames(a6Parts))
 		} else {
 			a6 := c.CalculateRepetitiveProcessTime(num(p.SetupTime), *p.RepetitionTime, *p.RepetitionCount)
 			if p.ProcessTime != nil && !consistent(*p.ProcessTime, a6) {
@@ -710,10 +677,7 @@ func (c *Calculator) resolve(in ProcessParameters, ctx streamContext) resolution
 			if classStarted {
 				names = append(names, unknownNames(class)...)
 			}
-			r.unknownParts["lead_time"] = names
-			if p.LeadTime == nil {
-				r.unknown["lead_time"] = true
-			}
+			r.markUnknown("lead_time", p.LeadTime, names)
 		}
 	}
 	if computed && p.LeadTime != nil && !consistent(*p.LeadTime, *lt) {
@@ -742,10 +706,7 @@ func (c *Calculator) resolve(in ProcessParameters, ctx streamContext) resolution
 	switch defects, started, known := sumParts(quality); {
 	case !started:
 	case !known:
-		r.unknownParts["yield_factor"] = unknownNames(quality)
-		if p.YieldFactor == nil {
-			r.unknown["yield_factor"] = true
-		}
+		r.markUnknown("yield_factor", p.YieldFactor, unknownNames(quality))
 	case exceeds(defects, 1):
 		r.issues = append(r.issues, ConsistencyIssue{
 			Field: fieldDefects, StoredValue: defects, ComputedValue: 1, Rule: ruleDefects,
@@ -864,21 +825,25 @@ func linkedInventories(vs *ValueStream) (linked []bool, duplicateOf []string) {
 	return linked, duplicateOf
 }
 
+// processParts are the A.2 process time parts, in order (see
+// ruleProcessParts).
+var processParts = []struct {
+	name  string
+	value func(*ProcessParameters) **float64
+}{
+	{"processing_time", func(p *ProcessParameters) **float64 { return &p.ProcessingTime }},
+	{"setup_time", func(p *ProcessParameters) **float64 { return &p.SetupTime }},
+	{"handling_time", func(p *ProcessParameters) **float64 { return &p.HandlingTime }},
+	{"waiting_time_process", func(p *ProcessParameters) **float64 { return &p.WaitingTimeProcess }},
+	{"ancillary_time", func(p *ProcessParameters) **float64 { return &p.AncillaryTime }},
+}
+
 // processPartsGiven lists the A.2 process time parts that are entered (or
 // computed, for processing_time), 0 included.
 func processPartsGiven(p ProcessParameters) []string {
 	var given []string
-	for _, f := range []struct {
-		name  string
-		value *float64
-	}{
-		{"processing_time", p.ProcessingTime},
-		{"setup_time", p.SetupTime},
-		{"handling_time", p.HandlingTime},
-		{"waiting_time_process", p.WaitingTimeProcess},
-		{"ancillary_time", p.AncillaryTime},
-	} {
-		if f.value != nil {
+	for _, f := range processParts {
+		if *f.value(&p) != nil {
 			given = append(given, f.name)
 		}
 	}
@@ -929,6 +894,12 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 	if vs == nil {
 		return nil
 	}
+	return checkConsistency(vs, NewCalculator().figures(vs))
+}
+
+// checkConsistency is CheckConsistency for a non-nil vs whose stream figures
+// are f.
+func checkConsistency(vs *ValueStream, f streamFigures) []ConsistencyIssue {
 	c := NewCalculator()
 	ctx := c.contextOf(vs)
 	var issues []ConsistencyIssue
@@ -943,20 +914,8 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 
 	unit := string(ctx.unit)
 	for _, inv := range vs.Inventory {
-		for _, f := range []struct {
-			name  string
-			value *float64
-			unit  string
-		}{{"quantity", inv.Quantity, ""}, {"range", inv.Range, unit}} {
-			if f.value != nil && nonNegative(f.value) == nil {
-				issues = append(issues, ConsistencyIssue{
-					Element: "inventory", ID: inv.ID, Field: f.name, StoredValue: *f.value, Unit: f.unit,
-					Rule: ruleNonNegative,
-					Message: fmt.Sprintf("inventory %s: %s %g is impossible (below 0); it is treated as unknown",
-						inv.ID, f.name, *f.value),
-				})
-			}
-		}
+		issues = append(issues, negativeIssues("inventory", inv.ID,
+			[]storedValue{{"quantity", inv.Quantity, ""}, {"range", inv.Range, unit}})...)
 		want, ok := ctx.inventoryRange(inv)
 		if !ok || nonNegative(inv.Range) == nil || consistent(*inv.Range, want) {
 			continue
@@ -1055,49 +1014,32 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 	}
 
 	if cust := vs.Customer; cust != nil {
-		for _, f := range []struct {
-			name  string
-			value *float64
-			unit  string
-		}{{"demand", cust.Demand, ""}, {"available_time", cust.AvailableTime, unit}, {"takt_time", cust.TaktTime, unit}} {
-			if f.value != nil && nonNegative(f.value) == nil {
+		issues = append(issues, negativeIssues("customer", cust.ID, []storedValue{
+			{"demand", cust.Demand, ""}, {"available_time", cust.AvailableTime, unit}, {"takt_time", cust.TaktTime, unit},
+		})...)
+		if !workingDaysValid(cust.WorkingDaysPerWeek) {
+			issues = append(issues, ConsistencyIssue{
+				Element: "customer", ID: cust.ID, Field: "working_days_per_week",
+				StoredValue: *cust.WorkingDaysPerWeek, ComputedValue: 7, Rule: ruleWorkingDays,
+				Message: fmt.Sprintf("customer %s: working_days_per_week %g is outside 1–7; "+
+					"inventory times are not derived from demand", cust.ID, *cust.WorkingDaysPerWeek),
+			})
+		}
+		if nonNegative(cust.TaktTime) != nil && nonNegative(cust.AvailableTime) != nil && positive(cust.Demand) {
+			if takt, _ := c.customerTakt(cust); !consistent(*cust.TaktTime, takt) {
 				issues = append(issues, ConsistencyIssue{
-					Element: "customer", ID: cust.ID, Field: f.name, StoredValue: *f.value, Unit: f.unit,
-					Rule: ruleNonNegative,
-					Message: fmt.Sprintf("customer %s: %s %g is impossible (below 0); it is treated as unknown",
-						cust.ID, f.name, *f.value),
+					Element: "customer", ID: cust.ID, Field: "takt_time",
+					StoredValue: *cust.TaktTime, ComputedValue: takt, Unit: unit, Rule: ruleTakt,
+					Message: fmt.Sprintf("customer %s: takt_time stored %g, but available_time ÷ demand = %g; calculations use %[3]g",
+						cust.ID, *cust.TaktTime, takt),
 				})
 			}
 		}
 	}
-	if cust := vs.Customer; cust != nil && !workingDaysValid(cust.WorkingDaysPerWeek) {
-		issues = append(issues, ConsistencyIssue{
-			Element: "customer", ID: cust.ID, Field: "working_days_per_week",
-			StoredValue: *cust.WorkingDaysPerWeek, ComputedValue: 7, Rule: ruleWorkingDays,
-			Message: fmt.Sprintf("customer %s: working_days_per_week %g is outside 1–7; "+
-				"inventory times are not derived from demand", cust.ID, *cust.WorkingDaysPerWeek),
-		})
-	}
-
-	if cust := vs.Customer; cust != nil && nonNegative(cust.TaktTime) != nil && nonNegative(cust.AvailableTime) != nil && positive(cust.Demand) {
-		if takt, _ := c.customerTakt(cust); !consistent(*cust.TaktTime, takt) {
-			issues = append(issues, ConsistencyIssue{
-				Element: "customer", ID: cust.ID, Field: "takt_time",
-				StoredValue: *cust.TaktTime, ComputedValue: takt, Unit: unit, Rule: ruleTakt,
-				Message: fmt.Sprintf("customer %s: takt_time stored %g, but available_time ÷ demand = %g; calculations use %[3]g",
-					cust.ID, *cust.TaktTime, takt),
-			})
-		}
-	}
 
 	if len(vs.KPIs) > 0 {
-		computed := c.CalculateKPIs(vs)
-		names := make([]string, 0, len(vs.KPIs))
-		for name := range vs.KPIs {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
+		computed := c.calculateKPIs(vs, f)
+		for _, name := range slices.Sorted(maps.Keys(vs.KPIs)) {
 			want, ok := computed[name]
 			if !ok || consistent(vs.KPIs[name], want) {
 				continue
@@ -1118,5 +1060,42 @@ func CheckConsistency(vs *ValueStream) []ConsistencyIssue {
 	for i := range issues {
 		issues[i].Kind = IssueContradiction
 	}
-	return append(issues, c.figures(vs).missing...)
+	return append(issues, f.missing...)
+}
+
+// storedValue is one entered value checked by negativeIssues.
+type storedValue struct {
+	name  string
+	value *float64
+	unit  string
+}
+
+// negativeIssues reports each of values that is entered and impossible
+// (below 0) on the element with ID id.
+func negativeIssues(element, id string, values []storedValue) []ConsistencyIssue {
+	var issues []ConsistencyIssue
+	for _, f := range values {
+		if f.value != nil && nonNegative(f.value) == nil {
+			issues = append(issues, ConsistencyIssue{
+				Element: element, ID: id, Field: f.name, StoredValue: *f.value, Unit: f.unit,
+				Rule: ruleNonNegative,
+				Message: fmt.Sprintf("%s %s: %s %g is impossible (below 0); it is treated as unknown",
+					element, id, f.name, *f.value),
+			})
+		}
+	}
+	return issues
+}
+
+// splitIssues splits issues into contradictions (Kind IssueContradiction, or
+// no Kind) and missing data (Kind IssueMissingData), each in order.
+func splitIssues(issues []ConsistencyIssue) (contradictions, missing []ConsistencyIssue) {
+	for _, issue := range issues {
+		if issue.Kind == IssueMissingData {
+			missing = append(missing, issue)
+		} else {
+			contradictions = append(contradictions, issue)
+		}
+	}
+	return contradictions, missing
 }

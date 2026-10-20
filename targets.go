@@ -159,8 +159,9 @@ var directFields = []processField{
 	{"rework_rate", func(t *ProcessTargets) *Target { return t.ReworkRate }, func(p *ProcessParameters) **float64 { return &p.ReworkRate }, true},
 }
 
-// pick returns the per-process target if set, else the default.
-func pick(own, def *ProcessTargets, get func(*ProcessTargets) *Target) *Target {
+// pick returns the per-element target (process or inventory) if set, else
+// the default.
+func pick[T any](own, def *T, get func(*T) *Target) *Target {
 	if own != nil {
 		if t := get(own); t != nil {
 			return t
@@ -582,19 +583,14 @@ func (c *Calculator) applyProcessTargets(params ProcessParameters, own, def *Pro
 
 	// Impossible values of the current state (reported by
 	// CheckConsistency) that no target replaced are carried over.
-	for _, name := range impossibleFields(params) {
-		if targeted[name] {
-			continue
+	for _, b := range boundedFloats {
+		if v := *b.value(&params); v != nil && outOfBounds(*v, b.fraction) && !targeted[b.name] {
+			*b.value(&p) = v
 		}
-		for _, b := range boundedFloats {
-			if b.name == name {
-				*b.value(&p) = *b.value(&params)
-			}
-		}
-		for _, b := range boundedInts {
-			if b.name == name {
-				*b.value(&p) = *b.value(&params)
-			}
+	}
+	for _, b := range boundedInts {
+		if v := *b.value(&params); v != nil && *v < 0 && !targeted[b.name] {
+			*b.value(&p) = v
 		}
 	}
 
@@ -678,19 +674,8 @@ func (c *Calculator) trimDerived(input, out ProcessParameters, ctx streamContext
 //
 // A quantity target of 0 empties the inventory (quantity 0, range 0).
 func (c *Calculator) applyInventoryTargets(inv Inventory, own, def *InventoryTargets, ctx streamContext) (Inventory, error) {
-	pickInv := func(get func(*InventoryTargets) *Target) *Target {
-		if own != nil {
-			if t := get(own); t != nil {
-				return t
-			}
-		}
-		if def != nil {
-			return get(def)
-		}
-		return nil
-	}
-	qt := pickInv(func(t *InventoryTargets) *Target { return t.Quantity })
-	rt := pickInv(func(t *InventoryTargets) *Target { return t.Range })
+	qt := pick(own, def, func(t *InventoryTargets) *Target { return t.Quantity })
+	rt := pick(own, def, func(t *InventoryTargets) *Target { return t.Range })
 	if qt == nil && rt == nil {
 		return inv, nil
 	}
