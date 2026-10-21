@@ -187,6 +187,22 @@ func TestMeasureTargetMet(t *testing.T) {
 	}
 }
 
+// TestMeasureTargetUsesLatestDateInCurrentUnit lists the latest snapshot
+// first and records it in minutes; the current state is in seconds.
+func TestMeasureTargetUsesLatestDateInCurrentUnit(t *testing.T) {
+	p := exampleProject()
+	latest := &ValueStream{Name: "m", TimeUnit: Minute,
+		Processes: []Process{{ID: "P1", ProcessTime: F(0.5)}},
+		Idles:     []Idle{{ID: "I1", From: "P1", IdleTime: F(0.1)}}} // lead time 0.6 min = 36 s
+	p.Monitoring = []Snapshot{{Date: "2027-03-01", State: latest}, {Date: "2027-02-01", State: exampleStream()}}
+	p.Measures = []Measure{{Number: 1, Potential: "waiting", Description: "FIFO lane", KPI: KPILeadTime, Target: F(30)}}
+	m := EvaluateProject(p).Measures[0]
+	approx(t, "measured lead time in s", m.Measured.Value, 36)
+	if m.Met == nil || *m.Met {
+		t.Errorf("36 s against a 30 s target: met = %v, want false", m.Met)
+	}
+}
+
 func TestUnknownKPIName(t *testing.T) {
 	p := exampleProject()
 	p.Measures = []Measure{{Number: 1, Potential: "waiting", Description: "FIFO lane", KPI: "throughput"}}

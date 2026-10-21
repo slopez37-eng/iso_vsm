@@ -13,7 +13,7 @@ The `vsm` command and the `iso_vsm` Go library (module `github.com/slopez37-eng/
 - check the numbers you entered against those formulas and report contradictions;
 - compute totals (process, idle and lead time), KPIs (customer takt, value added ratio, value adding share, OTIF, yield, inventory turns) and the bottleneck;
 - compare a current and a future state (clause 4.5.2) and check the catalogue of measures for SMART gaps;
-- evaluate dated monitoring snapshots against the current state, and check each measure's target (`kpi` plus `target`) in the latest snapshot.
+- evaluate dated monitoring snapshots against the current state, and check each measure's target (`kpi` plus `target`, times in the current state's unit) in the latest-dated snapshot.
 
 They do not draw maps and do not design a future state.
 

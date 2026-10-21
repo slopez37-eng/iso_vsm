@@ -127,7 +127,7 @@ The standard leaves some points open, and a few of its formulas read oddly. This
 
 **Product family (4.2.2).** The family shall have similar process steps, be representative and have a balanced volume. Record each as a `criteria` entry with `met`. A characteristic marked not met gives a warning, and once any is recorded, a note lists the ones not yet assessed.
 
-**Monitoring (4.5.1, 4.5.2).** The standard asks for the changed value stream to be monitored over time. Each `monitoring` snapshot is a date and the value stream as measured then. It is evaluated like any state and compared with the current state by the figures of 4.5.2. A measure whose `kpi` names a stream total or KPI (for example `lead_time` or `scrap_rate`) is checked against its `target` in the latest snapshot that has that figure. Times, the non-value adding share and the scrap rate meet the target at or below it; the other KPIs meet it at or above it.
+**Monitoring (4.5.1, 4.5.2).** The standard asks for the changed value stream to be monitored over time. Each `monitoring` snapshot is a date and the value stream as measured then. It is evaluated like any state and compared with the current state by the figures of 4.5.2. A measure whose `kpi` names a stream total or KPI (for example `lead_time` or `scrap_rate`) is checked against its `target` in the snapshot with the latest date that has that figure. A time target is in the current state's time unit, and the measured time is converted to it. Times, the non-value adding share and the scrap rate meet the target at or below it; the other KPIs meet it at or above it.
 
 **Project phase (4.1)** records where the project stands: `analysis`, `design`, `planning`, `implementation`, `assessment` (check) or `adjustment` (act).
 

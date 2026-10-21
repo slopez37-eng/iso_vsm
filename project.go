@@ -124,7 +124,8 @@ func EvaluateProject(p *Project) ProjectReport {
 		}
 	}
 
-	// Monitoring snapshots are evaluated in date order and compared with the current state.
+	// Monitoring snapshots are evaluated in the order given and compared with
+	// the current state.
 	var last string
 	for i, s := range p.Monitoring {
 		subject := "monitoring " + s.Date
@@ -185,7 +186,7 @@ func EvaluateProject(p *Project) ProjectReport {
 		mr := MeasureReview{Number: m.Number, SMARTGaps: m.SMARTGaps(), BenefitCostRatio: m.BenefitCostRatio(), Target: m.Target}
 		if m.KPI != "" {
 			checkEnum(&issues, subject, "4.4.2", "kpi", m.KPI, KPINames)
-			mr.Measured = latestKPI(rep.Monitoring, m.KPI)
+			mr.Measured = latestKPI(rep.Monitoring, m.KPI, rep.Current)
 			if m.Target != nil && mr.Measured.Known {
 				met := meetsTarget(m.KPI, mr.Measured.Value, *m.Target)
 				mr.Met = &met
@@ -206,14 +207,27 @@ func EvaluateProject(p *Project) ProjectReport {
 	return rep
 }
 
-// latestKPI returns the named KPI of the latest snapshot that has it.
-func latestKPI(reports []MonitoringReport, name KPIName) Value {
-	for i := len(reports) - 1; i >= 0; i-- {
-		if v := reports[i].Result.KPI(name); v.Known {
-			return v
+// latestKPI returns the named KPI of the snapshot with the latest valid date
+// that has it. Times are converted to the current state's unit, which is the
+// unit of a measure's target.
+func latestKPI(reports []MonitoringReport, name KPIName, current *Result) Value {
+	var best Value
+	date := ""
+	for _, m := range reports {
+		v := m.Result.KPI(name)
+		if !v.Known || !isDate(m.Date) || m.Date < date {
+			continue
 		}
+		if current != nil && (name == KPILeadTime || name == KPIProcessTime || name == KPIIdleTime) {
+			x, err := Convert(v.Value, m.Result.TimeUnit, current.TimeUnit)
+			if err != nil {
+				continue
+			}
+			v.Value = x
+		}
+		best, date = v, m.Date
 	}
-	return Value{}
+	return best
 }
 
 // meetsTarget reports whether v reaches target in the direction that is better
