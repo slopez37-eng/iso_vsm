@@ -233,3 +233,10 @@ func TestEvaluateZeroDemandWithoutOperatingTime(t *testing.T) {
 		t.Errorf("want one A.12 error for demand 0, got %v", e)
 	}
 }
+
+func TestEvaluateNotesBatchDwellTime(t *testing.T) {
+	r := Evaluate(exampleStream())
+	if n := len(issuesWith(r, SeverityNote, "Table A.2")); n != 1 {
+		t.Errorf("want one batch note, got %v", r.Issues)
+	}
+}

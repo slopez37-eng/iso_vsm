@@ -683,6 +683,17 @@ func (e *evaluator) result() Result {
 		}
 	}
 
+	for _, c := range e.procs {
+		n := 0.0
+		if c.p.BatchSize != nil {
+			n = *c.p.BatchSize
+		} else if c.rep.known {
+			n = c.rep.v
+		}
+		if n > 1 && c.pt.known {
+			e.add(SeverityNote, c.subject, "Table A.2", "process time %g is the dwell time of one piece, which stays for its whole batch of %g", c.pt.v, n)
+		}
+	}
 	r.Bottleneck = e.bottleneck()
 	r.Issues = e.issues
 	if r.Issues == nil {
