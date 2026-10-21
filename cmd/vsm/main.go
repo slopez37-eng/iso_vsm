@@ -339,7 +339,7 @@ func template(w io.Writer) error {
 			Suppliers: []vsm.Supplier{{ID: "S1", Name: "supplier", DeliveryFrequency: "daily"}},
 			Processes: []vsm.Process{
 				{ID: "P1", Name: "cutting", Type: vsm.ProcessAutomated, Resources: vsm.F(1), Operators: vsm.F(1),
-					CycleTime: vsm.F(1.5), SetupTime: vsm.F(30), RepetitionTime: vsm.F(1.5), Repetitions: vsm.F(40), BatchSize: vsm.F(40)},
+					CycleTime: vsm.F(2.25), SetupTime: vsm.F(30), RepetitionTime: vsm.F(1.5), Repetitions: vsm.F(40), BatchSize: vsm.F(40)},
 				{ID: "P2", Name: "assembly", Type: vsm.ProcessManual, Operators: vsm.F(2), CycleTime: vsm.F(2), ProcessTime: vsm.F(2.5),
 					ScrapRate: vsm.F(0.02)},
 			},
