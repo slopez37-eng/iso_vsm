@@ -73,6 +73,9 @@ func TestFormulas(t *testing.T) {
 	if _, err := OnTimeInFull(51, 50); err == nil {
 		t.Error("A.14 accepted more complete deliveries than total deliveries")
 	}
+	if _, err := OnTimeInFull(-10, -5); err == nil {
+		t.Error("A.14 accepted negative deliveries")
+	}
 	var_, _ := ValueAddedRatio(5, 50)
 	approx(t, "A.16", var_, 0.1)
 	for name, f := range map[string]func() (float64, error){

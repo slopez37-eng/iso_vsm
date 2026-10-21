@@ -31,10 +31,10 @@ vsm template > project.json   # a starter project to edit
 vsm check project.json        # evaluate a project or a single value stream
 vsm check -json project.json  # the same report as JSON
 vsm symbols                   # the value stream symbols of Table A.1
-vsm version                   # the version and commit the tool was built from
+vsm version                   # the version and commit it was built from; +dirty if the tree had local changes
 ```
 
-A file whose top-level keys are all project fields is read as a project; any other file is read as one value stream. `vsm check` exits with status 1 when the file has errors (invalid input that was ignored), 2 when it cannot read the file, and 0 otherwise.
+A file is read as a project if it has a key that only a project has (`phase`, `current`, `ideal`, `future`, `monitoring`, `measures` or `workshop`), or if all its top-level keys are project fields; any other file is read as one value stream. `vsm check` exits with status 1 when the file has errors (invalid input that was ignored), 2 when it cannot read the file, and 0 otherwise.
 
 ## Library
 

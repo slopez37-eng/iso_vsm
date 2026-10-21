@@ -219,11 +219,41 @@ func pctVal(v vsm.Value) string {
 
 // version names the module version. A build from a git checkout gets a
 // pseudo-version that names the commit, with "+dirty" for uncommitted changes.
+// version names the module version and the commit the tool was built from.
 func version() string {
-	if info, ok := debug.ReadBuildInfo(); ok {
-		return "iso_vsm " + info.Main.Version
+	info, ok := debug.ReadBuildInfo()
+	return versionFrom(info, ok)
+}
+
+// versionFrom formats build information as "iso_vsm VERSION COMMIT", with
+// +dirty after the commit when the tree had local changes. Without commit
+// information, such as a go test binary, it gives the version alone.
+func versionFrom(info *debug.BuildInfo, ok bool) string {
+	if !ok {
+		return "iso_vsm (unknown version)"
 	}
-	return "iso_vsm (unknown version)"
+	s := "iso_vsm " + info.Main.Version
+	var rev string
+	var dirty bool
+	for _, set := range info.Settings {
+		switch set.Key {
+		case "vcs.revision":
+			rev = set.Value
+		case "vcs.modified":
+			dirty = set.Value == "true"
+		}
+	}
+	if rev == "" {
+		return s
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	s += " " + rev
+	if dirty {
+		s += "+dirty"
+	}
+	return s
 }
 
 func symbols(w io.Writer) error {

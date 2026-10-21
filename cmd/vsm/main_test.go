@@ -4,11 +4,40 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 
 	vsm "github.com/slopez37-eng/iso_vsm"
 )
+
+func TestVersionNamesCommit(t *testing.T) {
+	dirty := &debug.BuildInfo{
+		Main: debug.Module{Version: "v1.2.3"},
+		Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "594ef6b0123456789abcdef"},
+			{Key: "vcs.modified", Value: "true"},
+		},
+	}
+	devel := &debug.BuildInfo{
+		Main:     debug.Module{Version: "(devel)"},
+		Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "594ef6b"}},
+	}
+	for _, c := range []struct {
+		info *debug.BuildInfo
+		ok   bool
+		want string
+	}{
+		{dirty, true, "iso_vsm v1.2.3 594ef6b01234+dirty"},
+		{devel, true, "iso_vsm (devel) 594ef6b"},
+		{&debug.BuildInfo{Main: debug.Module{Version: "v1.2.3"}}, true, "iso_vsm v1.2.3"},
+		{nil, false, "iso_vsm (unknown version)"},
+	} {
+		if got := versionFrom(c.info, c.ok); got != c.want {
+			t.Errorf("versionFrom = %q, want %q", got, c.want)
+		}
+	}
+}
 
 func TestCheckTemplate(t *testing.T) {
 	dir := t.TempDir()

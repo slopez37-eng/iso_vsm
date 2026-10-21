@@ -2,6 +2,7 @@ package vsm
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
@@ -211,6 +212,58 @@ func TestValueJSON(t *testing.T) {
 	}
 	if got, want := string(data), `[null,{"value":2,"source":"A.1"}]`; got != want {
 		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+func TestValueJSONRoundTrip(t *testing.T) {
+	for _, v := range []Value{
+		{},
+		{Value: 2, Known: true, Source: "A.1"},
+		{Value: math.Inf(1), Known: true, Source: "A.17"},
+		{Value: math.Inf(-1), Known: true, Source: "entered"},
+	} {
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got Value
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("%s: %v", data, err)
+		}
+		if got != v {
+			t.Errorf("%s decoded as %+v, want %+v", data, got, v)
+		}
+	}
+	var bad Value
+	if err := json.Unmarshal([]byte(`{"value":"NaN","source":"x"}`), &bad); err == nil {
+		t.Error("a value that is not a number, +Inf or -Inf was accepted")
+	}
+}
+
+func TestEvaluateChecksFlowAndFlashReferences(t *testing.T) {
+	vs := &ValueStream{
+		Name: "x", TimeUnit: Minute,
+		Processes: []Process{{ID: "P1", ProcessTime: F(10)}},
+		Idles:     []Idle{{ID: "I1", From: "P1", IdleTime: F(5)}},
+		Flashes: []Flash{
+			{Number: 1, Target: "I1", Description: "ok"},
+			{Number: 2, Target: "nowhere", Description: "bad"},
+		},
+		InformationFlows: []InformationFlow{
+			{From: "customer", To: "P1", Kind: FlowElectronic},
+			{From: "P1", To: "nowhere", Kind: FlowManual},
+		},
+	}
+	r := Evaluate(vs)
+	subjects := map[string]bool{}
+	for _, i := range issuesWith(r, SeverityError, "") {
+		subjects[i.Subject] = true
+	}
+	if !subjects["improvement flash 2"] || !subjects["information flow #2"] {
+		t.Errorf("bad references not reported; error subjects %v", subjects)
+	}
+	if subjects["improvement flash 1"] || subjects["information flow #1"] {
+		t.Errorf("valid references reported; error subjects %v", subjects)
 	}
 }
 

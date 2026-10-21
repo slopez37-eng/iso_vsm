@@ -105,6 +105,9 @@ func InventoryTurns(usage, averageStock float64) (float64, error) {
 // OnTimeInFull returns complete and on-time deliveries divided by total
 // deliveries (A.14).
 func OnTimeInFull(completeOnTimeDeliveries, totalDeliveries float64) (float64, error) {
+	if completeOnTimeDeliveries < 0 || totalDeliveries < 0 {
+		return 0, fmt.Errorf("vsm: deliveries cannot be negative")
+	}
 	if completeOnTimeDeliveries > totalDeliveries {
 		return 0, fmt.Errorf("vsm: %v complete on-time deliveries exceed %v total deliveries", completeOnTimeDeliveries, totalDeliveries)
 	}

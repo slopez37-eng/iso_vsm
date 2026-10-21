@@ -33,6 +33,44 @@ func (v Value) MarshalJSON() ([]byte, error) {
 	}{value, v.Source})
 }
 
+// UnmarshalJSON reads what MarshalJSON writes: null for an unknown value, or
+// {"value": v, "source": s} where v is a number, "+Inf" or "-Inf".
+func (v *Value) UnmarshalJSON(data []byte) error {
+	var j *struct {
+		Value  json.RawMessage `json:"value"`
+		Source string          `json:"source"`
+	}
+	if err := json.Unmarshal(data, &j); err != nil {
+		return err
+	}
+	if j == nil {
+		*v = Value{}
+		return nil
+	}
+	var x any
+	if err := json.Unmarshal(j.Value, &x); err != nil {
+		return fmt.Errorf("vsm: value: %w", err)
+	}
+	var n float64
+	switch x := x.(type) {
+	case float64:
+		n = x
+	case string:
+		switch x {
+		case "+Inf":
+			n = math.Inf(1)
+		case "-Inf":
+			n = math.Inf(-1)
+		default:
+			return fmt.Errorf("vsm: value %q is not a number, +Inf or -Inf", x)
+		}
+	default:
+		return fmt.Errorf("vsm: value %s is not a number, +Inf or -Inf", j.Value)
+	}
+	*v = Value{Value: n, Known: true, Source: j.Source}
+	return nil
+}
+
 func (v Value) String() string {
 	if !v.Known {
 		return "unknown"
@@ -376,9 +414,26 @@ func (e *evaluator) validate() {
 		}
 	}
 	for _, f := range vs.Flashes {
+		subject := fmt.Sprintf("improvement flash %d", f.Number)
+		if f.Target != "" {
+			if kind, ok := ids[f.Target]; !ok || (kind != "process" && kind != "idle") {
+				e.add(SeverityError, subject, "4.3.2", "%q is not a process or idle id", f.Target)
+			}
+		}
 		for _, w := range f.Wastes {
 			if !slices.Contains(Wastes, w) {
-				e.add(SeverityError, fmt.Sprintf("improvement flash %d", f.Number), "4.3.2", "%q is not one of the seven wastes", w)
+				e.add(SeverityError, subject, "4.3.2", "%q is not one of the seven wastes", w)
+			}
+		}
+	}
+	for i, f := range vs.InformationFlows {
+		subject := fmt.Sprintf("information flow #%d", i+1)
+		for _, end := range []string{f.From, f.To} {
+			if end == "customer" || end == "planning" {
+				continue
+			}
+			if kind, ok := ids[end]; !ok || (kind != "process" && kind != "supplier") {
+				e.add(SeverityError, subject, "", "%q is not a process, supplier, customer or planning id", end)
 			}
 		}
 	}
@@ -501,8 +556,9 @@ func (e *evaluator) processCells(p *Process) *processCells {
 }
 
 // a8Parts returns the parts of process time in A.8. By Figure A.1, downtime
-// is part of it only for automated processes (case B), and handling time is
-// not part of it for data-related processes (case C).
+// is left out of it for manual and data-related processes, so it is part of it
+// for automated processes (case B) and for processes with no or an invalid
+// type. Handling time is left out for data-related processes (case C).
 func (c *processCells) a8Parts() []*cell {
 	parts := []*cell{c.st, c.prt, c.wt}
 	if c.p.Type != ProcessData {
@@ -575,14 +631,13 @@ func (e *evaluator) derive() bool {
 	return changed
 }
 
-// noteA5 reports what A.5 would give for a process whose process time is
-// still unknown. A.5 is never applied: it holds only if process quantity is
-// the work in process per resource, which Table A.2 does not say.
 // hundredPercent is the left side of A.17, 100 % = scrap rate + yield factor.
 var hundredPercent = known("100 %", 1, "A.17")
 
 // notes explains, per process, what A.5 would give and that a batch's
-// process time is a piece's dwell time.
+// process time is a piece's dwell time. A.5 is never applied: it holds only if
+// process quantity is the work in process per resource, which Table A.2 does
+// not say.
 func (e *evaluator) notes() {
 	for _, c := range e.procs {
 		if !c.pt.known && c.ct.known && c.pq.known && c.res.known {
@@ -754,7 +809,7 @@ func (e *evaluator) result() Result {
 		k.NonValueAddingShare = knownValue(nva, "4.5.2")
 	}
 	if d := vs.Deliveries; d != nil {
-		if v, err := OnTimeInFull(d.CompleteOnTime, d.Total); err == nil && d.CompleteOnTime >= 0 {
+		if v, err := OnTimeInFull(d.CompleteOnTime, d.Total); err == nil {
 			k.OnTimeInFull = knownValue(v, "A.14")
 		} else {
 			e.add(SeverityError, "deliveries", "A.14", "need 0 ≤ complete_on_time ≤ total and total > 0")

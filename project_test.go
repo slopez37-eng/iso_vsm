@@ -1,7 +1,10 @@
 package vsm
 
 import (
+	"bytes"
 	"encoding/json"
+	"math"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -127,6 +130,72 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	}
 	if got.Current.SchemaVersion != SchemaVersion {
 		t.Errorf("schema version %d not stamped", got.Current.SchemaVersion)
+	}
+}
+
+func TestSaveFailureKeepsFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stream.json")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	bad := &ValueStream{Name: "x", Processes: []Process{{ID: "P", ProcessTime: F(math.NaN())}}}
+	if err := Save(path, bad); err == nil {
+		t.Fatal("saving a NaN process time did not fail")
+	}
+	if data, _ := os.ReadFile(path); string(data) != "old" {
+		t.Errorf("file changed to %q after a failed save", data)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("%d files in the folder after a failed save, want only the original", len(entries))
+	}
+}
+
+func TestSaveKeepsPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stream.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, exampleStream()); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o640 {
+		t.Errorf("mode after save = %v, want 0640", fi.Mode().Perm())
+	}
+}
+
+func TestWriteValueStampsSchemaVersion(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Write(&buf, *exampleStream()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"schema_version": 1`) {
+		t.Errorf("value stream written without its schema version:\n%s", buf.String())
+	}
+	buf.Reset()
+	if err := Write(&buf, *exampleProject()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"schema_version": 1`) {
+		t.Errorf("project written without its schema version:\n%s", buf.String())
+	}
+}
+
+func TestProjectDetectedByAnyProjectKey(t *testing.T) {
+	project := `{"name":"p","current":{"name":"c","time_unit":"s"},"measurs":[]}`
+	if ok, err := IsProjectJSON([]byte(project)); err != nil || !ok {
+		t.Fatalf("IsProjectJSON = %v, %v; want a project", ok, err)
+	}
+	if _, err := ReadProject(strings.NewReader(project)); err == nil || !strings.Contains(err.Error(), "measurs") {
+		t.Errorf("err = %v, want unknown field measurs", err)
+	}
+	stream := `{"name":"x","time_unit":"s","measurs":[]}`
+	if ok, err := IsProjectJSON([]byte(stream)); err != nil || ok {
+		t.Errorf("IsProjectJSON = %v, %v for a value stream; want false", ok, err)
 	}
 }
 

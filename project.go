@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -209,7 +210,8 @@ func EvaluateProject(p *Project) ProjectReport {
 
 // latestKPI returns the named KPI of the snapshot with the latest valid date
 // that has it. Times are converted to the current state's unit, which is the
-// unit of a measure's target.
+// unit of a measure's target. Without a current state they stay in the
+// snapshot's unit.
 func latestKPI(reports []MonitoringReport, name KPIName, current *Result) Value {
 	var best Value
 	date := ""
@@ -271,25 +273,36 @@ func isDate(s string) bool {
 }
 
 // IsProjectJSON reports whether a JSON object is a project rather than a
-// single value stream: it is a project when every top-level key is a field of
-// Project.
+// single value stream. It is a project when a top-level key is one that only a
+// project has (such as current or measures). Otherwise it is a project when
+// every top-level key is a field of Project, as in a file with only a name.
 func IsProjectJSON(data []byte) (bool, error) {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return false, fmt.Errorf("vsm: %w", err)
 	}
+	project := jsonFields(reflect.TypeFor[Project]())
+	stream := jsonFields(reflect.TypeFor[ValueStream]())
+	allProject := true
+	for k := range probe {
+		if project[k] && !stream[k] {
+			return true, nil
+		}
+		if !project[k] {
+			allProject = false
+		}
+	}
+	return allProject, nil
+}
+
+// jsonFields returns the JSON key of every field of a struct type.
+func jsonFields(t reflect.Type) map[string]bool {
 	fields := map[string]bool{}
-	t := reflect.TypeFor[Project]()
 	for i := range t.NumField() {
 		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
 		fields[name] = true
 	}
-	for k := range probe {
-		if !fields[k] {
-			return false, nil
-		}
-	}
-	return true, nil
+	return fields
 }
 
 // ReadValueStream decodes a value stream from JSON. Unknown fields are an
@@ -329,23 +342,44 @@ func read[T any](r io.Reader) (*T, error) {
 }
 
 // Save writes v (a *ValueStream or *Project) to a file as indented JSON,
-// stamping the current schema version.
+// stamping the current schema version. The JSON is written to a temporary file
+// beside the target, which replaces the target only when it is complete, so a
+// failed save leaves the existing file unchanged. A symbolic link is followed,
+// and the file keeps its permissions; a new file gets 0644.
 func Save(path string, v any) error {
-	f, err := os.Create(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
 		return err
 	}
+	defer os.Remove(f.Name()) // fails harmlessly once the file has been renamed
 	if err := Write(f, v); err != nil {
 		f.Close()
 		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(f.Name(), mode); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // Write writes v (a *ValueStream or *Project) as indented JSON, stamping the
 // current schema version.
 func Write(w io.Writer, v any) error {
 	switch x := v.(type) {
+	case ValueStream:
+		return Write(w, &x)
+	case Project:
+		return Write(w, &x)
 	case *ValueStream:
 		x.SchemaVersion = SchemaVersion
 	case *Project:

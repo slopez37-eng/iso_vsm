@@ -26,7 +26,7 @@ They do not draw maps and do not design a future state.
 
 `vsm symbols` lists the value stream symbols of Table A.1.
 
-A file whose top-level keys are all project fields (`schema_version`, `name`, `phase`, `current`, `ideal`, `future`, `monitoring`, `measures`, `workshop`) is checked as a project. Any other file is checked as one value stream.
+A file is checked as a project if it has a key that only a project has (`phase`, `current`, `ideal`, `future`, `monitoring`, `measures` or `workshop`), or if all its top-level keys are project fields (`schema_version`, `name`). Any other file is checked as one value stream.
 
 Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ignored). 2 means a usage error, or the file could not be read or decoded. Unknown JSON field names count as unreadable, so a misspelt field gives exit 2. Warnings and notes never change the exit code.
 
@@ -37,6 +37,7 @@ Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ig
 - Rates are fractions: 2 % is `0.02`. A rate above 1 is an error.
 - Every time in one value stream uses that stream's single `time_unit` (`s`, `min`, `h` or `d`). This includes the customer's `operating_time` and `period_length`.
 - `customer.period_length` converts an inventory range given as a quantity into time (A.7). Without it, such storage time stays unknown and lead time may stay unknown too.
+- `improvement_flashes[].target` must be the id of a process or idle. `information_flows[].from` and `to` must be the id of a process or supplier, or the reserved id `customer` or `planning`.
 - `quality` and `deliveries` are counts (defective of total, complete on time of total), not rates.
 - Process `type` follows the cases of Figure A.1: `manual` (case A), `automated` (case B) or `data` (case C). Downtime counts in process time only for `automated`. Handling time does not count for `data`. With no type, all parts count.
 - `cycle_time` is the observed interval at which the whole process completes products, losses included.
