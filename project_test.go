@@ -137,6 +137,68 @@ func TestReadRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestMonitoringSnapshots(t *testing.T) {
+	p := exampleProject()
+	snap := exampleStream()
+	snap.Idles[0].IdleTime = F(4)
+	p.Monitoring = []Snapshot{
+		{Date: "2027-02-01", State: snap},
+		{Date: "2027-01-01", State: exampleStream()},
+		{Date: "2027-03-01"},
+	}
+	rep := EvaluateProject(p)
+	if len(rep.Monitoring) != 2 || rep.Monitoring[0].Comparison == nil {
+		t.Fatalf("monitoring = %+v, want two snapshots with the first compared", rep.Monitoring)
+	}
+	approx(t, "ω_IT", rep.Monitoring[0].Comparison.Figures.IdleTime.Value, 0.4)
+	var order, noState bool
+	for _, i := range rep.Issues {
+		order = order || (i.Severity == SeverityWarning && i.Subject == "monitoring 2027-01-01")
+		noState = noState || (i.Severity == SeverityError && i.Subject == "monitoring 2027-03-01")
+	}
+	if !order || !noState {
+		t.Errorf("date order warning %v, missing state error %v:\n%v", order, noState, rep.Issues)
+	}
+}
+
+func TestMeasureTargetMet(t *testing.T) {
+	for _, c := range []struct {
+		kpi    KPIName
+		target float64
+		met    bool
+	}{
+		{KPILeadTime, 40, true},           // lead time 39 is below 40, and lower is better
+		{KPILeadTime, 38, false},          // 39 is above 38
+		{KPIValueAddingShare, 0.85, true}, // 35 ÷ 39 is about 0.90, and higher is better
+		{KPIValueAddingShare, 0.95, false},
+	} {
+		p := exampleProject()
+		snap := exampleStream()
+		snap.Idles[0].IdleTime = F(4)
+		p.Monitoring = []Snapshot{{Date: "2027-01-01", State: snap}}
+		p.Measures = []Measure{{Number: 1, Potential: "waiting", Description: "FIFO lane", KPI: c.kpi, Target: F(c.target)}}
+		m := EvaluateProject(p).Measures[0]
+		if m.Met == nil {
+			t.Fatalf("%s: no verdict, measured %v", c.kpi, m.Measured)
+		}
+		if *m.Met != c.met {
+			t.Errorf("%s target %v, measured %v: met = %v, want %v", c.kpi, c.target, m.Measured, *m.Met, c.met)
+		}
+	}
+}
+
+func TestUnknownKPIName(t *testing.T) {
+	p := exampleProject()
+	p.Measures = []Measure{{Number: 1, Potential: "waiting", Description: "FIFO lane", KPI: "throughput"}}
+	found := false
+	for _, i := range EvaluateProject(p).Issues {
+		found = found || (i.Severity == SeverityError && i.Subject == "measure 1" && i.Rule == "4.4.2")
+	}
+	if !found {
+		t.Error("unknown KPI name not reported")
+	}
+}
+
 func TestSymbols(t *testing.T) {
 	seen := map[string]bool{}
 	for _, s := range Symbols {

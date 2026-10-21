@@ -31,6 +31,8 @@ type Measure struct {
 	// Metric and Target make the goal measurable, e.g. "scrap rate" and 0.02.
 	Metric string   `json:"metric,omitempty"`
 	Target *float64 `json:"target,omitempty"`
+	// KPI names the indicator that Target is checked against in the monitoring snapshots.
+	KPI KPIName `json:"kpi,omitempty"`
 	// Responsible is the person who accepted the measure.
 	Responsible string `json:"responsible,omitempty"`
 	Department  string `json:"department,omitempty"`

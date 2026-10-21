@@ -143,6 +143,55 @@ type KPIs struct {
 	NonValueAddingShare Value `json:"non_value_adding_share"` // S_NVA = ΣIT ÷ LT
 }
 
+// KPIName names a total or key performance indicator that a measure can target.
+type KPIName string
+
+const (
+	KPILeadTime            KPIName = "lead_time"
+	KPIProcessTime         KPIName = "process_time"
+	KPIIdleTime            KPIName = "idle_time"
+	KPIValueAddingShare    KPIName = "value_adding_share"
+	KPINonValueAddingShare KPIName = "non_value_adding_share"
+	KPIValueAddedRatio     KPIName = "value_added_ratio"
+	KPIOnTimeInFull        KPIName = "on_time_in_full"
+	KPIYieldFactor         KPIName = "yield_factor"
+	KPIScrapRate           KPIName = "scrap_rate"
+	KPIInventoryTurns      KPIName = "inventory_turns"
+)
+
+// KPINames lists every KPIName.
+var KPINames = []KPIName{KPILeadTime, KPIProcessTime, KPIIdleTime, KPIValueAddingShare, KPINonValueAddingShare,
+	KPIValueAddedRatio, KPIOnTimeInFull, KPIYieldFactor, KPIScrapRate, KPIInventoryTurns}
+
+// KPI returns the named total or indicator. It is unknown when the name is not
+// one of KPINames or the figure is unknown.
+func (r Result) KPI(name KPIName) Value {
+	t, k := r.Totals, r.KPIs
+	switch name {
+	case KPILeadTime:
+		return t.LeadTime
+	case KPIProcessTime:
+		return t.ProcessTime
+	case KPIIdleTime:
+		return t.IdleTime
+	case KPIValueAddingShare:
+		return k.ValueAddingShare
+	case KPINonValueAddingShare:
+		return k.NonValueAddingShare
+	case KPIValueAddedRatio:
+		return k.ValueAddedRatio
+	case KPIOnTimeInFull:
+		return k.OnTimeInFull
+	case KPIYieldFactor:
+		return k.YieldFactor
+	case KPIScrapRate:
+		return k.ScrapRate
+	case KPIInventoryTurns:
+		return k.InventoryTurns
+	}
+	return Value{}
+}
+
 // cell is one number during evaluation.
 type cell struct {
 	name  string

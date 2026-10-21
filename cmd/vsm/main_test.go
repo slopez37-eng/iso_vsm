@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	vsm "github.com/slopez37-eng/iso_vsm"
 )
 
 func TestCheckTemplate(t *testing.T) {
@@ -53,6 +55,29 @@ func TestCheckProjectWithoutCurrent(t *testing.T) {
 	code, err := check([]string{path}, &out)
 	if err != nil || code != 1 || !strings.Contains(out.String(), "needs a current state") {
 		t.Fatalf("code %d, err %v\n%s", code, err, out.String())
+	}
+}
+
+func TestCheckPrintsMonitoring(t *testing.T) {
+	stream := func(idle float64) *vsm.ValueStream {
+		return &vsm.ValueStream{Name: "stream", TimeUnit: vsm.Minute,
+			Processes: []vsm.Process{{ID: "P1", ProcessTime: vsm.F(5)}},
+			Idles:     []vsm.Idle{{ID: "I1", From: "P1", IdleTime: vsm.F(idle)}}}
+	}
+	p := vsm.Project{Name: "p", Current: stream(1), Monitoring: []vsm.Snapshot{{Date: "2027-01-01", State: stream(0.5)}}}
+	path := filepath.Join(t.TempDir(), "project.json")
+	if err := vsm.Save(path, &p); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	code, err := check([]string{path}, &out)
+	if err != nil || code != 0 {
+		t.Fatalf("code %d, err %v\n%s", code, err, out.String())
+	}
+	for _, want := range []string{"== Monitoring 2027-01-01 ==", "Current vs 2027-01-01 (4.5.2)"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("report has no %q:\n%s", want, out.String())
+		}
 	}
 }
 
