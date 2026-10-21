@@ -337,12 +337,13 @@ func (e *evaluator) customer() {
 	}
 	e.takt = &cell{name: "customer takt"}
 	switch {
+	case e.demand.known && e.demand.v == 0:
+		e.add(SeverityError, "customer", "A.12", "demand is 0, so customer takt is undefined")
 	case !e.demand.known || !ot.known:
 		e.add(SeverityNote, "customer", "A.12", "customer takt needs demand and operating_time")
-	case e.demand.v == 0:
-		e.add(SeverityError, "customer", "A.12", "demand is 0, so customer takt is undefined")
 	default:
-		e.takt.set(ot.v/e.demand.v, "A.12")
+		v, _ := CustomerTakt(ot.v, e.demand.v)
+		e.takt.set(v, "A.12")
 	}
 }
 
@@ -376,17 +377,6 @@ func (e *evaluator) processCells(p *Process) *processCells {
 	} {
 		e.entered(s, f.name, f.p, false)
 	}
-	// Figure A.1: downtime is part of process time only for automated
-	// processes (case B), and handling time is not part of it for data-related
-	// processes (case C). Those parts count as 0 unless entered.
-	if p.Type == ProcessManual || p.Type == ProcessData {
-		if !c.dt.known && len(p.TimesToRepair) == 0 {
-			c.dt.set(0, "Figure A.1")
-		}
-	}
-	if p.Type == ProcessData && !c.ht.known {
-		c.ht.set(0, "Figure A.1")
-	}
 	c.ttr = &cell{name: "Σ times_to_repair"}
 	if len(p.TimesToRepair) > 0 {
 		valid := true
@@ -401,6 +391,20 @@ func (e *evaluator) processCells(p *Process) *processCells {
 		}
 	}
 	return c
+}
+
+// a8Parts returns the parts of process time in A.8. By Figure A.1, downtime
+// is part of it only for automated processes (case B), and handling time is
+// not part of it for data-related processes (case C).
+func (c *processCells) a8Parts() []*cell {
+	parts := []*cell{c.st, c.prt, c.wt}
+	if c.p.Type != ProcessData {
+		parts = append(parts, c.ht)
+	}
+	if c.p.Type != ProcessManual && c.p.Type != ProcessData {
+		parts = append(parts, c.dt)
+	}
+	return parts
 }
 
 func (e *evaluator) idleCells(d *Idle) *idleCells {
@@ -448,7 +452,7 @@ func (e *evaluator) derive() bool {
 			term.name = "repetition_time × repetitions"
 			changed = e.sumRel(s, "A.6", c.pt, c.st, term) || changed
 		}
-		changed = e.sumRel(s, "A.8", c.pt, c.st, c.prt, c.wt, c.ht, c.dt) || changed
+		changed = e.sumRel(s, "A.8", c.pt, c.a8Parts()...) || changed
 		changed = e.sumRel(s, "A.3 per process (process lead time equals process time)", c.pt, c.vat, c.nvat, c.nnvat) || changed
 		one := known(1, "A.17")
 		one.name = "100 %"
@@ -646,10 +650,13 @@ func (e *evaluator) result() Result {
 	if t.LeadTime.Known && t.LeadTime.Value > 0 {
 		lt := t.LeadTime.Value
 		if t.ValueAdding.Known {
-			k.ValueAddedRatio = Value{Value: t.ValueAdding.Value / lt, Known: true, Source: "A.16"}
+			v, _ := ValueAddedRatio(t.ValueAdding.Value, lt)
+			k.ValueAddedRatio = Value{Value: v, Known: true, Source: "A.16"}
 		}
-		k.ValueAddingShare = Value{Value: t.ProcessTime.Value / lt, Known: true, Source: "4.5.2"}
-		k.NonValueAddingShare = Value{Value: t.IdleTime.Value / lt, Known: true, Source: "4.5.2"}
+		va, _ := ValueAddingShare(t.ProcessTime.Value, lt)
+		nva, _ := NonValueAddingShare(t.IdleTime.Value, lt)
+		k.ValueAddingShare = Value{Value: va, Known: true, Source: "4.5.2"}
+		k.NonValueAddingShare = Value{Value: nva, Known: true, Source: "4.5.2"}
 	}
 	if d := vs.Deliveries; d != nil {
 		if v, err := OnTimeInFull(d.CompleteOnTime, d.Total); err == nil && d.CompleteOnTime >= 0 {
@@ -669,7 +676,8 @@ func (e *evaluator) result() Result {
 	}
 	if inv := vs.Inventory; inv != nil {
 		if inv.AverageStock > 0 && inv.Usage >= 0 {
-			k.InventoryTurns = Value{Value: inv.Usage / inv.AverageStock, Known: true, Source: "A.13"}
+			v, _ := InventoryTurns(inv.Usage, inv.AverageStock)
+			k.InventoryTurns = Value{Value: v, Known: true, Source: "A.13"}
 		} else {
 			e.add(SeverityError, "inventory_turnover", "A.13", "need usage ≥ 0 and average_stock > 0")
 		}

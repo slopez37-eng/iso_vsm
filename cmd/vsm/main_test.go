@@ -55,3 +55,26 @@ func TestCheckProjectWithoutCurrent(t *testing.T) {
 		t.Fatalf("code %d, err %v\n%s", code, err, out.String())
 	}
 }
+
+func TestCheckFlagAfterFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "project.json")
+	if err := os.WriteFile(path, []byte(`{"schema_version":1,"name":"p"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if _, err := check([]string{path, "-json"}, &out); err != nil || !strings.Contains(out.String(), `"severity"`) {
+		t.Fatalf("err %v, want a JSON report:\n%s", err, out.String())
+	}
+}
+
+func TestCheckStreamWithoutProcesses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stream.json")
+	if err := os.WriteFile(path, []byte(`{"name":"x","time_unit":"min"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	code, err := check([]string{path}, &out)
+	if err != nil || code != 1 || !strings.Contains(out.String(), "has no processes") {
+		t.Fatalf("code %d, err %v\n%s", code, err, out.String())
+	}
+}

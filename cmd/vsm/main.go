@@ -43,6 +43,19 @@ func main() {
 	os.Exit(code)
 }
 
+// isProject reports whether a decoded JSON object is a project rather than a
+// single value stream. A file with any key that only a value stream has is a
+// value stream; anything else is a project.
+func isProject(probe map[string]json.RawMessage) bool {
+	for k := range probe {
+		if k != "schema_version" && k != "name" &&
+			k != "current" && k != "ideal" && k != "future" && k != "measures" && k != "workshop" {
+			return false
+		}
+	}
+	return true
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: vsm check [-json] FILE | vsm symbols | vsm template")
 	os.Exit(2)
@@ -52,20 +65,26 @@ func check(args []string, w io.Writer) (int, error) {
 	fs := flag.NewFlagSet("check", flag.ExitOnError)
 	asJSON := fs.Bool("json", false, "print the report as JSON")
 	fs.Parse(args)
-	if fs.NArg() != 1 {
+	// Flags may also follow the file name.
+	if fs.NArg() == 0 {
 		usage()
 	}
-	data, err := os.ReadFile(fs.Arg(0))
+	file := fs.Arg(0)
+	fs.Parse(fs.Args()[1:])
+	if fs.NArg() != 0 {
+		usage()
+	}
+	data, err := os.ReadFile(file)
 	if err != nil {
 		return 0, err
 	}
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(data, &probe); err != nil {
-		return 0, fmt.Errorf("%s: %w", fs.Arg(0), err)
+		return 0, fmt.Errorf("%s: %w", file, err)
 	}
 	var report any
 	var issues []vsm.Issue
-	if _, isStream := probe["processes"]; !isStream {
+	if isProject(probe) {
 		p, err := vsm.ReadProject(bytes.NewReader(data))
 		if err != nil {
 			return 0, err
@@ -123,9 +142,9 @@ func printProject(w io.Writer, r vsm.ProjectReport) {
 		fmt.Fprintf(w, "\n== Current vs future (4.5.2), in %s ==\n", c.TimeUnit)
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(tw, "\tcurrent\tfuture\tω (future ÷ current)")
-		fmt.Fprintf(tw, "process time\t%s\t%s\t%s\n", num(c.ActualProcessTime), num(c.TargetProcessTime), num(c.Figures.ProcessTime))
-		fmt.Fprintf(tw, "idle time\t%s\t%s\t%s\n", num(c.ActualIdleTime), num(c.TargetIdleTime), num(c.Figures.IdleTime))
-		fmt.Fprintf(tw, "lead time\t%s\t%s\t%s\n", num(c.ActualLeadTime), num(c.TargetLeadTime), num(c.Figures.LeadTime))
+		fmt.Fprintf(tw, "process time\t%s\t%s\t%s\n", num(c.ActualProcessTime), num(c.TargetProcessTime), val(c.Figures.ProcessTime))
+		fmt.Fprintf(tw, "idle time\t%s\t%s\t%s\n", num(c.ActualIdleTime), num(c.TargetIdleTime), val(c.Figures.IdleTime))
+		fmt.Fprintf(tw, "lead time\t%s\t%s\t%s\n", num(c.ActualLeadTime), num(c.TargetLeadTime), val(c.Figures.LeadTime))
 		fmt.Fprintf(tw, "value adding share\t%s\t%s\t\n", pct(c.ActualValueAddingShare), pct(c.TargetValueAddingShare))
 		fmt.Fprintf(tw, "non-value adding share\t%s\t%s\t\n", pct(c.ActualNonValueAddingShare), pct(c.TargetNonValueAddingShare))
 		tw.Flush()

@@ -35,9 +35,9 @@ func TestEvaluateProject(t *testing.T) {
 		t.Fatalf("no comparison: %v", rep.Issues)
 	}
 	c := rep.Comparison
-	approx(t, "ω_PT", c.Figures.ProcessTime, 31.0/35)
-	approx(t, "ω_IT", c.Figures.IdleTime, 0.4)
-	approx(t, "ω_LT", c.Figures.LeadTime, 35.0/45)
+	approx(t, "ω_PT", c.Figures.ProcessTime.Value, 31.0/35)
+	approx(t, "ω_IT", c.Figures.IdleTime.Value, 0.4)
+	approx(t, "ω_LT", c.Figures.LeadTime.Value, 35.0/45)
 	approx(t, "S_NVA,TAR", c.TargetNonValueAddingShare, 4.0/35)
 	if want := []int{2, 1, 3}; !slices.Equal(rep.Priority, want) {
 		t.Errorf("priority = %v, want %v", rep.Priority, want)
@@ -80,9 +80,36 @@ func TestCompareStatesConvertsUnits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	approx(t, "ω_PT", c.Figures.ProcessTime, 0.5)
-	approx(t, "ω_LT", c.Figures.LeadTime, 0.5)
+	approx(t, "ω_PT", c.Figures.ProcessTime.Value, 0.5)
+	approx(t, "ω_LT", c.Figures.LeadTime.Value, 0.5)
 	approx(t, "target lead time in h", c.TargetLeadTime, 2)
+}
+
+func TestCompareStatesWithoutIdleTime(t *testing.T) {
+	a := Evaluate(&ValueStream{Name: "a", TimeUnit: Minute, Processes: []Process{{ID: "P", ProcessTime: F(4)}}, Idles: []Idle{{ID: "I", IdleTime: F(0)}}})
+	b := Evaluate(&ValueStream{Name: "b", TimeUnit: Minute, Processes: []Process{{ID: "P", ProcessTime: F(2)}}, Idles: []Idle{{ID: "I", IdleTime: F(0)}}})
+	c, err := CompareStates(a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Figures.IdleTime.Known {
+		t.Errorf("ω_IT = %v, want unknown", c.Figures.IdleTime)
+	}
+	approx(t, "ω_PT", c.Figures.ProcessTime.Value, 0.5)
+	approx(t, "S_VA,ACT", c.ActualValueAddingShare, 1)
+}
+
+func TestWorkshopDateCheckedWithoutMeasures(t *testing.T) {
+	p := exampleProject()
+	p.Measures = nil
+	p.Workshop = &Workshop{Date: "31/01/2027"}
+	found := false
+	for _, i := range EvaluateProject(p).Issues {
+		found = found || (i.Severity == SeverityError && i.Subject == "workshop")
+	}
+	if !found {
+		t.Error("invalid workshop date not reported")
+	}
 }
 
 func TestSaveAndLoadRoundTrip(t *testing.T) {

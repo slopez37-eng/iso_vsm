@@ -108,7 +108,9 @@ The standard leaves some points open, and a few of its formulas read oddly. This
 
 **Waiting time (A.11)** uses an idle segment's `waiting_orders`, which is kept separate from its inventories. This way the same stock is not counted as both storage and waiting time.
 
-**Process types** follow the cases of Figure A.1. A manual process has no downtime, and a data-related process has neither downtime nor handling time. For those types, these parts count as 0 in A.8 unless you enter them. A gap in A.8 therefore shows up as a warning instead of being booked as downtime. With no type set, no part is assumed.
+**Process types** follow the cases of Figure A.1. Downtime is part of process time only for an automated process, and handling time is not part of it for a data-related process. A.8 leaves these parts out for those types even when you enter them, so a gap in A.8 shows up as a warning instead of being booked as downtime. An automated process, or one with no type set, uses all five parts.
+
+**Comparison figures (4.5.2)** divide each future time by the current one. A figure whose current time is 0, such as ω_IT when the current state has no idle time, is left unknown, and the other figures and shares are still given.
 
 **Idle segments** add no value from the customer's view (clause 4.5.2). They therefore carry only non-value-adding and necessary non-value-adding time. For a process, process lead time equals process time (Table A.2), so VAT + NVAT + NNVAT of a process must equal its process time.
 

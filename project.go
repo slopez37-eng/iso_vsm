@@ -113,14 +113,12 @@ func EvaluateProject(p *Project) ProjectReport {
 		rep.Measures = append(rep.Measures, MeasureReview{Number: m.Number, SMARTGaps: m.SMARTGaps(), BenefitCostRatio: m.BenefitCostRatio()})
 	}
 	rep.Priority = Prioritize(p.Measures)
-	if len(p.Measures) > 0 {
-		switch {
-		case p.Workshop == nil:
-			add(SeverityNote, "project", "4.4.3", "the catalogue has not been through a workshop yet")
-		case p.Workshop.Date != "":
-			if _, err := time.Parse(time.DateOnly, p.Workshop.Date); err != nil {
-				add(SeverityError, "workshop", "4.4.3", "date is not a YYYY-MM-DD date")
-			}
+	if len(p.Measures) > 0 && p.Workshop == nil {
+		add(SeverityNote, "project", "4.4.3", "the catalogue has not been through a workshop yet")
+	}
+	if p.Workshop != nil && p.Workshop.Date != "" {
+		if _, err := time.Parse(time.DateOnly, p.Workshop.Date); err != nil {
+			add(SeverityError, "workshop", "4.4.3", "date is not a YYYY-MM-DD date")
 		}
 	}
 	return rep

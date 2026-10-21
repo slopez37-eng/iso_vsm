@@ -213,3 +213,23 @@ func TestEvaluateProcessTypeParts(t *testing.T) {
 	}
 	wantValue(t, "data waiting time", r.Processes[1].WaitingTime, 3, "A.8")
 }
+
+func TestEvaluateExcludedPartsStayOutOfA8(t *testing.T) {
+	vs := &ValueStream{Name: "x", TimeUnit: Minute, Processes: []Process{
+		{ID: "M", Type: ProcessManual, ProcessTime: F(10), SetupTime: F(1), ProcessingTime: F(5), WaitingTime: F(0), HandlingTime: F(4), TimesToRepair: []float64{2}},
+		{ID: "D", Type: ProcessData, ProcessTime: F(10), SetupTime: F(2), ProcessingTime: F(5), WaitingTime: F(3), HandlingTime: F(3), Downtime: F(1)},
+	}}
+	r := Evaluate(vs)
+	if w := issuesWith(r, SeverityWarning, "A.8"); len(w) > 0 {
+		t.Errorf("downtime or handling time counted in A.8: %v", w)
+	}
+	wantValue(t, "manual downtime", r.Processes[0].Downtime, 2, "A.1")
+}
+
+func TestEvaluateZeroDemandWithoutOperatingTime(t *testing.T) {
+	vs := &ValueStream{Name: "x", TimeUnit: Minute, Customer: Customer{Demand: F(0)},
+		Processes: []Process{{ID: "P1", ProcessTime: F(1)}}}
+	if e := issuesWith(Evaluate(vs), SeverityError, "A.12"); len(e) != 1 {
+		t.Errorf("want one A.12 error for demand 0, got %v", e)
+	}
+}
