@@ -25,7 +25,7 @@ func exampleProject() *Project {
 		Measures: []Measure{
 			{Number: 1, Potential: "waiting", Description: "FIFO lane", Status: StatusMeasureChecked, Flashes: []int{1}, Cost: F(100), Benefit: F(300)},
 			{Number: 2, Potential: "setup", Description: "SMED", Status: StatusMeasureChecked, Cost: F(100), Benefit: F(500),
-				Metric: "setup time", Target: F(5), Responsible: "PRO1", Deadline: "2027-03-01"},
+				Metric: "setup time", Target: F(5), Responsible: "PRO1", Accepted: true, Realistic: true, Deadline: "2027-03-01"},
 			{Number: 3, Potential: "scrap", Status: StatusImplementing},
 			{Number: 4, Potential: "done", Status: StatusImplemented, Cost: F(1), Benefit: F(100)},
 		},
@@ -48,8 +48,8 @@ func TestEvaluateProject(t *testing.T) {
 	if len(rep.Measures[1].SMARTGaps) != 0 {
 		t.Errorf("measure 2 is complete but has gaps %v", rep.Measures[1].SMARTGaps)
 	}
-	if len(rep.Measures[0].SMARTGaps) != 3 {
-		t.Errorf("measure 1 gaps = %v, want measurable, accepted, time-related", rep.Measures[0].SMARTGaps)
+	if len(rep.Measures[0].SMARTGaps) != 4 {
+		t.Errorf("measure 1 gaps = %v, want measurable, accepted, realistic, time-related", rep.Measures[0].SMARTGaps)
 	}
 	found := false
 	for _, i := range rep.Issues {
@@ -401,9 +401,6 @@ func TestInfiniteRatioMarshals(t *testing.T) {
 	if !strings.Contains(string(data), `"+Inf"`) {
 		t.Error("infinite benefit-cost ratio not written as +Inf")
 	}
-	if got := Prioritize(p.Measures); got[0] != 1 {
-		t.Errorf("a free measure should rank first, got %v", got)
-	}
 }
 
 func TestPrioritizeLeavesOutImplementedAndCancelled(t *testing.T) {
@@ -478,8 +475,245 @@ func TestMeasurePeriodIsChecked(t *testing.T) {
 	if rep.Measures[0].Payback.Value != 100.0/300 {
 		t.Errorf("payback = %v, want 100/300 years", rep.Measures[0].Payback.Value)
 	}
-	if slices.ContainsFunc(rep.Issues, func(i Issue) bool { return i.Rule == "4.5.2" }) {
+	if slices.ContainsFunc(rep.Issues, func(i Issue) bool { return i.Rule == "4.5.2" && i.Severity == SeverityError }) {
 		t.Errorf("valid benefit period reported: %v", rep.Issues)
+	}
+}
+
+func TestPrioritizeRanksNetBenefitBeforeRatio(t *testing.T) {
+	measures := []Measure{
+		{Number: 1, Cost: F(10), Benefit: F(50)},   // net 40, ratio 5
+		{Number: 2, Cost: F(100), Benefit: F(200)}, // net 100, ratio 2
+	}
+	if got, want := Prioritize(measures), []int{2, 1}; !slices.Equal(got, want) {
+		t.Errorf("priority = %v, want %v: the larger net benefit ranks first", got, want)
+	}
+}
+
+// Equal net benefit is decided by the ratio. A measure with a 0 ÷ 0 ratio comes
+// after one with a ratio, and measures without figures come last, in catalogue order.
+func TestPrioritizeTieBreaks(t *testing.T) {
+	measures := []Measure{
+		{Number: 1, Cost: F(0), Benefit: F(0)},   // net 0, no ratio
+		{Number: 2, Cost: F(10), Benefit: F(10)}, // net 0, ratio 1
+		{Number: 3, Cost: F(20), Benefit: F(30)}, // net 10, ratio 1.5
+		{Number: 4, Cost: F(5), Benefit: F(15)},  // net 10, ratio 3
+		{Number: 5},
+		{Number: 6},
+	}
+	if got, want := Prioritize(measures), []int{4, 3, 2, 1, 5, 6}; !slices.Equal(got, want) {
+		t.Errorf("priority = %v, want %v", got, want)
+	}
+}
+
+// Open measures with a known net benefit must share one benefit period to be
+// compared (4.5.2). An empty period counts as a period of its own. Implemented
+// measures and measures without a net benefit are left out.
+func TestOpenMeasuresWithDifferentPeriodsWarn(t *testing.T) {
+	warned := func(p *Project) bool {
+		return slices.ContainsFunc(EvaluateProject(p).Issues, func(i Issue) bool {
+			return i.Severity == SeverityWarning && i.Rule == "4.5.2" && i.Subject == "project"
+		})
+	}
+	p := exampleProject()
+	p.Measures[0].BenefitPeriod, p.Measures[1].BenefitPeriod = PeriodYear, PeriodYear
+	p.Measures[2].BenefitPeriod = PeriodWeek  // no figures, so no net benefit
+	p.Measures[3].BenefitPeriod = PeriodMonth // implemented
+	if warned(p) {
+		t.Error("warning for open measures that share a period")
+	}
+	p.Measures[1].BenefitPeriod = PeriodMonth
+	if !warned(p) {
+		t.Error("no warning for open measures with different periods")
+	}
+	p.Measures[1].BenefitPeriod = ""
+	if !warned(p) {
+		t.Error("no warning when one open measure has no period")
+	}
+}
+
+func TestSMARTAcceptedAndRealistic(t *testing.T) {
+	complete := Measure{Description: "SMED", Metric: "setup time", Target: F(5), Responsible: "PRO1",
+		Accepted: true, Realistic: true, Deadline: "2027-03-01"}
+	if gaps := complete.SMARTGaps(); len(gaps) != 0 {
+		t.Fatalf("complete measure has gaps %v", gaps)
+	}
+	for _, c := range []struct {
+		name string
+		edit func(*Measure)
+		want string
+	}{
+		{"not accepted", func(m *Measure) { m.Accepted = false }, "accepted: not confirmed"},
+		{"no responsible person", func(m *Measure) { m.Responsible, m.Accepted = "", false }, "accepted: no responsible person"},
+		{"not realistic", func(m *Measure) { m.Realistic = false }, "realistic: not confirmed"},
+	} {
+		m := complete
+		c.edit(&m)
+		if gaps := m.SMARTGaps(); !slices.Contains(gaps, c.want) {
+			t.Errorf("%s: gaps %v, want %q", c.name, gaps, c.want)
+		}
+	}
+	// With no responsible person, only that gap is listed, not the acceptance gap too.
+	m := complete
+	m.Responsible = ""
+	if gaps := m.SMARTGaps(); !slices.Equal(gaps, []string{"accepted: no responsible person"}) {
+		t.Errorf("no responsible person: gaps %v, want only that gap", gaps)
+	}
+}
+
+// The verdict follows the measure's target rule. The measured lead time is 39 s.
+func TestMeasureTargetRules(t *testing.T) {
+	review := func(m Measure) ProjectReport {
+		snap := exampleStream()
+		snap.Idles[0].IdleTime = F(4)
+		p := exampleProject()
+		p.Monitoring = []Snapshot{{Date: "2027-01-01", State: snap}}
+		m.Number = 1
+		p.Measures = []Measure{m}
+		return EvaluateProject(p)
+	}
+	lead := KPILeadTime
+	for _, c := range []struct {
+		name    string
+		m       Measure
+		verdict bool // whether the measure gets a verdict; otherwise it gets an error
+		met     bool
+	}{
+		{"equal within tolerance", Measure{KPI: lead, Target: F(39.5), TargetRule: TargetEqual, Tolerance: F(0.5)}, true, true},
+		{"equal outside tolerance", Measure{KPI: lead, Target: F(40), TargetRule: TargetEqual, Tolerance: F(0.5)}, true, false},
+		{"equal with no tolerance", Measure{KPI: lead, Target: F(39.5), TargetRule: TargetEqual}, true, false},
+		{"at least overrides the lead time default", Measure{KPI: lead, Target: F(38), TargetRule: TargetAtLeast}, true, true},
+		{"at most", Measure{KPI: lead, Target: F(38), TargetRule: TargetAtMost}, true, false},
+		{"negative tolerance", Measure{KPI: lead, Target: F(39), TargetRule: TargetEqual, Tolerance: F(-1)}, false, false},
+		{"unknown rule", Measure{KPI: lead, Target: F(39), TargetRule: "between"}, false, false},
+	} {
+		rep := review(c.m)
+		m := rep.Measures[0]
+		hasError := slices.ContainsFunc(rep.Issues, func(i Issue) bool {
+			return i.Severity == SeverityError && i.Subject == "measure 1" && i.Rule == "4.4.2"
+		})
+		switch {
+		case !c.verdict && m.Met != nil:
+			t.Errorf("%s: got a verdict, want none", c.name)
+		case !c.verdict && !hasError:
+			t.Errorf("%s: no error reported", c.name)
+		case c.verdict && (m.Met == nil || *m.Met != c.met):
+			t.Errorf("%s: measured %v, want met = %v", c.name, m.Measured.Value, c.met)
+		}
+	}
+	for _, rule := range []TargetRule{TargetAtMost, ""} {
+		rep := review(Measure{KPI: lead, Target: F(39), TargetRule: rule, Tolerance: F(1)})
+		if !slices.ContainsFunc(rep.Issues, func(i Issue) bool {
+			return i.Severity == SeverityWarning && i.Subject == "measure 1" && strings.Contains(i.Message, "tolerance is ignored")
+		}) {
+			t.Errorf("rule %q with a tolerance: no warning", rule)
+		}
+	}
+}
+
+// Procedure notes name the steps that a project has reached and not yet recorded (4.1).
+func TestPhaseProcedureNotes(t *testing.T) {
+	notes := func(p *Project) []string {
+		var rules []string
+		for _, i := range EvaluateProject(p).Issues {
+			if i.Severity == SeverityNote && i.Subject == "project" {
+				rules = append(rules, i.Rule)
+			}
+		}
+		slices.Sort(rules)
+		return rules
+	}
+	for _, c := range []struct {
+		phase Phase
+		want  []string
+	}{
+		{"", nil},
+		{PhaseAnalysis, nil},
+		{PhaseDesign, []string{"4.2.2"}},
+		{PhasePlanning, []string{"4.2.2", "4.3.3", "4.4.3"}},
+		{PhaseImplementation, []string{"4.2.2", "4.3.3", "4.4.2", "4.4.3"}},
+		{PhaseAdjustment, []string{"4.2.2", "4.3.3", "4.4.2", "4.4.3", "4.5.1"}},
+	} {
+		p := exampleProject()
+		p.Measures = nil
+		p.Phase = c.phase
+		if got := notes(p); !slices.Equal(got, c.want) {
+			t.Errorf("phase %q: notes %v, want %v", c.phase, got, c.want)
+		}
+	}
+	p := exampleProject()
+	p.Measures = nil
+	p.Future = nil
+	p.Phase = PhasePlanning
+	if got := notes(p); !slices.Contains(got, "4.3.4") {
+		t.Errorf("no future state at planning: notes %v, want 4.3.4", got)
+	}
+}
+
+func TestWorkshopNoteIsSingle(t *testing.T) {
+	workshopNotes := func(p *Project) []string {
+		var msgs []string
+		for _, i := range EvaluateProject(p).Issues {
+			if i.Severity == SeverityNote && i.Rule == "4.4.3" {
+				msgs = append(msgs, i.Message)
+			}
+		}
+		return msgs
+	}
+	p := exampleProject() // has measures and no workshop
+	if got := workshopNotes(p); len(got) != 1 || !strings.Contains(got[0], "not been through a workshop") {
+		t.Errorf("no workshop: notes %v", got)
+	}
+	p.Workshop = &Workshop{Date: "2027-01-15"}
+	if got := workshopNotes(p); len(got) != 1 || !strings.Contains(got[0], "not agreed yet") {
+		t.Errorf("workshop not agreed: notes %v", got)
+	}
+	p.Workshop.Agreed = true
+	if got := workshopNotes(p); len(got) != 0 {
+		t.Errorf("agreed workshop: notes %v, want none", got)
+	}
+}
+
+// Rework is the change of yield factor between snapshots taken in date order
+// (A.15). A process needs a known yield in both snapshots to have a rework rate.
+func TestReworkFollowsDateOrder(t *testing.T) {
+	stream := func(scrap *float64) *ValueStream {
+		vs := exampleStream()
+		vs.Processes[0].ScrapRate = scrap
+		return vs
+	}
+	p := exampleProject()
+	// Listed out of date order on purpose.
+	p.Monitoring = []Snapshot{
+		{Date: "2027-03-01", State: stream(F(0.05))},
+		{Date: "2027-01-01", State: stream(F(0.10))},
+		{Date: "2027-02-01", State: stream(F(0.20))},
+	}
+	byDate := map[string]MonitoringReport{}
+	for _, m := range EvaluateProject(p).Monitoring {
+		byDate[m.Date] = m
+	}
+	if got := byDate["2027-01-01"].Rework; len(got) != 0 {
+		t.Errorf("first snapshot has rework %v", got)
+	}
+	// The yield is 0.90 in January, 0.80 in February and 0.95 in March.
+	for date, want := range map[string]struct {
+		from  string
+		value float64
+	}{
+		"2027-02-01": {"2027-01-01", -0.10},
+		"2027-03-01": {"2027-02-01", 0.15},
+	} {
+		rw := byDate[date].Rework
+		if len(rw) != 1 || rw[0].ID != "P1" || rw[0].From != want.from || !rw[0].Value.Known {
+			t.Fatalf("%s: rework %+v, want P1 since %s", date, rw, want.from)
+		}
+		approx(t, "rework "+date, rw[0].Value.Value, want.value)
+	}
+	// A snapshot without a scrap rate has no yield, so no rework is shown against it.
+	p.Monitoring = []Snapshot{{Date: "2027-01-01", State: stream(nil)}, {Date: "2027-02-01", State: stream(F(0.1))}}
+	if got := EvaluateProject(p).Monitoring[1].Rework; len(got) != 0 {
+		t.Errorf("rework %v with an unknown yield in the earlier snapshot", got)
 	}
 }
 

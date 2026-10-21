@@ -10,6 +10,11 @@
 - Table A.1: the customer symbol is the end customer; a customer plant uses the external source symbol.
 - The batch note (Table A.2) uses batch size only, not repetitions.
 - README states which values are derived and the limits of derivation (A.7, A.11, A.5).
+- Measures take `accepted`, `realistic`, `target_rule` (`at_most`, `at_least` or `equal`) and `tolerance`. Until a measure is recorded as accepted and realistic, it shows a SMART gap. `equal` accepts a monitored value within `tolerance` of the target.
+- Prioritisation ranks measures by net benefit (benefit − cost) first, then by benefit ÷ cost, following Table B.5. Implemented and cancelled measures are left out.
+- Monitoring reports give each process's rework rate (A.15) between consecutive snapshots in date order.
+- Project reports warn when open measures with a known net benefit use different benefit periods (4.5.2).
+- Project reports note a missing procedure step once the phase reaches the next one: product family (4.2.2), ideal and future state (4.3.3, 4.3.4), catalogue (4.4.2) and monitoring (4.5.1). The workshop (4.4.3) is noted from planning, or once any measure exists.
 
 ## v1.0.0
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -61,7 +62,8 @@ type ProjectReport struct {
 	// Monitoring is the evaluation of each snapshot, in the order given.
 	Monitoring []MonitoringReport `json:"monitoring,omitempty"`
 	Measures   []MeasureReview    `json:"measures,omitempty"`
-	// Priority lists open measure numbers in cost-benefit order.
+	// Priority lists open measure numbers in cost-benefit order, net benefit first
+	// (see Prioritize).
 	Priority []int   `json:"priority,omitempty"`
 	Issues   []Issue `json:"issues"`
 }
@@ -80,9 +82,10 @@ type MeasureReview struct {
 	Target *float64 `json:"target,omitempty"`
 	// Measured is the KPI of the latest snapshot that has it.
 	Measured Value `json:"measured"`
-	// Met says whether Measured reaches Target in the direction that is better
-	// for the KPI. It is set only when both are known. A time KPI has no verdict
-	// without a current state, because the target has no unit then.
+	// Met says whether Measured reaches Target under the measure's TargetRule, or
+	// under this library's default direction for the KPI when no rule is set. It
+	// is set only when both are known and the rule and tolerance are valid. A time
+	// KPI has no verdict without a current state, because the target has no unit then.
 	Met *bool `json:"met,omitempty"`
 }
 
@@ -93,6 +96,16 @@ type MonitoringReport struct {
 	// Comparison is the 4.5.2 assessment of the current state against the
 	// snapshot, when both lead times are known.
 	Comparison *StateComparison `json:"comparison,omitempty"`
+	// Rework is each process's rework rate since the snapshot before it in date
+	// order, for the processes whose yield factor is known in both (A.15).
+	Rework []ProcessRework `json:"rework,omitempty"`
+}
+
+// ProcessRework is the rework rate of one process between two snapshots (A.15).
+type ProcessRework struct {
+	ID    string `json:"id"`
+	From  string `json:"from"`  // date of the earlier snapshot
+	Value Value  `json:"value"` // a fraction, as the yield factors are
 }
 
 // EvaluateProject evaluates every state, compares current and future, and
@@ -161,6 +174,22 @@ func EvaluateProject(p *Project) ProjectReport {
 		}
 		rep.Monitoring = append(rep.Monitoring, mr)
 	}
+	// Rework is the change of yield factor between consecutive snapshots in date
+	// order (A.15). Yield is known whenever scrap is (A.17 in derive), so a
+	// process without a known yield has no rework rate.
+	var dated []int
+	for i, mr := range rep.Monitoring {
+		if isDate(mr.Date) {
+			dated = append(dated, i)
+		}
+	}
+	slices.SortStableFunc(dated, func(a, b int) int {
+		return strings.Compare(rep.Monitoring[a].Date, rep.Monitoring[b].Date)
+	})
+	for k := 1; k < len(dated); k++ {
+		prev, cur := &rep.Monitoring[dated[k-1]], &rep.Monitoring[dated[k]]
+		cur.Rework = reworkRates(prev, cur)
+	}
 
 	flashes := map[int]bool{}
 	for _, vs := range []*ValueStream{p.Current, p.Future} {
@@ -193,6 +222,16 @@ func EvaluateProject(p *Project) ProjectReport {
 		if m.BenefitPeriod != "" {
 			checkEnum(&issues, subject, "4.5.2", "benefit_period", m.BenefitPeriod, Periods)
 		}
+		if m.TargetRule != "" {
+			checkEnum(&issues, subject, "4.4.2", "target_rule", m.TargetRule, TargetRules)
+		}
+		if m.Tolerance != nil {
+			if *m.Tolerance < 0 {
+				add(SeverityError, subject, "4.4.2", "tolerance cannot be negative")
+			} else if m.TargetRule != TargetEqual {
+				add(SeverityWarning, subject, "4.4.2", "tolerance is ignored unless target_rule is %q", TargetEqual)
+			}
+		}
 		mr := MeasureReview{
 			Number: m.Number, SMARTGaps: m.SMARTGaps(), BenefitCostRatio: m.BenefitCostRatio(), Target: m.Target,
 			Difference: m.Difference(), BenefitPeriod: m.BenefitPeriod, Payback: m.Payback(),
@@ -201,18 +240,62 @@ func EvaluateProject(p *Project) ProjectReport {
 			checkEnum(&issues, subject, "4.4.2", "kpi", m.KPI, KPINames)
 			mr.Measured = latestKPI(rep.Monitoring, m.KPI, rep.Current)
 			// A time target is in the current state's unit, so without a current
-			// state a time KPI has no verdict.
+			// state a time KPI has no verdict. An invalid rule or a negative
+			// tolerance has no verdict either.
 			noUnit := rep.Current == nil && isTimeKPI(m.KPI)
-			if m.Target != nil && mr.Measured.Known && !noUnit {
-				met := meetsTarget(m.KPI, mr.Measured.Value, *m.Target)
+			ruleOK := m.TargetRule == "" || slices.Contains(TargetRules, m.TargetRule)
+			tolOK := m.Tolerance == nil || *m.Tolerance >= 0
+			if m.Target != nil && mr.Measured.Known && !noUnit && ruleOK && tolOK {
+				tolerance := 0.0
+				if m.Tolerance != nil {
+					tolerance = *m.Tolerance
+				}
+				met := meetsTarget(m.KPI, m.TargetRule, tolerance, mr.Measured.Value, *m.Target)
 				mr.Met = &met
 			}
 		}
 		rep.Measures = append(rep.Measures, mr)
 	}
 	rep.Priority = Prioritize(p.Measures)
-	if len(p.Measures) > 0 && p.Workshop == nil {
-		add(SeverityNote, "project", "4.4.3", "the catalogue has not been through a workshop yet")
+	periods := map[Period]bool{}
+	for _, m := range p.Measures {
+		if m.isOpen() && m.Difference().Known {
+			periods[m.BenefitPeriod] = true
+		}
+	}
+	if len(periods) > 1 {
+		add(SeverityWarning, "project", "4.5.2", "open measures use different benefit periods, so their net benefits are not directly comparable")
+	}
+
+	// Clause 4.1 orders the phases. A step is noted as missing only once the
+	// project has reached the phase that needs it. An empty or invalid phase
+	// reaches none, so it gets no procedure notes. The workshop note also shows
+	// whenever measures exist, because the catalogue then needs its workshop.
+	reached := func(ph Phase) bool {
+		i := slices.Index(Phases, p.Phase)
+		return i >= 0 && i >= slices.Index(Phases, ph)
+	}
+	if p.Current != nil && (p.Current.ProductFamily == nil || p.Current.ProductFamily.Name == "") && reached(PhaseDesign) {
+		add(SeverityNote, "project", "4.2.2", "no product family is selected for the current state")
+	}
+	if p.Ideal == nil && reached(PhasePlanning) {
+		add(SeverityNote, "project", "4.3.3", "no ideal state is defined")
+	}
+	if p.Future == nil && reached(PhasePlanning) {
+		add(SeverityNote, "project", "4.3.4", "no future state is designed")
+	}
+	if len(p.Measures) == 0 && reached(PhaseImplementation) {
+		add(SeverityNote, "project", "4.4.2", "the catalogue has no measures for improvement")
+	}
+	if len(p.Monitoring) == 0 && reached(PhaseAdjustment) {
+		add(SeverityNote, "project", "4.5.1", "no monitoring snapshot is recorded")
+	}
+	if (len(p.Measures) > 0 || reached(PhasePlanning)) && (p.Workshop == nil || !p.Workshop.Agreed) {
+		if p.Workshop == nil {
+			add(SeverityNote, "project", "4.4.3", "the catalogue has not been through a workshop yet")
+		} else {
+			add(SeverityNote, "project", "4.4.3", "the workshop is recorded but the catalogue is not agreed yet")
+		}
 	}
 	if p.Workshop != nil && p.Workshop.Date != "" {
 		if !isDate(p.Workshop.Date) {
@@ -252,15 +335,42 @@ func isTimeKPI(name KPIName) bool {
 	return name == KPILeadTime || name == KPIProcessTime || name == KPIIdleTime
 }
 
-// meetsTarget reports whether v reaches target in the direction that is better
-// for the KPI: lead time, process time, idle time, non-value adding share and
-// scrap rate are better when lower.
-func meetsTarget(name KPIName, v, target float64) bool {
+// meetsTarget reports whether v reaches target under rule. TargetAtMost and
+// TargetAtLeast compare directly, and TargetEqual accepts any value within
+// tolerance of target. An empty rule uses the KPI's default direction: lead
+// time, process time, idle time, non-value adding share and scrap rate are
+// better when lower, and the other KPIs when higher. That default is this
+// library's, not the standard's.
+func meetsTarget(name KPIName, rule TargetRule, tolerance, v, target float64) bool {
+	switch rule {
+	case TargetAtMost:
+		return v <= target
+	case TargetAtLeast:
+		return v >= target
+	case TargetEqual:
+		return math.Abs(v-target) <= tolerance
+	}
 	switch name {
 	case KPILeadTime, KPIProcessTime, KPIIdleTime, KPINonValueAddingShare, KPIScrapRate:
 		return v <= target
 	}
 	return v >= target
+}
+
+// reworkRates returns the rework rate of each process whose yield factor is
+// known in both snapshots (A.15), with the earlier snapshot's date as From.
+func reworkRates(prev, cur *MonitoringReport) []ProcessRework {
+	var out []ProcessRework
+	for _, pc := range cur.Result.Processes {
+		for _, pp := range prev.Result.Processes {
+			if pp.ID == pc.ID && pp.YieldFactor.Known && pc.YieldFactor.Known {
+				rate := ReworkRate(pp.YieldFactor.Value, pc.YieldFactor.Value)
+				out = append(out, ProcessRework{ID: pc.ID, From: prev.Date, Value: knownValue(rate, "A.15")})
+				break
+			}
+		}
+	}
+	return out
 }
 
 // AllIssues returns the issues of the project, its states and its snapshots.

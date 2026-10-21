@@ -37,6 +37,18 @@ const (
 // Periods lists every Period.
 var Periods = []Period{PeriodDay, PeriodWeek, PeriodMonth, PeriodYear}
 
+// TargetRule says how a measured KPI is checked against a measure's target.
+type TargetRule string
+
+const (
+	TargetAtMost  TargetRule = "at_most"  // measured value is at or below the target
+	TargetAtLeast TargetRule = "at_least" // measured value is at or above the target
+	TargetEqual   TargetRule = "equal"    // measured value is within Tolerance of the target
+)
+
+// TargetRules lists every TargetRule.
+var TargetRules = []TargetRule{TargetAtMost, TargetAtLeast, TargetEqual}
+
 // Measure is one entry of the catalogue of measures for improvement (clause
 // 4.4.2), defined by the SMART method.
 type Measure struct {
@@ -51,9 +63,21 @@ type Measure struct {
 	// KPI names the indicator that Target is checked against in the monitoring
 	// snapshots. A time target is in the current state's time unit.
 	KPI KPIName `json:"kpi,omitempty"`
-	// Responsible is the person who accepted the measure.
+	// TargetRule says how the measured KPI is checked against Target. Without
+	// it, each KPI uses this library's default direction, which is not the
+	// standard's.
+	TargetRule TargetRule `json:"target_rule,omitempty"`
+	// Tolerance is the allowed distance from Target for TargetEqual, in the unit
+	// of Target (a time target is in the current state's time unit). Absent means
+	// 0. It cannot be negative.
+	Tolerance *float64 `json:"tolerance,omitempty"`
+	// Responsible is the person responsible for the measure.
 	Responsible string `json:"responsible,omitempty"`
-	Department  string `json:"department,omitempty"`
+	// Accepted records that the responsible person has accepted the measure.
+	Accepted bool `json:"accepted,omitempty"`
+	// Realistic records that the measure is judged realistic.
+	Realistic  bool   `json:"realistic,omitempty"`
+	Department string `json:"department,omitempty"`
 	// Deadline is a date in YYYY-MM-DD form (time-related).
 	Deadline string        `json:"deadline,omitempty"`
 	Status   MeasureStatus `json:"status"`
@@ -68,8 +92,9 @@ type Measure struct {
 	BenefitPeriod Period   `json:"benefit_period,omitempty"`
 }
 
-// SMARTGaps lists the SMART criteria the measure's fields do not yet show.
-// "Realistic" is a judgement and is never reported.
+// SMARTGaps lists the SMART criteria the measure's fields do not yet show. The
+// acceptance and realism of a measure are recorded as entered, as the user's
+// judgement; until they are recorded as true, they are listed as gaps.
 func (m Measure) SMARTGaps() []string {
 	var gaps []string
 	if m.Description == "" {
@@ -80,6 +105,11 @@ func (m Measure) SMARTGaps() []string {
 	}
 	if m.Responsible == "" {
 		gaps = append(gaps, "accepted: no responsible person")
+	} else if !m.Accepted {
+		gaps = append(gaps, "accepted: not confirmed")
+	}
+	if !m.Realistic {
+		gaps = append(gaps, "realistic: not confirmed")
 	}
 	if m.Deadline == "" {
 		gaps = append(gaps, "time-related: no deadline")
@@ -90,7 +120,8 @@ func (m Measure) SMARTGaps() []string {
 }
 
 // BenefitCostRatio returns benefit ÷ cost. It is unknown when either is
-// missing, and +Inf for a positive benefit at zero cost.
+// missing or negative, and at 0 ÷ 0; it is +Inf for a positive benefit at zero
+// cost.
 func (m Measure) BenefitCostRatio() Value {
 	if m.Cost == nil || m.Benefit == nil || *m.Cost < 0 || *m.Benefit < 0 {
 		return Value{}
@@ -104,8 +135,9 @@ func (m Measure) BenefitCostRatio() Value {
 	return knownValue(*m.Benefit / *m.Cost, "4.5.2")
 }
 
-// Difference returns benefit − cost, the net benefit. It is unknown unless
-// both are entered and not negative.
+// Difference returns benefit − cost, the net benefit. Cost is one-off and
+// Benefit is per BenefitPeriod when that is set, so the two are compared as
+// entered. It is unknown unless both are entered and not negative.
 func (m Measure) Difference() Value {
 	if m.Cost == nil || m.Benefit == nil || *m.Cost < 0 || *m.Benefit < 0 {
 		return Value{}
@@ -135,15 +167,36 @@ func (m Measure) Payback() Value {
 	return knownValue(*m.Cost / *m.Benefit, paybackSource)
 }
 
+// isOpen reports whether the measure is still to be done. Implemented and
+// cancelled measures are not.
+func (m Measure) isOpen() bool {
+	return m.Status != StatusImplemented && m.Status != StatusCancelled
+}
+
 // Prioritize returns the measure numbers ordered by the cost-benefit analysis
-// of clause 4.5.2: highest benefit ÷ cost first, then higher net benefit.
-// Measures without both figures come last, in catalogue order. Implemented
-// and cancelled measures are left out.
+// of clause 4.5.2: highest net benefit (benefit − cost) first, then highest
+// benefit ÷ cost. Measures without both figures come last, in catalogue order.
+// Implemented and cancelled measures are left out. The standard fixes no
+// formula; this order follows the priorities of the worked example in Table B.5.
 func Prioritize(measures []Measure) []int {
 	open := slices.DeleteFunc(slices.Clone(measures), func(m Measure) bool {
-		return m.Status == StatusImplemented || m.Status == StatusCancelled
+		return !m.isOpen()
 	})
 	slices.SortStableFunc(open, func(a, b Measure) int {
+		da, db := a.Difference(), b.Difference()
+		if da.Known != db.Known {
+			if da.Known {
+				return -1
+			}
+			return 1
+		}
+		if !da.Known {
+			return 0
+		}
+		if c := cmp.Compare(db.Value, da.Value); c != 0 {
+			return c
+		}
+		// Equal net benefit: a measure with no ratio (0 ÷ 0) comes after one with a ratio.
 		ra, rb := a.BenefitCostRatio(), b.BenefitCostRatio()
 		if ra.Known != rb.Known {
 			if ra.Known {
@@ -154,10 +207,7 @@ func Prioritize(measures []Measure) []int {
 		if !ra.Known {
 			return 0
 		}
-		if c := cmp.Compare(rb.Value, ra.Value); c != 0 {
-			return c
-		}
-		return cmp.Compare(*b.Benefit-*b.Cost, *a.Benefit-*a.Cost)
+		return cmp.Compare(rb.Value, ra.Value)
 	})
 	order := make([]int, len(open))
 	for i, m := range open {

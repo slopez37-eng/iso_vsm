@@ -178,9 +178,12 @@ func printProject(w io.Writer, r vsm.ProjectReport) {
 		if m.Comparison != nil {
 			printComparison(w, m.Date, m.Comparison)
 		}
+		for _, rw := range m.Rework {
+			fmt.Fprintf(w, "rework %s since %s: %s\n", rw.ID, rw.From, pctVal(rw.Value))
+		}
 	}
 	if len(r.Measures) > 0 {
-		fmt.Fprintf(w, "\n== Measures ==\npriority (benefit ÷ cost): %v\n", r.Priority)
+		fmt.Fprintf(w, "\n== Measures ==\npriority (benefit − cost, then benefit ÷ cost): %v\n", r.Priority)
 		for _, m := range r.Measures {
 			if len(m.SMARTGaps) > 0 {
 				fmt.Fprintf(w, "measure %d: %s\n", m.Number, strings.Join(m.SMARTGaps, "; "))
@@ -351,7 +354,7 @@ func template(w io.Writer) error {
 			Flashes: []vsm.Flash{{Number: 1, Target: "I1", Description: "replace stock with a FIFO lane", Wastes: []vsm.Waste{vsm.WasteInventory}}},
 		},
 		Measures: []vsm.Measure{{Number: 1, Potential: "stock quantity", Description: "FIFO lane between cutting and assembly",
-			Metric: "range between P1 and P2 (min)", Target: vsm.F(240), Responsible: "logistics lead", Deadline: "2027-01-31",
+			Metric: "range between P1 and P2 (min)", Target: vsm.F(240), Responsible: "logistics lead", Accepted: true, Realistic: true, Deadline: "2027-01-31",
 			Status: vsm.StatusMeasureChecked, Flashes: []int{1}, Cost: vsm.F(2000), Benefit: vsm.F(9000)}},
 	}
 	return vsm.Write(w, &p)

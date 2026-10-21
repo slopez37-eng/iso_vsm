@@ -110,6 +110,29 @@ func TestCheckPrintsMonitoring(t *testing.T) {
 	}
 }
 
+func TestCheckPrintsRework(t *testing.T) {
+	stream := func(scrap float64) *vsm.ValueStream {
+		return &vsm.ValueStream{Name: "stream", TimeUnit: vsm.Minute,
+			Processes: []vsm.Process{{ID: "P1", ProcessTime: vsm.F(5), ScrapRate: vsm.F(scrap)}}}
+	}
+	p := vsm.Project{Name: "p", Current: stream(0.1), Monitoring: []vsm.Snapshot{
+		{Date: "2027-01-01", State: stream(0.1)},
+		{Date: "2027-02-01", State: stream(0.05)},
+	}}
+	path := filepath.Join(t.TempDir(), "project.json")
+	if err := vsm.Save(path, &p); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	code, err := check([]string{path}, &out)
+	if err != nil || code != 0 {
+		t.Fatalf("code %d, err %v\n%s", code, err, out.String())
+	}
+	if !strings.Contains(out.String(), "rework P1 since 2027-01-01: ") {
+		t.Errorf("report has no rework line:\n%s", out.String())
+	}
+}
+
 func TestCheckFlagAfterFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "project.json")
 	if err := os.WriteFile(path, []byte(`{"schema_version":1,"name":"p"}`), 0o644); err != nil {

@@ -13,7 +13,7 @@ The `vsm` command and the `iso_vsm` Go library (module `github.com/slopez37-eng/
 - check the numbers you entered against those formulas and report contradictions;
 - compute totals (process, idle and lead time), KPIs (customer takt, value added ratio, value adding share, OTIF, yield, inventory turns), process loads and the bottleneck (the highest load);
 - compare a current and a future state (clause 4.5.2) and check the catalogue of measures for SMART gaps;
-- evaluate dated monitoring snapshots against the current state, and check each measure's target (`kpi` plus `target`, times in the current state's unit) in the latest-dated snapshot.
+- evaluate dated monitoring snapshots against the current state, give each process's rework rate between snapshots (A.15), and check each measure's target (`kpi`, `target`, `target_rule` and `tolerance`; times in the current state's unit) in the latest-dated snapshot.
 
 They do not draw maps and do not design a future state.
 
@@ -46,8 +46,10 @@ Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ig
 - `available_time` is the time per period the process can work, in the stream's time unit. Its load is demand × `cycle_time` ÷ `available_time`. Without it, the customer's `operating_time` is used.
 - For a batch process, set `batch_size` and enter `process_time` as the dwell time of one piece, which stays for the whole batch (Table A.2).
 - Measure `status` is one of `problem_detected`, `responsibilities_clarified`, `measure_checked`, `implementing`, `implemented` or `cancelled`. A measure's `kpi` is one of `lead_time`, `process_time`, `idle_time`, `value_adding_share`, `non_value_adding_share`, `value_added_ratio`, `on_time_in_full`, `yield_factor`, `scrap_rate` or `inventory_turns`.
-- Measure `cost` is a one-off amount and `benefit` is earned once per `benefit_period` (`day`, `week`, `month` or `year`). Leave `benefit_period` out when `benefit` is a total. Use one currency for all measures. Prioritisation ignores `benefit_period`. Difference and payback are derived from these figures; ISO 22468 defines no payback period.
-- Product family `criteria` are `similar_process_steps`, `representative` and `balanced_volume`, each with `met`. Only the first two are required; an unmet `balanced_volume` gives a note. Project `phase` is `analysis`, `design`, `planning`, `implementation`, `assessment` or `adjustment`.
+- A measure's `target_rule` is `at_most`, `at_least` or `equal`. `tolerance` applies only to `equal`, in the target's unit. Without a rule, the KPI's default direction is used; that default is this library's choice, not the standard's.
+- `accepted` (with `responsible`) and `realistic` are your judgements. Set them to `true` once confirmed; until then they show as SMART gaps.
+- Measure `cost` is a one-off amount and `benefit` is earned once per `benefit_period` (`day`, `week`, `month` or `year`). Leave `benefit_period` out when `benefit` is a total. Use one currency for all measures. Prioritisation ranks by net benefit, then benefit ÷ cost, and warns when open measures use different `benefit_period` values. Difference and payback are derived from these figures; ISO 22468 defines no payback period.
+- Product family `criteria` are `similar_process_steps`, `representative` and `balanced_volume`, each with `met`. Only the first two are required; an unmet `balanced_volume` gives a note. Project `phase` is `analysis`, `design`, `planning`, `implementation`, `assessment` or `adjustment`. A missing procedure step is noted once the phase reaches the next one. The workshop note (4.4.3) also appears once any measure exists. With no `phase`, no step note appears.
 - Each `monitoring` entry is a `date` (YYYY-MM-DD) and a `state` holding the value stream as measured then.
 - A.5 is shown in notes but never applied. When a note says what A.5 would give, enter `process_time` yourself if you accept it.
 
@@ -59,7 +61,7 @@ Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ig
 - Each issue is printed as `severity: subject: message [rule]`. The subject is such as `process P2`, and the rule is the clause or formula it rests on, such as `A.6`.
 - In `-json`, each derived or entered value is an object with `value` and `source` (`entered` or the formula). An unknown value is `null`.
 - In text output, an unknown value shows as `?`.
-- A project report has one section per state and per monitoring snapshot. The comparison appears only when the current and future lead times are both known and not zero; otherwise a note says why.
+- A project report has one section per state and per monitoring snapshot. The comparison appears only when the current and future lead times are both known and not zero; otherwise a note says why. Each monitoring section also gives each process's rework rate since the snapshot before it.
 - Errors in any state, or in the project itself, make the exit status 1.
 
 ## Library use
@@ -70,3 +72,4 @@ Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ig
 - `LoadValueStream`, `LoadProject`, `Save` and `Write` read and write the JSON format. Reads reject unknown fields.
 - `ReadCSV(r, vs)` appends processes, idles and inventories from CSV to a value stream, with the rules of `vsm import`.
 - `Measure.Difference()` (benefit − cost) and `Measure.Payback()` (cost ÷ benefit, in `benefit_period`) each return a `Value`.
+- `ProjectReport.Priority` lists measure numbers in prioritisation order. `MonitoringReport.Rework` holds each process's rework rate since the previous snapshot.
