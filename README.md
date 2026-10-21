@@ -34,7 +34,7 @@ vsm symbols                   # the value stream symbols of Table A.1
 vsm version                   # the version and commit it was built from; +dirty if the tree had local changes
 ```
 
-A file is read as a project if it has a key that only a project has (`phase`, `current`, `ideal`, `future`, `monitoring`, `measures` or `workshop`), or if all its top-level keys are project fields; any other file is read as one value stream. `vsm check` exits with status 1 when the file has errors (invalid input that was ignored), 2 when it cannot read the file, and 0 otherwise.
+A file is read as a project if it has a top-level `current` key. Otherwise a key that only a value stream has (such as `time_unit` or `processes`) makes it one value stream. Otherwise it is read as a project if it has a key that only a project has (`phase`, `ideal`, `future`, `monitoring`, `measures` or `workshop`), or if all its top-level keys are project fields; any other file is read as one value stream. `vsm check` exits with status 1 when the file has errors (invalid input that was ignored), 2 when it cannot read the file, and 0 otherwise.
 
 ## Library
 

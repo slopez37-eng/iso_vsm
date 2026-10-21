@@ -228,9 +228,10 @@ const (
 	FlowGoSee            FlowKind = "gosee"
 )
 
-// InformationFlow links two elements of the map. From and To are the id of a
-// process or supplier, or one of the reserved ids "customer" (the end customer)
-// and "planning" (planning and control).
+// InformationFlow links two elements of the map. From and To are the id of any
+// element of the value stream that has one (a process, supplier, idle or
+// inventory), or one of the reserved ids "customer" (the end customer) and
+// "planning" (planning and control).
 type InformationFlow struct {
 	From        string   `json:"from"`
 	To          string   `json:"to"`

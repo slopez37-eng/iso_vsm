@@ -403,6 +403,15 @@ func (e *evaluator) validate() {
 	for _, d := range vs.Idles {
 		claim(d.ID, "idle")
 	}
+	// Inventory ids are not checked for uniqueness, but information flows may
+	// name them, so they count as ids of the map.
+	for _, d := range vs.Idles {
+		for _, inv := range d.Inventories {
+			if _, ok := ids[inv.ID]; !ok && inv.ID != "" {
+				ids[inv.ID] = "inventory"
+			}
+		}
+	}
 	for _, d := range vs.Idles {
 		for _, end := range []string{d.From, d.To} {
 			if end == "" {
@@ -432,8 +441,8 @@ func (e *evaluator) validate() {
 			if end == "customer" || end == "planning" {
 				continue
 			}
-			if kind, ok := ids[end]; !ok || (kind != "process" && kind != "supplier") {
-				e.add(SeverityError, subject, "", "%q is not a process, supplier, customer or planning id", end)
+			if _, ok := ids[end]; !ok {
+				e.add(SeverityError, subject, "", "%q is not an id in the value stream, customer or planning", end)
 			}
 		}
 	}

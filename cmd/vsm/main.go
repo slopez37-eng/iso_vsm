@@ -217,8 +217,6 @@ func pctVal(v vsm.Value) string {
 	return pct(v.Value)
 }
 
-// version names the module version. A build from a git checkout gets a
-// pseudo-version that names the commit, with "+dirty" for uncommitted changes.
 // version names the module version and the commit the tool was built from.
 func version() string {
 	info, ok := debug.ReadBuildInfo()

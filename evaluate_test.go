@@ -267,6 +267,36 @@ func TestEvaluateChecksFlowAndFlashReferences(t *testing.T) {
 	}
 }
 
+// TestEvaluateAcceptsKanbanInformationFlows checks the two control tickets of a
+// Kanban loop: the withdrawal goes from the downstream process to the idle
+// supermarket, and the production ticket from the supermarket inventory to the
+// upstream process.
+func TestEvaluateAcceptsKanbanInformationFlows(t *testing.T) {
+	vs := &ValueStream{
+		Name: "kanban", TimeUnit: Minute,
+		Processes: []Process{{ID: "P1", ProcessTime: F(10)}, {ID: "P2", ProcessTime: F(10)}},
+		Idles: []Idle{{ID: "SM", From: "P1", To: "P2",
+			Inventories: []Inventory{{ID: "SM1", Kind: InventorySupermarket, Quantity: F(20)}}}},
+		InformationFlows: []InformationFlow{
+			{From: "P2", To: "SM", Kind: FlowWithdrawalTicket},
+			{From: "SM1", To: "P1", Kind: FlowProductionTicket},
+			{From: "P1", To: "nowhere", Kind: FlowManual},
+			{From: "", To: "P1", Kind: FlowManual},
+		},
+	}
+	r := Evaluate(vs)
+	subjects := map[string]bool{}
+	for _, i := range issuesWith(r, SeverityError, "") {
+		subjects[i.Subject] = true
+	}
+	if subjects["information flow #1"] || subjects["information flow #2"] {
+		t.Errorf("valid Kanban tickets reported; error subjects %v", subjects)
+	}
+	if !subjects["information flow #3"] || !subjects["information flow #4"] {
+		t.Errorf("unknown or empty flow end not reported; error subjects %v", subjects)
+	}
+}
+
 func TestEvaluateRejectsZeroOperatingTimeAndPeriod(t *testing.T) {
 	vs := &ValueStream{Name: "x", TimeUnit: Minute,
 		Customer:  Customer{Demand: F(400), OperatingTime: F(0), PeriodLength: F(0)},

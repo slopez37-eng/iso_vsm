@@ -76,7 +76,8 @@ type MeasureReview struct {
 	// Measured is the KPI of the latest snapshot that has it.
 	Measured Value `json:"measured"`
 	// Met says whether Measured reaches Target in the direction that is better
-	// for the KPI. It is set only when both are known.
+	// for the KPI. It is set only when both are known. A time KPI has no verdict
+	// without a current state, because the target has no unit then.
 	Met *bool `json:"met,omitempty"`
 }
 
@@ -188,7 +189,10 @@ func EvaluateProject(p *Project) ProjectReport {
 		if m.KPI != "" {
 			checkEnum(&issues, subject, "4.4.2", "kpi", m.KPI, KPINames)
 			mr.Measured = latestKPI(rep.Monitoring, m.KPI, rep.Current)
-			if m.Target != nil && mr.Measured.Known {
+			// A time target is in the current state's unit, so without a current
+			// state a time KPI has no verdict.
+			noUnit := rep.Current == nil && isTimeKPI(m.KPI)
+			if m.Target != nil && mr.Measured.Known && !noUnit {
 				met := meetsTarget(m.KPI, mr.Measured.Value, *m.Target)
 				mr.Met = &met
 			}
@@ -211,7 +215,7 @@ func EvaluateProject(p *Project) ProjectReport {
 // latestKPI returns the named KPI of the snapshot with the latest valid date
 // that has it. Times are converted to the current state's unit, which is the
 // unit of a measure's target. Without a current state they stay in the
-// snapshot's unit.
+// snapshot's unit, and EvaluateProject gives the measure no verdict.
 func latestKPI(reports []MonitoringReport, name KPIName, current *Result) Value {
 	var best Value
 	date := ""
@@ -220,7 +224,7 @@ func latestKPI(reports []MonitoringReport, name KPIName, current *Result) Value 
 		if !v.Known || !isDate(m.Date) || m.Date < date {
 			continue
 		}
-		if current != nil && (name == KPILeadTime || name == KPIProcessTime || name == KPIIdleTime) {
+		if current != nil && isTimeKPI(name) {
 			x, err := Convert(v.Value, m.Result.TimeUnit, current.TimeUnit)
 			if err != nil {
 				continue
@@ -230,6 +234,11 @@ func latestKPI(reports []MonitoringReport, name KPIName, current *Result) Value 
 		best, date = v, m.Date
 	}
 	return best
+}
+
+// isTimeKPI reports whether the KPI is a time, in the unit of the value stream.
+func isTimeKPI(name KPIName) bool {
+	return name == KPILeadTime || name == KPIProcessTime || name == KPIIdleTime
 }
 
 // meetsTarget reports whether v reaches target in the direction that is better
@@ -273,26 +282,35 @@ func isDate(s string) bool {
 }
 
 // IsProjectJSON reports whether a JSON object is a project rather than a
-// single value stream. It is a project when a top-level key is one that only a
-// project has (such as current or measures). Otherwise it is a project when
-// every top-level key is a field of Project, as in a file with only a name.
+// single value stream. A top-level current key makes it a project. Otherwise a
+// key that only a value stream has (such as time_unit or processes) makes it a
+// value stream, and a key that only a project has (such as phase or measures)
+// makes it a project. Otherwise it is a project when every top-level key is a
+// field of Project, as in a file with only a name.
 func IsProjectJSON(data []byte) (bool, error) {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return false, fmt.Errorf("vsm: %w", err)
 	}
+	if _, ok := probe["current"]; ok {
+		return true, nil
+	}
 	project := jsonFields(reflect.TypeFor[Project]())
 	stream := jsonFields(reflect.TypeFor[ValueStream]())
+	projectOnly := false
 	allProject := true
 	for k := range probe {
+		if stream[k] && !project[k] {
+			return false, nil
+		}
 		if project[k] && !stream[k] {
-			return true, nil
+			projectOnly = true
 		}
 		if !project[k] {
 			allProject = false
 		}
 	}
-	return allProject, nil
+	return projectOnly || allProject, nil
 }
 
 // jsonFields returns the JSON key of every field of a struct type.
@@ -345,14 +363,23 @@ func read[T any](r io.Reader) (*T, error) {
 // stamping the current schema version. The JSON is written to a temporary file
 // beside the target, which replaces the target only when it is complete, so a
 // failed save leaves the existing file unchanged. A symbolic link is followed,
-// and the file keeps its permissions; a new file gets 0644.
+// even when its target does not exist yet, and the file keeps its permissions;
+// a new file gets 0644. A read-only file is an error, and nothing is written.
 func Save(path string, v any) error {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
+	path, err := linkTarget(path)
+	if err != nil {
+		return err
 	}
 	mode := os.FileMode(0o644)
 	if fi, err := os.Stat(path); err == nil {
 		mode = fi.Mode().Perm()
+		// Renaming over the file needs only a writable folder, so the file itself is
+		// checked for writing first.
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		f.Close()
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
@@ -370,6 +397,28 @@ func Save(path string, v any) error {
 		return err
 	}
 	return os.Rename(f.Name(), path)
+}
+
+// linkTarget returns the file that a save to path writes. Symbolic links are
+// followed one at a time, relative links against the folder of the link, so a
+// link whose target does not exist yet is followed too. The loop stops after 40
+// links, as the kernel does.
+func linkTarget(path string) (string, error) {
+	for range 40 {
+		fi, err := os.Lstat(path)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			return path, nil
+		}
+		link, err := os.Readlink(path)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(link) {
+			link = filepath.Join(filepath.Dir(path), link)
+		}
+		path = link
+	}
+	return "", fmt.Errorf("vsm: %s: too many levels of symbolic links", path)
 }
 
 // Write writes v (a *ValueStream or *Project) as indented JSON, stamping the

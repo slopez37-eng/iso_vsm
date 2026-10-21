@@ -168,6 +168,51 @@ func TestSaveKeepsPermissions(t *testing.T) {
 	}
 }
 
+func TestSaveRefusesReadOnlyFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a read-only file")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stream.json")
+	if err := os.WriteFile(path, []byte("old"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, exampleStream()); err == nil {
+		t.Fatal("saving over a read-only file did not fail")
+	}
+	if data, _ := os.ReadFile(path); string(data) != "old" {
+		t.Errorf("read-only file changed to %q", data)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("%d files in the folder after a refused save, want only the original", len(entries))
+	}
+}
+
+func TestSaveWritesThroughDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "sub", "link.json")
+	// The relative target is read from the link's folder, and does not exist yet.
+	if err := os.Symlink("../target.json", link); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(link, exampleStream()); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("the symbolic link was replaced by a regular file")
+	}
+	if _, err := LoadValueStream(filepath.Join(dir, "target.json")); err != nil {
+		t.Errorf("the link's target was not written: %v", err)
+	}
+}
+
 func TestWriteValueStampsSchemaVersion(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Write(&buf, *exampleStream()); err != nil {
@@ -196,6 +241,26 @@ func TestProjectDetectedByAnyProjectKey(t *testing.T) {
 	stream := `{"name":"x","time_unit":"s","measurs":[]}`
 	if ok, err := IsProjectJSON([]byte(stream)); err != nil || ok {
 		t.Errorf("IsProjectJSON = %v, %v for a value stream; want false", ok, err)
+	}
+}
+
+// A stray key does not decide the kind of file: a value stream with one project
+// key is a value stream and names that key, and a project with one misspelt key
+// is a project and names the misspelt key.
+func TestStrayKeyDoesNotDecideTheKind(t *testing.T) {
+	stream := `{"name":"x","time_unit":"s","processes":[{"id":"P"}],"phase":"analysis"}`
+	if ok, err := IsProjectJSON([]byte(stream)); err != nil || ok {
+		t.Fatalf("IsProjectJSON = %v, %v for a value stream; want false", ok, err)
+	}
+	if _, err := ReadValueStream(strings.NewReader(stream)); err == nil || !strings.Contains(err.Error(), "phase") {
+		t.Errorf("err = %v, want unknown field phase", err)
+	}
+	project := `{"name":"p","measures":[],"measurs":[]}`
+	if ok, err := IsProjectJSON([]byte(project)); err != nil || !ok {
+		t.Fatalf("IsProjectJSON = %v, %v for a project; want true", ok, err)
+	}
+	if _, err := ReadProject(strings.NewReader(project)); err == nil || !strings.Contains(err.Error(), "measurs") {
+		t.Errorf("err = %v, want unknown field measurs", err)
 	}
 }
 
@@ -269,6 +334,24 @@ func TestMeasureTargetUsesLatestDateInCurrentUnit(t *testing.T) {
 	approx(t, "measured lead time in s", m.Measured.Value, 36)
 	if m.Met == nil || *m.Met {
 		t.Errorf("36 s against a 30 s target: met = %v, want false", m.Met)
+	}
+}
+
+// Without a current state a time target has no unit, so a time KPI gets no
+// verdict; the measured value is still reported, in the snapshot's unit.
+func TestMeasureTimeTargetNeedsCurrentState(t *testing.T) {
+	p := exampleProject()
+	p.Current = nil
+	snap := &ValueStream{Name: "m", TimeUnit: Second, Processes: []Process{{ID: "P1", ProcessTime: F(600)}}}
+	p.Monitoring = []Snapshot{{Date: "2027-01-01", State: snap}}
+	p.Measures = []Measure{{Number: 1, Potential: "waiting", Description: "FIFO lane", KPI: KPIProcessTime, Target: F(20)}}
+	m := EvaluateProject(p).Measures[0]
+	if !m.Measured.Known {
+		t.Fatal("process time not measured")
+	}
+	approx(t, "measured process time in s", m.Measured.Value, 600)
+	if m.Met != nil {
+		t.Errorf("600 s against a target of 20 with no current state: met = %v, want no verdict", *m.Met)
 	}
 }
 
