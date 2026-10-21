@@ -433,6 +433,49 @@ func TestEvaluateReportsReworkRate(t *testing.T) {
 	wantValue(t, "rework rate", Evaluate(vs).Processes[0].ReworkRate, 0.05, "entered")
 }
 
+func TestEvaluateDerivesReworkRateFromYields(t *testing.T) {
+	vs := exampleStream()
+	vs.Processes[0].YieldFactor = F(0.90)
+	vs.Processes[0].YieldAfterRework = F(0.95)
+	r := Evaluate(vs)
+	wantValue(t, "rework rate", r.Processes[0].ReworkRate, 0.05, "A.15")
+	if e := issuesWith(r, SeverityError, ""); len(e) != 0 {
+		t.Errorf("unexpected errors: %v", e)
+	}
+}
+
+func TestEvaluateDerivesYieldAfterRework(t *testing.T) {
+	vs := exampleStream()
+	vs.Processes[0].YieldFactor = F(0.90)
+	vs.Processes[0].ReworkRate = F(0.05)
+	wantValue(t, "yield after rework", Evaluate(vs).Processes[0].YieldAfterRework, 0.95, "A.15")
+}
+
+func TestEvaluateWarnsWhenReworkRelationFails(t *testing.T) {
+	vs := exampleStream()
+	vs.Processes[0].YieldFactor = F(0.90)
+	vs.Processes[0].ReworkRate = F(0.05)
+	vs.Processes[0].YieldAfterRework = F(0.90)
+	r := Evaluate(vs)
+	if w := issuesWith(r, SeverityWarning, "A.15"); len(w) != 1 {
+		t.Errorf("want one A.15 warning, got %v", r.Issues)
+	}
+	wantValue(t, "yield after rework", r.Processes[0].YieldAfterRework, 0.90, "entered")
+}
+
+func TestEvaluateRejectsYieldAfterReworkBelowYield(t *testing.T) {
+	vs := exampleStream()
+	vs.Processes[0].YieldFactor = F(0.95)
+	vs.Processes[0].YieldAfterRework = F(0.90)
+	r := Evaluate(vs)
+	if e := issuesWith(r, SeverityError, "A.15"); len(e) != 1 {
+		t.Errorf("want one A.15 error, got %v", r.Issues)
+	}
+	if rr := r.Processes[0].ReworkRate; rr.Known {
+		t.Errorf("rework rate %v derived from a negative rework", rr.Value)
+	}
+}
+
 func TestFamilyBalancedVolumeIsANote(t *testing.T) {
 	vs := exampleStream()
 	vs.ProductFamily = &ProductFamily{Name: "A", Criteria: []CriterionStatus{

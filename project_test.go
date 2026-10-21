@@ -674,49 +674,6 @@ func TestWorkshopNoteIsSingle(t *testing.T) {
 	}
 }
 
-// Rework is the change of yield factor between snapshots taken in date order
-// (A.15). A process needs a known yield in both snapshots to have a rework rate.
-func TestReworkFollowsDateOrder(t *testing.T) {
-	stream := func(scrap *float64) *ValueStream {
-		vs := exampleStream()
-		vs.Processes[0].ScrapRate = scrap
-		return vs
-	}
-	p := exampleProject()
-	// Listed out of date order on purpose.
-	p.Monitoring = []Snapshot{
-		{Date: "2027-03-01", State: stream(F(0.05))},
-		{Date: "2027-01-01", State: stream(F(0.10))},
-		{Date: "2027-02-01", State: stream(F(0.20))},
-	}
-	byDate := map[string]MonitoringReport{}
-	for _, m := range EvaluateProject(p).Monitoring {
-		byDate[m.Date] = m
-	}
-	if got := byDate["2027-01-01"].Rework; len(got) != 0 {
-		t.Errorf("first snapshot has rework %v", got)
-	}
-	// The yield is 0.90 in January, 0.80 in February and 0.95 in March.
-	for date, want := range map[string]struct {
-		from  string
-		value float64
-	}{
-		"2027-02-01": {"2027-01-01", -0.10},
-		"2027-03-01": {"2027-02-01", 0.15},
-	} {
-		rw := byDate[date].Rework
-		if len(rw) != 1 || rw[0].ID != "P1" || rw[0].From != want.from || !rw[0].Value.Known {
-			t.Fatalf("%s: rework %+v, want P1 since %s", date, rw, want.from)
-		}
-		approx(t, "rework "+date, rw[0].Value.Value, want.value)
-	}
-	// A snapshot without a scrap rate has no yield, so no rework is shown against it.
-	p.Monitoring = []Snapshot{{Date: "2027-01-01", State: stream(nil)}, {Date: "2027-02-01", State: stream(F(0.1))}}
-	if got := EvaluateProject(p).Monitoring[1].Rework; len(got) != 0 {
-		t.Errorf("rework %v with an unknown yield in the earlier snapshot", got)
-	}
-}
-
 func TestReadRejectsTrailingData(t *testing.T) {
 	for _, in := range []string{`{"name":"x"}}`, `{"name":"x"}]`, `{"name":"x"} {}`} {
 		if _, err := ReadValueStream(strings.NewReader(in)); err == nil {

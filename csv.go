@@ -33,7 +33,10 @@ type csvColumn struct {
 // of a field of Process or Idle, or inventory_ followed by the JSON name of a
 // field of Inventory. An empty cell means the value was not entered. Lists of
 // numbers use "|" between values, and numbers use a point as the decimal
-// separator. Header names and cells are case-insensitive and ignore spaces.
+// separator. Header names, the element cell and boolean cells are
+// case-insensitive; other cells are kept as typed, so enum values must be
+// written as in the JSON format, such as manual. Surrounding spaces are trimmed
+// from each cell and from each value of a list.
 //
 // An inventory row adds an Inventory to the most recent idle row of the file,
 // so it must come after one. An idle row without from or to takes the id of the
@@ -48,7 +51,6 @@ func ReadCSV(r io.Reader, vs *ValueStream) error {
 	header, _, _ := strings.Cut(string(data), "\n")
 	cr := csv.NewReader(bytes.NewReader(data))
 	cr.Comma = detectDelimiter(header)
-	cr.TrimLeadingSpace = true
 
 	type record struct {
 		line  int

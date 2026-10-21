@@ -96,16 +96,6 @@ type MonitoringReport struct {
 	// Comparison is the 4.5.2 assessment of the current state against the
 	// snapshot, when both lead times are known.
 	Comparison *StateComparison `json:"comparison,omitempty"`
-	// Rework is each process's rework rate since the snapshot before it in date
-	// order, for the processes whose yield factor is known in both (A.15).
-	Rework []ProcessRework `json:"rework,omitempty"`
-}
-
-// ProcessRework is the rework rate of one process between two snapshots (A.15).
-type ProcessRework struct {
-	ID    string `json:"id"`
-	From  string `json:"from"`  // date of the earlier snapshot
-	Value Value  `json:"value"` // a fraction, as the yield factors are
 }
 
 // EvaluateProject evaluates every state, compares current and future, and
@@ -174,23 +164,6 @@ func EvaluateProject(p *Project) ProjectReport {
 		}
 		rep.Monitoring = append(rep.Monitoring, mr)
 	}
-	// Rework is the change of yield factor between consecutive snapshots in date
-	// order (A.15). Yield is known whenever scrap is (A.17 in derive), so a
-	// process without a known yield has no rework rate.
-	var dated []int
-	for i, mr := range rep.Monitoring {
-		if isDate(mr.Date) {
-			dated = append(dated, i)
-		}
-	}
-	slices.SortStableFunc(dated, func(a, b int) int {
-		return strings.Compare(rep.Monitoring[a].Date, rep.Monitoring[b].Date)
-	})
-	for k := 1; k < len(dated); k++ {
-		prev, cur := &rep.Monitoring[dated[k-1]], &rep.Monitoring[dated[k]]
-		cur.Rework = reworkRates(prev, cur)
-	}
-
 	flashes := map[int]bool{}
 	for _, vs := range []*ValueStream{p.Current, p.Future} {
 		if vs != nil {
@@ -355,22 +328,6 @@ func meetsTarget(name KPIName, rule TargetRule, tolerance, v, target float64) bo
 		return v <= target
 	}
 	return v >= target
-}
-
-// reworkRates returns the rework rate of each process whose yield factor is
-// known in both snapshots (A.15), with the earlier snapshot's date as From.
-func reworkRates(prev, cur *MonitoringReport) []ProcessRework {
-	var out []ProcessRework
-	for _, pc := range cur.Result.Processes {
-		for _, pp := range prev.Result.Processes {
-			if pp.ID == pc.ID && pp.YieldFactor.Known && pc.YieldFactor.Known {
-				rate := ReworkRate(pp.YieldFactor.Value, pc.YieldFactor.Value)
-				out = append(out, ProcessRework{ID: pc.ID, From: prev.Date, Value: knownValue(rate, "A.15")})
-				break
-			}
-		}
-	}
-	return out
 }
 
 // AllIssues returns the issues of the project, its states and its snapshots.

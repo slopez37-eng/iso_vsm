@@ -38,6 +38,21 @@ func TestReadCSVSemicolonProcesses(t *testing.T) {
 	}
 }
 
+func TestReadCSVTabWithEmptyCells(t *testing.T) {
+	in := "element\tid\tname\tprocess_time\nprocess\tP1\t\t2\nprocess\tP2\tassembly\t\n"
+	vs := &ValueStream{}
+	if err := ReadCSV(strings.NewReader(in), vs); err != nil {
+		t.Fatal(err)
+	}
+	p1, p2 := vs.Processes[0], vs.Processes[1]
+	if p1.Name != "" || p1.ProcessTime == nil || *p1.ProcessTime != 2 {
+		t.Errorf("P1 name %q, process_time %v, want no name and 2", p1.Name, p1.ProcessTime)
+	}
+	if p2.Name != "assembly" || p2.ProcessTime != nil {
+		t.Errorf("P2 name %q, process_time %v, want assembly and not entered", p2.Name, p2.ProcessTime)
+	}
+}
+
 func TestReadCSVIdleWithInventories(t *testing.T) {
 	in := strings.Join([]string{
 		"element,id,name,process_time,from,to,idle_time,inventory_kind,inventory_quantity,inventory_range",

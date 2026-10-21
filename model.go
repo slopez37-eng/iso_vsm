@@ -151,9 +151,10 @@ type Process struct {
 	BatchSize *float64 `json:"batch_size,omitempty"`
 	Variants  *float64 `json:"variants,omitempty"`
 
-	ScrapRate   *float64 `json:"scrap_rate,omitempty"`   // SR
-	YieldFactor *float64 `json:"yield_factor,omitempty"` // YF
-	ReworkRate  *float64 `json:"rework_rate,omitempty"`  // RR
+	ScrapRate        *float64 `json:"scrap_rate,omitempty"`         // SR
+	YieldFactor      *float64 `json:"yield_factor,omitempty"`       // YF
+	ReworkRate       *float64 `json:"rework_rate,omitempty"`        // RR
+	YieldAfterRework *float64 `json:"yield_after_rework,omitempty"` // YF + RR (A.15)
 
 	ValueShares
 }

@@ -13,7 +13,7 @@ The `vsm` command and the `iso_vsm` Go library (module `github.com/slopez37-eng/
 - check the numbers you entered against those formulas and report contradictions;
 - compute totals (process, idle and lead time), KPIs (customer takt, value added ratio, value adding share, OTIF, yield, inventory turns), process loads and the bottleneck (the highest load);
 - compare a current and a future state (clause 4.5.2) and check the catalogue of measures for SMART gaps;
-- evaluate dated monitoring snapshots against the current state, give each process's rework rate between snapshots (A.15), and check each measure's target (`kpi`, `target`, `target_rule` and `tolerance`; times in the current state's unit) in the latest-dated snapshot.
+- evaluate dated monitoring snapshots against the current state, and check each measure's target (`kpi`, `target`, `target_rule` and `tolerance`; times in the current state's unit) in the latest-dated snapshot.
 
 They do not draw maps and do not design a future state.
 
@@ -26,7 +26,7 @@ They do not draw maps and do not design a future state.
 
 `vsm symbols` lists the value stream symbols of Table A.1.
 
-`vsm import [-base FILE] [-name NAME] [-unit UNIT] FILE.csv` turns a CSV file into value stream JSON, one row per process, idle or inventory. The `element` column says which, and the other columns are JSON field names (`inventory_` prefix for inventories). It does not evaluate, so run `vsm check` on the output. An error names the line and column, and exit status is 2.
+`vsm import [-base FILE] [-name NAME] [-unit UNIT] FILE.csv` turns a CSV file into value stream JSON, one row per process, idle or inventory. The `element` column says which, and the other columns are JSON field names (`inventory_` prefix for inventories). Column names, the `element` cell and boolean cells ignore case; other values are kept as typed, so write enum values as in the JSON format, such as `manual`. Spaces around a cell or a list value are ignored. It does not evaluate, so run `vsm check` on the output. An error names the line and column, and exit status is 2.
 
 A file is checked as a project if it has a top-level `current` key. Otherwise, a key that only a value stream has (such as `time_unit` or `processes`) makes it one value stream. Otherwise it is checked as a project if it has a key that only a project has (`phase`, `ideal`, `future`, `monitoring`, `measures` or `workshop`), or if all its top-level keys are project fields (`schema_version`, `name`). Any other file is checked as one value stream.
 
@@ -61,7 +61,7 @@ Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ig
 - Each issue is printed as `severity: subject: message [rule]`. The subject is such as `process P2`, and the rule is the clause or formula it rests on, such as `A.6`.
 - In `-json`, each derived or entered value is an object with `value` and `source` (`entered` or the formula). An unknown value is `null`.
 - In text output, an unknown value shows as `?`.
-- A project report has one section per state and per monitoring snapshot. The comparison appears only when the current and future lead times are both known and not zero; otherwise a note says why. Each monitoring section also gives each process's rework rate since the snapshot before it.
+- A project report has one section per state and per monitoring snapshot. The comparison appears only when the current and future lead times are both known and not zero; otherwise a note says why.
 - Errors in any state, or in the project itself, make the exit status 1.
 
 ## Library use
@@ -72,4 +72,4 @@ Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ig
 - `LoadValueStream`, `LoadProject`, `Save` and `Write` read and write the JSON format. Reads reject unknown fields.
 - `ReadCSV(r, vs)` appends processes, idles and inventories from CSV to a value stream, with the rules of `vsm import`.
 - `Measure.Difference()` (benefit − cost) and `Measure.Payback()` (cost ÷ benefit, in `benefit_period`) each return a `Value`.
-- `ProjectReport.Priority` lists measure numbers in prioritisation order. `MonitoringReport.Rework` holds each process's rework rate since the previous snapshot.
+- `ProjectReport.Priority` lists measure numbers in prioritisation order.

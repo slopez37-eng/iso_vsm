@@ -137,14 +137,16 @@ type ProcessResult struct {
 	ScrapRate               Value  `json:"scrap_rate"`
 	YieldFactor             Value  `json:"yield_factor"`
 	ReworkRate              Value  `json:"rework_rate"`
-	// TaktLoad is cycle time ÷ customer takt: the share of the process's
-	// capacity that customer demand takes up. Above 1 the process cannot meet
-	// demand. It says nothing about how busy each resource is.
+	YieldAfterRework        Value  `json:"yield_after_rework"`
+	// TaktLoad is cycle time ÷ customer takt, as on a leveling chart. Above 1
+	// the cycle time is longer than the takt the customer sets. It is not
+	// equipment utilization, and it uses only the customer's takt, so the
+	// process's own available time does not change it.
 	TaktLoad Value `json:"takt_load"`
 	// Load is demand × cycle time ÷ the time available to the process (3.2),
 	// which is its own available time or else the customer's operating time.
-	// It equals TaktLoad when the process has no available time of its own.
-	// Above 1 the process cannot meet demand.
+	// Above 1 the process cannot keep up with demand. It equals TaktLoad when
+	// the process has no available time of its own.
 	Load Value `json:"load"`
 }
 
@@ -265,7 +267,7 @@ type processCells struct {
 	pt, ct, st, prt, ht, wt, dt, rt, rep, pq *cell
 	res, ttr, batch                          *cell
 	vat, nvat, nnvat, sr, yf                 *cell
-	avail, rr                                *cell
+	avail, rr, yar                           *cell
 	// a8 are the parts of process time in A.8 for this process type.
 	a8 []*cell
 }
@@ -547,6 +549,7 @@ func (e *evaluator) processCells(p *Process) *processCells {
 	c.sr = e.entered(s, "scrap_rate", p.ScrapRate, true)
 	c.yf = e.entered(s, "yield_factor", p.YieldFactor, true)
 	c.rr = e.entered(s, "rework_rate", p.ReworkRate, true)
+	c.yar = e.entered(s, "yield_after_rework", p.YieldAfterRework, true)
 	c.avail = e.entered(s, "available_time", p.AvailableTime, false)
 	if c.avail.known && c.avail.v == 0 {
 		e.add(SeverityError, s, "", "available_time is 0; it must be positive, so it is ignored")
@@ -639,6 +642,7 @@ func (e *evaluator) derive() bool {
 		changed = e.sumRel(s, "A.8", c.pt, c.a8...) || changed
 		changed = e.sumRel(s, "A.3 per process (process lead time equals process time)", c.pt, c.vat, c.nvat, c.nnvat) || changed
 		changed = e.sumRel(s, "A.17", hundredPercent, c.sr, c.yf) || changed
+		changed = e.reworkRel(s, c.yar, c.yf, c.rr) || changed
 	}
 	for _, c := range e.idles {
 		s := c.subject
@@ -718,6 +722,19 @@ func (e *evaluator) productRel(subject, rule string, total, a, b *cell) bool {
 	return e.settle(subject, rule, total, a.v*b.v, a.name+" × "+b.name+" is")
 }
 
+// reworkRel applies A.15, yield after rework = yield factor + rework rate. A
+// yield after rework below the yield factor would need a negative rework rate,
+// so no rework rate is derived from it, and the contradiction is reported.
+func (e *evaluator) reworkRel(subject string, yar, yf, rr *cell) bool {
+	if yar.known && yf.known && yar.v < yf.v && !near(yar.v, yf.v) {
+		if e.checking {
+			e.add(SeverityError, subject, "A.15", "yield_after_rework %g is below yield_factor %g, which would need a negative rework_rate; no rework rate is derived", yar.v, yf.v)
+		}
+		return false
+	}
+	return e.sumRel(subject, "A.15", yar, yf, rr)
+}
+
 // rangeRel applies A.7, converted to time with the period length.
 func (e *evaluator) rangeRel(subject string, r, q *cell) bool {
 	if !q.known || !e.demand.known {
@@ -761,7 +778,7 @@ func (e *evaluator) result() Result {
 			ProcessingTime: c.prt.value(), HandlingTime: c.ht.value(), WaitingTime: c.wt.value(),
 			Downtime: c.dt.value(), ValueAdding: c.vat.value(), NonValueAdding: c.nvat.value(),
 			NecessaryNonValueAdding: c.nnvat.value(), ScrapRate: c.sr.value(), YieldFactor: c.yf.value(),
-			ReworkRate: c.rr.value(),
+			ReworkRate: c.rr.value(), YieldAfterRework: c.yar.value(),
 		}
 		if c.ct.known && e.takt.known {
 			pr.TaktLoad = knownValue(c.ct.v/e.takt.v, "A.12")
