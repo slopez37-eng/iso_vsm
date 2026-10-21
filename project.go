@@ -28,7 +28,7 @@ var Phases = []Phase{PhaseAnalysis, PhaseDesign, PhasePlanning, PhaseImplementat
 
 // Project is one run of the VSM procedure (clause 4.1) for a product family:
 // the current state, an optional ideal state as guidance, the future state,
-// the catalogue of measures and the workshop.
+// the catalogue of measures, the monitoring snapshots and the workshop.
 type Project struct {
 	SchemaVersion int          `json:"schema_version"`
 	Name          string       `json:"name"`
@@ -36,8 +36,16 @@ type Project struct {
 	Current       *ValueStream `json:"current"`
 	Ideal         *ValueStream `json:"ideal,omitempty"`
 	Future        *ValueStream `json:"future,omitempty"`
+	Monitoring    []Snapshot   `json:"monitoring,omitempty"`
 	Measures      []Measure    `json:"measures,omitempty"`
 	Workshop      *Workshop    `json:"workshop,omitempty"`
+}
+
+// Snapshot is the value stream as it was found on one date, after the future
+// state was set, so that the measures can be followed up.
+type Snapshot struct {
+	Date  string       `json:"date"`  // YYYY-MM-DD
+	State *ValueStream `json:"state"` // the stream as measured on that date
 }
 
 // ProjectReport is the evaluation of a project.
@@ -49,7 +57,9 @@ type ProjectReport struct {
 	// Comparison is the 4.5.2 assessment of the future against the current
 	// state, when both lead times are known.
 	Comparison *StateComparison `json:"comparison,omitempty"`
-	Measures   []MeasureReview  `json:"measures,omitempty"`
+	// Monitoring is the evaluation of each snapshot, in the order given.
+	Monitoring []MonitoringReport `json:"monitoring,omitempty"`
+	Measures   []MeasureReview    `json:"measures,omitempty"`
 	// Priority lists open measure numbers in cost-benefit order.
 	Priority []int   `json:"priority,omitempty"`
 	Issues   []Issue `json:"issues"`
@@ -60,6 +70,22 @@ type MeasureReview struct {
 	Number           int      `json:"number"`
 	SMARTGaps        []string `json:"smart_gaps,omitempty"`
 	BenefitCostRatio Value    `json:"benefit_cost_ratio"`
+	// Target is the measure's target, as entered.
+	Target *float64 `json:"target,omitempty"`
+	// Measured is the KPI of the latest snapshot that has it.
+	Measured Value `json:"measured"`
+	// Met says whether Measured reaches Target in the direction that is better
+	// for the KPI. It is set only when both are known.
+	Met *bool `json:"met,omitempty"`
+}
+
+// MonitoringReport is the evaluation of one snapshot.
+type MonitoringReport struct {
+	Date   string  `json:"date"`
+	Result *Result `json:"result"`
+	// Comparison is the 4.5.2 assessment of the current state against the
+	// snapshot, when both lead times are known.
+	Comparison *StateComparison `json:"comparison,omitempty"`
 }
 
 // EvaluateProject evaluates every state, compares current and future, and
@@ -98,6 +124,36 @@ func EvaluateProject(p *Project) ProjectReport {
 		}
 	}
 
+	// Monitoring snapshots are evaluated in date order and compared with the current state.
+	var last string
+	for i, s := range p.Monitoring {
+		subject := "monitoring " + s.Date
+		if s.Date == "" {
+			subject = fmt.Sprintf("monitoring #%d", i+1)
+		}
+		if !isDate(s.Date) {
+			add(SeverityError, subject, "4.5.2", "date is missing or not a YYYY-MM-DD date")
+		} else {
+			if s.Date < last {
+				add(SeverityWarning, subject, "4.5.2", "date is earlier than the snapshot before it (%s)", last)
+			}
+			last = s.Date
+		}
+		if s.State == nil {
+			add(SeverityError, subject, "4.5.2", "the snapshot has no state; ignored")
+			continue
+		}
+		mr := MonitoringReport{Date: s.Date, Result: eval(s.State, StateCurrent, subject)}
+		if rep.Current != nil {
+			if c, err := CompareStates(*rep.Current, *mr.Result); err == nil {
+				mr.Comparison = &c
+			} else {
+				add(SeverityNote, subject, "4.5.2", "no comparison of current and this snapshot: %v", err)
+			}
+		}
+		rep.Monitoring = append(rep.Monitoring, mr)
+	}
+
 	flashes := map[int]bool{}
 	for _, vs := range []*ValueStream{p.Current, p.Future} {
 		if vs != nil {
@@ -126,7 +182,16 @@ func EvaluateProject(p *Project) ProjectReport {
 		if (m.Cost != nil && *m.Cost < 0) || (m.Benefit != nil && *m.Benefit < 0) {
 			add(SeverityError, subject, "4.5.2", "cost and benefit cannot be negative")
 		}
-		rep.Measures = append(rep.Measures, MeasureReview{Number: m.Number, SMARTGaps: m.SMARTGaps(), BenefitCostRatio: m.BenefitCostRatio()})
+		mr := MeasureReview{Number: m.Number, SMARTGaps: m.SMARTGaps(), BenefitCostRatio: m.BenefitCostRatio(), Target: m.Target}
+		if m.KPI != "" {
+			checkEnum(&issues, subject, "4.4.2", "kpi", m.KPI, KPINames)
+			mr.Measured = latestKPI(rep.Monitoring, m.KPI)
+			if m.Target != nil && mr.Measured.Known {
+				met := meetsTarget(m.KPI, mr.Measured.Value, *m.Target)
+				mr.Met = &met
+			}
+		}
+		rep.Measures = append(rep.Measures, mr)
 	}
 	rep.Priority = Prioritize(p.Measures)
 	if len(p.Measures) > 0 && p.Workshop == nil {
@@ -141,13 +206,37 @@ func EvaluateProject(p *Project) ProjectReport {
 	return rep
 }
 
-// AllIssues returns the issues of the project and of each of its states.
+// latestKPI returns the named KPI of the latest snapshot that has it.
+func latestKPI(reports []MonitoringReport, name KPIName) Value {
+	for i := len(reports) - 1; i >= 0; i-- {
+		if v := reports[i].Result.KPI(name); v.Known {
+			return v
+		}
+	}
+	return Value{}
+}
+
+// meetsTarget reports whether v reaches target in the direction that is better
+// for the KPI: lead time, process time, idle time, non-value adding share and
+// scrap rate are better when lower.
+func meetsTarget(name KPIName, v, target float64) bool {
+	switch name {
+	case KPILeadTime, KPIProcessTime, KPIIdleTime, KPINonValueAddingShare, KPIScrapRate:
+		return v <= target
+	}
+	return v >= target
+}
+
+// AllIssues returns the issues of the project, its states and its snapshots.
 func (r ProjectReport) AllIssues() []Issue {
 	all := slices.Clone(r.Issues)
 	for _, s := range []*Result{r.Current, r.Ideal, r.Future} {
 		if s != nil {
 			all = append(all, s.Issues...)
 		}
+	}
+	for _, m := range r.Monitoring {
+		all = append(all, m.Result.Issues...)
 	}
 	return all
 }
@@ -247,7 +336,11 @@ func Write(w io.Writer, v any) error {
 		x.SchemaVersion = SchemaVersion
 	case *Project:
 		x.SchemaVersion = SchemaVersion
-		for _, vs := range []*ValueStream{x.Current, x.Ideal, x.Future} {
+		streams := []*ValueStream{x.Current, x.Ideal, x.Future}
+		for _, s := range x.Monitoring {
+			streams = append(streams, s.State)
+		}
+		for _, vs := range streams {
 			if vs != nil {
 				vs.SchemaVersion = SchemaVersion
 			}

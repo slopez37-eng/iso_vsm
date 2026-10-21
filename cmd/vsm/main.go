@@ -113,16 +113,15 @@ func printProject(w io.Writer, r vsm.ProjectReport) {
 			printResult(w, *s.r)
 		}
 	}
-	if c := r.Comparison; c != nil {
-		fmt.Fprintf(w, "\n== Current vs future (4.5.2), in %s ==\n", c.TimeUnit)
-		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "\tcurrent\tfuture\tω (future ÷ current)")
-		fmt.Fprintf(tw, "process time\t%s\t%s\t%s\n", num(c.ActualProcessTime), num(c.TargetProcessTime), val(c.Figures.ProcessTime))
-		fmt.Fprintf(tw, "idle time\t%s\t%s\t%s\n", num(c.ActualIdleTime), num(c.TargetIdleTime), val(c.Figures.IdleTime))
-		fmt.Fprintf(tw, "lead time\t%s\t%s\t%s\n", num(c.ActualLeadTime), num(c.TargetLeadTime), val(c.Figures.LeadTime))
-		fmt.Fprintf(tw, "value adding share\t%s\t%s\t\n", pct(c.ActualValueAddingShare), pct(c.TargetValueAddingShare))
-		fmt.Fprintf(tw, "non-value adding share\t%s\t%s\t\n", pct(c.ActualNonValueAddingShare), pct(c.TargetNonValueAddingShare))
-		tw.Flush()
+	if r.Comparison != nil {
+		printComparison(w, "future", r.Comparison)
+	}
+	for _, m := range r.Monitoring {
+		fmt.Fprintf(w, "\n== Monitoring %s ==\n", m.Date)
+		printResult(w, *m.Result)
+		if m.Comparison != nil {
+			printComparison(w, m.Date, m.Comparison)
+		}
 	}
 	if len(r.Measures) > 0 {
 		fmt.Fprintf(w, "\n== Measures ==\npriority (benefit ÷ cost): %v\n", r.Priority)
@@ -130,9 +129,37 @@ func printProject(w io.Writer, r vsm.ProjectReport) {
 			if len(m.SMARTGaps) > 0 {
 				fmt.Fprintf(w, "measure %d: %s\n", m.Number, strings.Join(m.SMARTGaps, "; "))
 			}
+			if m.Measured.Known {
+				line := fmt.Sprintf("measure %d: measured %s", m.Number, val(m.Measured))
+				if m.Target != nil {
+					line += ", target " + num(*m.Target)
+				}
+				if m.Met != nil {
+					verdict := "not met"
+					if *m.Met {
+						verdict = "met"
+					}
+					line += ", " + verdict
+				}
+				fmt.Fprintln(w, line)
+			}
 		}
 	}
 	printIssues(w, r.Issues)
+}
+
+// printComparison prints the 4.5.2 comparison of the current state with label,
+// which names a later state or a monitoring date.
+func printComparison(w io.Writer, label string, c *vsm.StateComparison) {
+	fmt.Fprintf(w, "\n== Current vs %s (4.5.2), in %s ==\n", label, c.TimeUnit)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(tw, "\tcurrent\t%s\tω (%s ÷ current)\n", label, label)
+	fmt.Fprintf(tw, "process time\t%s\t%s\t%s\n", num(c.ActualProcessTime), num(c.TargetProcessTime), val(c.Figures.ProcessTime))
+	fmt.Fprintf(tw, "idle time\t%s\t%s\t%s\n", num(c.ActualIdleTime), num(c.TargetIdleTime), val(c.Figures.IdleTime))
+	fmt.Fprintf(tw, "lead time\t%s\t%s\t%s\n", num(c.ActualLeadTime), num(c.TargetLeadTime), val(c.Figures.LeadTime))
+	fmt.Fprintf(tw, "value adding share\t%s\t%s\t\n", pct(c.ActualValueAddingShare), pct(c.TargetValueAddingShare))
+	fmt.Fprintf(tw, "non-value adding share\t%s\t%s\t\n", pct(c.ActualNonValueAddingShare), pct(c.TargetNonValueAddingShare))
+	tw.Flush()
 }
 
 func printResult(w io.Writer, r vsm.Result) {
