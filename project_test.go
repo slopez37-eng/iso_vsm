@@ -20,11 +20,11 @@ func exampleProject() *Project {
 	return &Project{
 		Name: "soldering", Current: current, Future: future,
 		Measures: []Measure{
-			{Number: 1, Potential: "waiting", Description: "FIFO lane", Status: StatusPlanned, Flashes: []int{1}, Cost: F(100), Benefit: F(300)},
-			{Number: 2, Potential: "setup", Description: "SMED", Status: StatusPlanned, Cost: F(100), Benefit: F(500),
+			{Number: 1, Potential: "waiting", Description: "FIFO lane", Status: StatusMeasureChecked, Flashes: []int{1}, Cost: F(100), Benefit: F(300)},
+			{Number: 2, Potential: "setup", Description: "SMED", Status: StatusMeasureChecked, Cost: F(100), Benefit: F(500),
 				Metric: "setup time", Target: F(5), Responsible: "PRO1", Deadline: "2027-03-01"},
-			{Number: 3, Potential: "scrap", Status: StatusInProgress},
-			{Number: 4, Potential: "done", Status: StatusDone, Cost: F(1), Benefit: F(100)},
+			{Number: 3, Potential: "scrap", Status: StatusImplementing},
+			{Number: 4, Potential: "done", Status: StatusImplemented, Cost: F(1), Benefit: F(100)},
 		},
 	}
 }
@@ -165,6 +165,32 @@ func TestInfiniteRatioMarshals(t *testing.T) {
 	}
 	if got := Prioritize(p.Measures); got[0] != 1 {
 		t.Errorf("a free measure should rank first, got %v", got)
+	}
+}
+
+func TestPrioritizeLeavesOutImplementedAndCancelled(t *testing.T) {
+	measures := []Measure{
+		{Number: 1, Status: StatusProblemDetected, Cost: F(1), Benefit: F(2)},
+		{Number: 2, Status: StatusImplemented, Cost: F(1), Benefit: F(9)},
+		{Number: 3, Status: StatusCancelled, Cost: F(1), Benefit: F(8)},
+		{Number: 4, Status: StatusImplementing, Cost: F(1), Benefit: F(4)},
+	}
+	if got, want := Prioritize(measures), []int{4, 1}; !slices.Equal(got, want) {
+		t.Errorf("priority = %v, want %v", got, want)
+	}
+}
+
+func TestProjectPhaseIsChecked(t *testing.T) {
+	p := exampleProject()
+	p.Phase = "review"
+	if !slices.ContainsFunc(EvaluateProject(p).Issues, func(i Issue) bool {
+		return i.Rule == "4.1" && i.Severity == SeverityError
+	}) {
+		t.Error("unknown phase not reported")
+	}
+	p.Phase = PhaseAssessment
+	if got := EvaluateProject(p).Issues; slices.ContainsFunc(got, func(i Issue) bool { return i.Rule == "4.1" }) {
+		t.Errorf("valid phase reported: %v", got)
 	}
 }
 

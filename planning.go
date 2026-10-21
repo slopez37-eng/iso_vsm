@@ -7,18 +7,22 @@ import (
 )
 
 // MeasureStatus is the implementation status of a measure, which clause 4.4.2
-// requires to be noted.
+// requires to be noted. The first five stages are the catalogue key of Annex
+// B.2.4.
 type MeasureStatus string
 
 const (
-	StatusPlanned    MeasureStatus = "planned"
-	StatusInProgress MeasureStatus = "in_progress"
-	StatusDone       MeasureStatus = "done"
-	StatusCancelled  MeasureStatus = "cancelled"
+	StatusProblemDetected           MeasureStatus = "problem_detected"
+	StatusResponsibilitiesClarified MeasureStatus = "responsibilities_clarified"
+	StatusMeasureChecked            MeasureStatus = "measure_checked" // measure created and checked
+	StatusImplementing              MeasureStatus = "implementing"
+	StatusImplemented               MeasureStatus = "implemented" // implemented and reviewed
+	StatusCancelled                 MeasureStatus = "cancelled"
 )
 
 // MeasureStatuses lists every MeasureStatus.
-var MeasureStatuses = []MeasureStatus{StatusPlanned, StatusInProgress, StatusDone, StatusCancelled}
+var MeasureStatuses = []MeasureStatus{StatusProblemDetected, StatusResponsibilitiesClarified, StatusMeasureChecked,
+	StatusImplementing, StatusImplemented, StatusCancelled}
 
 // Measure is one entry of the catalogue of measures for improvement (clause
 // 4.4.2), defined by the SMART method.
@@ -83,11 +87,11 @@ func (m Measure) BenefitCostRatio() Value {
 
 // Prioritize returns the measure numbers ordered by the cost-benefit analysis
 // of clause 4.5.2: highest benefit ÷ cost first, then higher net benefit.
-// Measures without both figures come last, in catalogue order. Done and
-// cancelled measures are left out.
+// Measures without both figures come last, in catalogue order. Implemented
+// and cancelled measures are left out.
 func Prioritize(measures []Measure) []int {
 	open := slices.DeleteFunc(slices.Clone(measures), func(m Measure) bool {
-		return m.Status == StatusDone || m.Status == StatusCancelled
+		return m.Status == StatusImplemented || m.Status == StatusCancelled
 	})
 	slices.SortStableFunc(open, func(a, b Measure) int {
 		ra, rb := a.BenefitCostRatio(), b.BenefitCostRatio()

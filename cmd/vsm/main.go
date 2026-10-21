@@ -197,12 +197,15 @@ func symbols(w io.Writer) error {
 
 func template(w io.Writer) error {
 	p := vsm.Project{
-		Name: "my product family",
+		Name:  "my product family",
+		Phase: vsm.PhaseAnalysis,
 		Current: &vsm.ValueStream{
 			Name: "current state", State: vsm.StateCurrent, TimeUnit: vsm.Minute,
-			ProductFamily: &vsm.ProductFamily{Name: "family A", Rationale: "similar process steps, stable demand"},
-			Customer:      vsm.Customer{Name: "end customer", Period: "day", Demand: vsm.F(400), OperatingTime: vsm.F(900), PeriodLength: vsm.F(1440)},
-			Suppliers:     []vsm.Supplier{{ID: "S1", Name: "supplier", DeliveryFrequency: "daily"}},
+			ProductFamily: &vsm.ProductFamily{Name: "family A", Rationale: "similar process steps, stable demand",
+				Criteria: []vsm.CriterionStatus{{Criterion: vsm.FamilySimilarSteps, Met: true}, {Criterion: vsm.FamilyRepresentative, Met: true},
+					{Criterion: vsm.FamilyBalancedVolume, Met: true}}},
+			Customer:  vsm.Customer{Name: "end customer", Period: "day", Demand: vsm.F(400), OperatingTime: vsm.F(900), PeriodLength: vsm.F(1440)},
+			Suppliers: []vsm.Supplier{{ID: "S1", Name: "supplier", DeliveryFrequency: "daily"}},
 			Processes: []vsm.Process{
 				{ID: "P1", Name: "cutting", Type: vsm.ProcessAutomated, Resources: vsm.F(1), Operators: vsm.F(1),
 					CycleTime: vsm.F(1.5), SetupTime: vsm.F(30), RepetitionTime: vsm.F(1.5), Repetitions: vsm.F(40)},
@@ -218,7 +221,7 @@ func template(w io.Writer) error {
 		},
 		Measures: []vsm.Measure{{Number: 1, Potential: "stock quantity", Description: "FIFO lane between cutting and assembly",
 			Metric: "range between P1 and P2 (min)", Target: vsm.F(240), Responsible: "logistics lead", Deadline: "2027-01-31",
-			Status: vsm.StatusPlanned, Flashes: []int{1}, Cost: vsm.F(2000), Benefit: vsm.F(9000)}},
+			Status: vsm.StatusMeasureChecked, Flashes: []int{1}, Cost: vsm.F(2000), Benefit: vsm.F(9000)}},
 	}
 	return vsm.Write(w, &p)
 }

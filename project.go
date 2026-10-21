@@ -11,12 +11,28 @@ import (
 	"time"
 )
 
+// Phase is the phase of the VSM procedure (clause 4.1) that a project is in.
+type Phase string
+
+const (
+	PhaseAnalysis       Phase = "analysis"
+	PhaseDesign         Phase = "design"
+	PhasePlanning       Phase = "planning"
+	PhaseImplementation Phase = "implementation"
+	PhaseAssessment     Phase = "assessment"
+	PhaseAdjustment     Phase = "adjustment"
+)
+
+// Phases lists every Phase.
+var Phases = []Phase{PhaseAnalysis, PhaseDesign, PhasePlanning, PhaseImplementation, PhaseAssessment, PhaseAdjustment}
+
 // Project is one run of the VSM procedure (clause 4.1) for a product family:
 // the current state, an optional ideal state as guidance, the future state,
 // the catalogue of measures and the workshop.
 type Project struct {
 	SchemaVersion int          `json:"schema_version"`
 	Name          string       `json:"name"`
+	Phase         Phase        `json:"phase,omitempty"`
 	Current       *ValueStream `json:"current"`
 	Ideal         *ValueStream `json:"ideal,omitempty"`
 	Future        *ValueStream `json:"future,omitempty"`
@@ -54,6 +70,9 @@ func EvaluateProject(p *Project) ProjectReport {
 	var issues issueList
 	add := issues.add
 	issues.checkSchema("project", p.SchemaVersion)
+	if p.Phase != "" {
+		checkEnum(&issues, "project", "4.1", "phase", p.Phase, Phases)
+	}
 	eval := func(vs *ValueStream, want State, label string) *Result {
 		if vs == nil {
 			return nil

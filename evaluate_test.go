@@ -133,6 +133,33 @@ func TestEvaluateNeverAppliesA5(t *testing.T) {
 	}
 }
 
+func TestFamilyCriteriaChecked(t *testing.T) {
+	vs := exampleStream()
+	vs.ProductFamily = &ProductFamily{Name: "A", Criteria: []CriterionStatus{
+		{Criterion: FamilySimilarSteps, Met: true},
+		{Criterion: FamilyRepresentative, Met: false},
+		{Criterion: FamilyRepresentative, Met: true},
+		{Criterion: "bogus", Met: true},
+	}}
+	text := ""
+	for _, i := range Evaluate(vs).Issues {
+		if i.Rule == "4.2.2" {
+			text += i.String() + "\n"
+		}
+	}
+	for _, want := range []string{`"bogus" is not one of`, `"representative" is listed twice`,
+		`does not have the characteristic "representative"`, "not yet assessed: balanced_volume"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("issues do not mention %q:\n%s", want, text)
+		}
+	}
+	vs.ProductFamily.Criteria = []CriterionStatus{{Criterion: FamilySimilarSteps, Met: true},
+		{Criterion: FamilyRepresentative, Met: true}, {Criterion: FamilyBalancedVolume, Met: true}}
+	if got := issuesWith(Evaluate(vs), SeverityWarning, "4.2.2"); len(got) > 0 {
+		t.Errorf("all three met but got %v", got)
+	}
+}
+
 func TestEvaluateRejectsInvalidInput(t *testing.T) {
 	vs := &ValueStream{
 		Name: "x", TimeUnit: "week", State: "past",

@@ -66,9 +66,31 @@ type ValueStream struct {
 // ProductFamily records the selected product family (clause 4.2.2). The
 // selection itself is a judgement the standard leaves to the team.
 type ProductFamily struct {
-	Name      string   `json:"name"`
-	Variants  []string `json:"variants,omitempty"`
-	Rationale string   `json:"rationale,omitempty"`
+	Name      string            `json:"name"`
+	Variants  []string          `json:"variants,omitempty"`
+	Rationale string            `json:"rationale,omitempty"`
+	Criteria  []CriterionStatus `json:"criteria,omitempty"`
+}
+
+// FamilyCriterion is one of the three characteristics a product family shall
+// have (clause 4.2.2).
+type FamilyCriterion string
+
+const (
+	FamilySimilarSteps   FamilyCriterion = "similar_process_steps"
+	FamilyRepresentative FamilyCriterion = "representative"
+	FamilyBalancedVolume FamilyCriterion = "balanced_volume"
+)
+
+// FamilyCriteria lists the three characteristics of clause 4.2.2.
+var FamilyCriteria = []FamilyCriterion{FamilySimilarSteps, FamilyRepresentative, FamilyBalancedVolume}
+
+// CriterionStatus records whether a product family has one characteristic
+// (clause 4.2.2). Whether it does is the team's judgement, not a calculation.
+type CriterionStatus struct {
+	Criterion FamilyCriterion `json:"criterion"`
+	Met       bool            `json:"met"`
+	Note      string          `json:"note,omitempty"`
 }
 
 // Customer is the end customer and the review period that demand and

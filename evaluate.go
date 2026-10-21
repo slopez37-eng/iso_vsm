@@ -333,6 +333,30 @@ func (e *evaluator) validate() {
 			}
 		}
 	}
+	if pf := vs.ProductFamily; pf != nil {
+		assessed := map[FamilyCriterion]bool{}
+		for _, c := range pf.Criteria {
+			if !slices.Contains(FamilyCriteria, c.Criterion) {
+				e.add(SeverityError, "product family", "4.2.2", "%q is not one of the three family characteristics", c.Criterion)
+			} else if assessed[c.Criterion] {
+				e.add(SeverityError, "product family", "4.2.2", "%q is listed twice", c.Criterion)
+			} else if !c.Met {
+				e.add(SeverityWarning, "product family", "4.2.2", "the product family does not have the characteristic %q", c.Criterion)
+			}
+			assessed[c.Criterion] = true
+		}
+		if len(pf.Criteria) > 0 {
+			var missing []string
+			for _, c := range FamilyCriteria {
+				if !assessed[c] {
+					missing = append(missing, string(c))
+				}
+			}
+			if len(missing) > 0 {
+				e.add(SeverityNote, "product family", "4.2.2", "not yet assessed: %s", strings.Join(missing, ", "))
+			}
+		}
+	}
 	seen := map[Guideline]bool{}
 	for _, g := range vs.Guidelines {
 		if !slices.Contains(Guidelines, g.Guideline) {
