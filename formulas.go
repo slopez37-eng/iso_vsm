@@ -60,7 +60,9 @@ func Range(stockQuantity, customerDemand float64) (float64, error) {
 }
 
 // SetupTime returns the setup time as process time minus processing,
-// waiting, handling and down time (A.8).
+// waiting, handling and down time (A.8). This is the printed form, which has
+// every part; Evaluate leaves out the parts Figure A.1 excludes for manual and
+// data-related processes, so pass 0 for those.
 func SetupTime(processTime, processingTime, waitingTime, handlingTime, downtime float64) float64 {
 	return processTime - (processingTime + waitingTime + handlingTime + downtime)
 }
@@ -146,29 +148,29 @@ func NonValueAddingShare(idleTime, leadTime float64) (float64, error) {
 
 // Comparison holds the relative comparison figures of clause 4.5.2: each is
 // the target (future) value divided by the actual (current) value, so 0.6
-// means the target needs 60 % of today's time.
+// means the target needs 60 % of today's time. A figure is unknown when its
+// actual time is 0, for example ω_IT when the current state has no idle time.
 type Comparison struct {
-	ProcessTime float64 `json:"omega_pt"` // ω_PT
-	IdleTime    float64 `json:"omega_it"` // ω_IT
-	LeadTime    float64 `json:"omega_lt"` // ω_LT
+	ProcessTime Value `json:"omega_pt"` // ω_PT
+	IdleTime    Value `json:"omega_it"` // ω_IT
+	LeadTime    Value `json:"omega_lt"` // ω_LT
 }
 
 // Compare returns the comparison figures ω_PT, ω_IT and ω_LT (clause 4.5.2)
 // from the total process and idle times of the actual and target states.
-func Compare(actualPT, actualIT, targetPT, targetIT float64) (Comparison, error) {
-	pt, err := divide(targetPT, actualPT)
-	if err != nil {
-		return Comparison{}, fmt.Errorf("ω_PT: %w", err)
+func Compare(actualPT, actualIT, targetPT, targetIT float64) Comparison {
+	ratio := func(target, actual float64) Value {
+		v, err := divide(target, actual)
+		if err != nil {
+			return Value{}
+		}
+		return knownValue(v, "4.5.2")
 	}
-	it, err := divide(targetIT, actualIT)
-	if err != nil {
-		return Comparison{}, fmt.Errorf("ω_IT: %w", err)
+	return Comparison{
+		ProcessTime: ratio(targetPT, actualPT),
+		IdleTime:    ratio(targetIT, actualIT),
+		LeadTime:    ratio(targetPT+targetIT, actualPT+actualIT),
 	}
-	lt, err := divide(targetPT+targetIT, actualPT+actualIT)
-	if err != nil {
-		return Comparison{}, fmt.Errorf("ω_LT: %w", err)
-	}
-	return Comparison{ProcessTime: pt, IdleTime: it, LeadTime: lt}, nil
 }
 
 func divide(numerator, denominator float64) (float64, error) {

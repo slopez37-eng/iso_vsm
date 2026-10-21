@@ -58,7 +58,7 @@ for _, issue := range r.Issues {
 }
 ```
 
-For a whole VSM run, with current, ideal and future states plus the catalogue of measures, use `vsm.Project` and `vsm.EvaluateProject`. `LoadProject`, `LoadValueStream` and `Save` read and write the JSON format. Unknown JSON fields are rejected, so a misspelt field is never silently dropped.
+For a whole VSM run, with current, ideal and future states plus the catalogue of measures, use `vsm.Project` and `vsm.EvaluateProject`. `LoadProject`, `LoadValueStream`, `Save` and `Write` read and write the JSON format, and `IsProjectJSON` tells a project file from a single value stream. `HasErrors` on a result or project report says whether any input was invalid. Unknown JSON fields are rejected, so a misspelt field is never silently dropped.
 
 Each formula is also a plain function. Use these when you only need one calculation:
 

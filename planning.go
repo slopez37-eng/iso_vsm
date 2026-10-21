@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"math"
 	"slices"
-	"time"
 )
 
 // MeasureStatus is the implementation status of a measure, which clause 4.4.2
@@ -17,6 +16,9 @@ const (
 	StatusDone       MeasureStatus = "done"
 	StatusCancelled  MeasureStatus = "cancelled"
 )
+
+// MeasureStatuses lists every MeasureStatus.
+var MeasureStatuses = []MeasureStatus{StatusPlanned, StatusInProgress, StatusDone, StatusCancelled}
 
 // Measure is one entry of the catalogue of measures for improvement (clause
 // 4.4.2), defined by the SMART method.
@@ -58,7 +60,7 @@ func (m Measure) SMARTGaps() []string {
 	}
 	if m.Deadline == "" {
 		gaps = append(gaps, "time-related: no deadline")
-	} else if _, err := time.Parse(time.DateOnly, m.Deadline); err != nil {
+	} else if !isDate(m.Deadline) {
 		gaps = append(gaps, "time-related: deadline is not a YYYY-MM-DD date")
 	}
 	return gaps
@@ -74,9 +76,9 @@ func (m Measure) BenefitCostRatio() Value {
 		if *m.Benefit == 0 {
 			return Value{}
 		}
-		return Value{Value: math.Inf(1), Known: true, Source: "4.5.2"}
+		return knownValue(math.Inf(1), "4.5.2")
 	}
-	return Value{Value: *m.Benefit / *m.Cost, Known: true, Source: "4.5.2"}
+	return knownValue(*m.Benefit / *m.Cost, "4.5.2")
 }
 
 // Prioritize returns the measure numbers ordered by the cost-benefit analysis

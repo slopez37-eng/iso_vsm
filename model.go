@@ -17,6 +17,9 @@ const (
 	StateFuture  State = "future"
 )
 
+// States lists every State.
+var States = []State{StateCurrent, StateIdeal, StateFuture}
+
 // ProcessType is one of the three cases of Figure A.1.
 type ProcessType string
 
@@ -25,6 +28,9 @@ const (
 	ProcessAutomated ProcessType = "automated" // case B: automated, material- or energy-related
 	ProcessData      ProcessType = "data"      // case C: data-related
 )
+
+// ProcessTypes lists every ProcessType.
+var ProcessTypes = []ProcessType{ProcessManual, ProcessAutomated, ProcessData}
 
 // ValueStream is one value stream map of a product family.
 //
@@ -175,6 +181,10 @@ const (
 	InventoryLIFOLane          InventoryKind = "lifo_lane"
 	InventoryOrderBacklog      InventoryKind = "order_backlog"
 )
+
+// InventoryKinds lists every InventoryKind.
+var InventoryKinds = []InventoryKind{InventoryStock, InventoryWarehouse, InventorySupermarket, InventoryExternalWarehouse,
+	InventoryFIFOLane, InventoryLIFOLane, InventoryOrderBacklog}
 
 // Inventory is a stock or warehouse in an idle segment. Its range (R) counts
 // towards storage time (A.9).

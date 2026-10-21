@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 )
 
@@ -159,14 +160,20 @@ func (c *cell) value() Value {
 	return Value{Value: c.v, Known: true, Source: c.src}
 }
 
-func known(v float64, src string) *cell { return &cell{v: v, known: true, src: src} }
+func known(name string, v float64, src string) *cell {
+	return &cell{name: name, v: v, known: true, src: src}
+}
+
+func knownValue(v float64, src string) Value { return Value{Value: v, Known: true, Source: src} }
 
 type processCells struct {
 	p                                        *Process
 	subject                                  string
 	pt, ct, st, prt, ht, wt, dt, rt, rep, pq *cell
-	res, ttr                                 *cell
+	res, ttr, batch                          *cell
 	vat, nvat, nnvat, sr, yf                 *cell
+	// a8 are the parts of process time in A.8 for this process type.
+	a8 []*cell
 }
 
 type idleCells struct {
@@ -179,8 +186,8 @@ type idleCells struct {
 }
 
 type evaluator struct {
+	issueList
 	vs       *ValueStream
-	issues   []Issue
 	checking bool
 	takt     *cell
 	demand   *cell
@@ -207,12 +214,42 @@ func Evaluate(vs *ValueStream) Result {
 	}
 	e.checking = true
 	e.derive()
-	e.noteA5()
+	e.notes()
 	return e.result()
 }
 
-func (e *evaluator) add(sev Severity, subject, rule, format string, args ...any) {
-	e.issues = append(e.issues, Issue{Severity: sev, Subject: subject, Rule: rule, Message: fmt.Sprintf(format, args...)})
+// issueList collects the issues of an evaluation.
+type issueList []Issue
+
+func (l *issueList) add(sev Severity, subject, rule, format string, args ...any) {
+	*l = append(*l, Issue{Severity: sev, Subject: subject, Rule: rule, Message: fmt.Sprintf(format, args...)})
+}
+
+// list returns the issues, never nil, so JSON shows an empty list.
+func (l issueList) list() []Issue {
+	if l == nil {
+		return []Issue{}
+	}
+	return l
+}
+
+func (l *issueList) checkSchema(subject string, version int) {
+	if version > SchemaVersion {
+		l.add(SeverityError, subject, "", "schema_version %d is newer than this library supports (%d)", version, SchemaVersion)
+	}
+}
+
+// checkEnum reports v when it is not one of valid.
+func checkEnum[T ~string](l *issueList, subject, rule, field string, v T, valid []T) {
+	if slices.Contains(valid, v) {
+		return
+	}
+	names := make([]string, len(valid))
+	for i, x := range valid {
+		names[i] = string(x)
+	}
+	last := len(names) - 1
+	l.add(SeverityError, subject, rule, "%s %q is not %s or %s", field, v, strings.Join(names[:last], ", "), names[last])
 }
 
 // entered turns an optional input into a cell. Negative numbers, and rates
@@ -238,16 +275,12 @@ func (e *evaluator) entered(subject, name string, p *float64, rate bool) *cell {
 
 func (e *evaluator) validate() {
 	vs := e.vs
-	if vs.SchemaVersion > SchemaVersion {
-		e.add(SeverityError, "stream", "", "schema_version %d is newer than this library supports (%d)", vs.SchemaVersion, SchemaVersion)
-	}
+	e.checkSchema("stream", vs.SchemaVersion)
 	if !vs.TimeUnit.Valid() {
 		e.add(SeverityError, "stream", "", "time_unit %q is not one of s, min, h, d", vs.TimeUnit)
 	}
-	switch vs.State {
-	case "", StateCurrent, StateIdeal, StateFuture:
-	default:
-		e.add(SeverityError, "stream", "", "state %q is not current, ideal or future", vs.State)
+	if vs.State != "" {
+		checkEnum(&e.issueList, "stream", "", "state", vs.State, States)
 	}
 	if len(vs.Processes) == 0 {
 		e.add(SeverityError, "stream", "", "the value stream has no processes")
@@ -270,10 +303,8 @@ func (e *evaluator) validate() {
 	pacemakers := 0
 	for _, p := range vs.Processes {
 		claim(p.ID, "process")
-		switch p.Type {
-		case "", ProcessManual, ProcessAutomated, ProcessData:
-		default:
-			e.add(SeverityError, "process "+p.ID, "", "type %q is not manual, automated or data", p.Type)
+		if p.Type != "" {
+			checkEnum(&e.issueList, "process "+p.ID, "", "type", p.Type, ProcessTypes)
 		}
 		if p.Pacemaker {
 			pacemakers++
@@ -297,14 +328,14 @@ func (e *evaluator) validate() {
 	}
 	for _, f := range vs.Flashes {
 		for _, w := range f.Wastes {
-			if !isWaste(w) {
+			if !slices.Contains(Wastes, w) {
 				e.add(SeverityError, fmt.Sprintf("improvement flash %d", f.Number), "4.3.2", "%q is not one of the seven wastes", w)
 			}
 		}
 	}
 	seen := map[Guideline]bool{}
 	for _, g := range vs.Guidelines {
-		if !isGuideline(g.Guideline) {
+		if !slices.Contains(Guidelines, g.Guideline) {
 			e.add(SeverityError, "design guidelines", "4.3.4", "%q is not one of the eight design guidelines", g.Guideline)
 		} else if seen[g.Guideline] {
 			e.add(SeverityError, "design guidelines", "4.3.4", "%q is listed twice", g.Guideline)
@@ -339,6 +370,7 @@ func (e *evaluator) customer() {
 	switch {
 	case e.demand.known && e.demand.v == 0:
 		e.add(SeverityError, "customer", "A.12", "demand is 0, so customer takt is undefined")
+		e.demand.known = false
 	case !e.demand.known || !ot.known:
 		e.add(SeverityNote, "customer", "A.12", "customer takt needs demand and operating_time")
 	default:
@@ -367,13 +399,15 @@ func (e *evaluator) processCells(p *Process) *processCells {
 	c.sr = e.entered(s, "scrap_rate", p.ScrapRate, true)
 	c.yf = e.entered(s, "yield_factor", p.YieldFactor, true)
 	e.entered(s, "rework_rate", p.ReworkRate, true)
+	c.batch = e.entered(s, "batch_size", p.BatchSize, false)
+	c.a8 = c.a8Parts()
 	for _, f := range []struct {
 		name string
 		p    *float64
 	}{
 		{"operators", p.Operators}, {"ancillary_time", p.AncillaryTime}, {"transport_time", p.TransportTime},
 		{"time_between_failures", p.TimeBetweenFailures}, {"failures", p.Failures},
-		{"batch_size", p.BatchSize}, {"variants", p.Variants},
+		{"variants", p.Variants},
 	} {
 		e.entered(s, f.name, f.p, false)
 	}
@@ -421,10 +455,7 @@ func (e *evaluator) idleCells(d *Idle) *idleCells {
 	c.nnvat = e.entered(s, "necessary_non_value_adding_time", d.NecessaryNonValueAdding, false)
 	for i, inv := range d.Inventories {
 		name := inventoryName(inv, i)
-		switch inv.Kind {
-		case InventoryStock, InventoryWarehouse, InventorySupermarket, InventoryExternalWarehouse,
-			InventoryFIFOLane, InventoryLIFOLane, InventoryOrderBacklog:
-		default:
+		if !slices.Contains(InventoryKinds, inv.Kind) {
 			e.add(SeverityError, s, "", "%s has unknown kind %q", name, inv.Kind)
 		}
 		c.ranges = append(c.ranges, e.entered(s, name+" range", inv.Range, false))
@@ -448,15 +479,12 @@ func (e *evaluator) derive() bool {
 		s := c.subject
 		changed = e.sumRel(s, "A.1", c.dt, c.ttr) || changed
 		if c.rt.known && c.rep.known {
-			term := known(c.rt.v*c.rep.v, "A.6")
-			term.name = "repetition_time × repetitions"
+			term := known("repetition_time × repetitions", c.rt.v*c.rep.v, "A.6")
 			changed = e.sumRel(s, "A.6", c.pt, c.st, term) || changed
 		}
-		changed = e.sumRel(s, "A.8", c.pt, c.a8Parts()...) || changed
+		changed = e.sumRel(s, "A.8", c.pt, c.a8...) || changed
 		changed = e.sumRel(s, "A.3 per process (process lead time equals process time)", c.pt, c.vat, c.nvat, c.nnvat) || changed
-		one := known(1, "A.17")
-		one.name = "100 %"
-		changed = e.sumRel(s, "A.17", one, c.sr, c.yf) || changed
+		changed = e.sumRel(s, "A.17", hundredPercent, c.sr, c.yf) || changed
 	}
 	for _, c := range e.idles {
 		s := c.subject
@@ -477,12 +505,24 @@ func (e *evaluator) derive() bool {
 // noteA5 reports what A.5 would give for a process whose process time is
 // still unknown. A.5 is never applied: it holds only if process quantity is
 // the work in process per resource, which Table A.2 does not say.
-func (e *evaluator) noteA5() {
+// hundredPercent is the left side of A.17, 100 % = scrap rate + yield factor.
+var hundredPercent = known("100 %", 1, "A.17")
+
+// notes explains, per process, what A.5 would give and that a batch's
+// process time is a piece's dwell time.
+func (e *evaluator) notes() {
 	for _, c := range e.procs {
 		if !c.pt.known && c.ct.known && c.pq.known && c.res.known {
 			e.add(SeverityNote, c.subject, "A.5",
 				"A.5 as printed would give a process time of %g (cycle time × process quantity × resources), but it holds only if process quantity is the work in process per resource, so it is not applied; enter process_time",
 				ProcessTimeFromCycleTime(c.ct.v, c.pq.v, c.res.v))
+		}
+		n := c.batch
+		if !n.known {
+			n = c.rep
+		}
+		if n.known && n.v > 1 && c.pt.known {
+			e.add(SeverityNote, c.subject, "Table A.2", "process time %g is the dwell time of one piece, which stays for its whole batch of %g", c.pt.v, n.v)
 		}
 	}
 }
@@ -502,15 +542,8 @@ func (e *evaluator) sumRel(subject, rule string, total *cell, parts ...*cell) bo
 		}
 	}
 	switch {
-	case missing == 0 && total.known:
-		if e.checking && !near(total.v, sum) {
-			e.add(SeverityWarning, subject, rule, "%s is %g but %s sum to %g", total.name, total.v, names(parts), sum)
-		}
-	case missing == 0 && !total.known:
-		if !e.checking {
-			total.set(sum, rule)
-			return true
-		}
+	case missing == 0:
+		return e.settle(subject, rule, total, sum, names(parts)+" sum to")
 	case missing == 1 && total.known:
 		rest := total.v - sum
 		if rest < 0 && !near(total.v, sum) {
@@ -533,23 +566,12 @@ func (e *evaluator) productRel(subject, rule string, total, a, b *cell) bool {
 	if !a.known || !b.known {
 		return false
 	}
-	v := a.v * b.v
-	if total.known {
-		if e.checking && !near(total.v, v) {
-			e.add(SeverityWarning, subject, rule, "%s is %g but %s × %s is %g", total.name, total.v, a.name, b.name, v)
-		}
-		return false
-	}
-	if e.checking {
-		return false
-	}
-	total.set(v, rule)
-	return true
+	return e.settle(subject, rule, total, a.v*b.v, a.name+" × "+b.name+" is")
 }
 
 // rangeRel applies A.7, converted to time with the period length.
 func (e *evaluator) rangeRel(subject string, r, q *cell) bool {
-	if !q.known || !e.demand.known || e.demand.v == 0 {
+	if !q.known || !e.demand.known {
 		return false
 	}
 	if !e.period.known {
@@ -559,17 +581,23 @@ func (e *evaluator) rangeRel(subject string, r, q *cell) bool {
 		return false
 	}
 	periods, _ := Range(q.v, e.demand.v)
-	v := periods * e.period.v
-	if r.known {
-		if e.checking && !near(r.v, v) {
-			e.add(SeverityWarning, subject, "A.7", "%s is %g but quantity ÷ demand × period_length is %g", r.name, r.v, v)
+	return e.settle(subject, "A.7", r, periods*e.period.v, "quantity ÷ demand × period_length is")
+}
+
+// settle sets an unknown target to v while deriving. In the checking pass it
+// warns when a known target differs from v, which formula describes. It
+// returns whether the target was derived.
+func (e *evaluator) settle(subject, rule string, target *cell, v float64, formula string) bool {
+	if target.known {
+		if e.checking && !near(target.v, v) {
+			e.add(SeverityWarning, subject, rule, "%s is %g but %s %g", target.name, target.v, formula, v)
 		}
 		return false
 	}
 	if e.checking {
 		return false
 	}
-	r.set(v, "A.7")
+	target.set(v, rule)
 	return true
 }
 
@@ -585,8 +613,8 @@ func (e *evaluator) result() Result {
 			Downtime: c.dt.value(), ValueAdding: c.vat.value(), NonValueAdding: c.nvat.value(),
 			NecessaryNonValueAdding: c.nnvat.value(), ScrapRate: c.sr.value(), YieldFactor: c.yf.value(),
 		}
-		if c.ct.known && e.takt.known && e.takt.v > 0 {
-			pr.TaktLoad = Value{Value: c.ct.v / e.takt.v, Known: true, Source: "A.12"}
+		if c.ct.known && e.takt.known {
+			pr.TaktLoad = knownValue(c.ct.v/e.takt.v, "A.12")
 		}
 		r.Processes = append(r.Processes, pr)
 		pts = append(pts, c.pt)
@@ -622,7 +650,7 @@ func (e *evaluator) result() Result {
 	t.NonValueAdding = total(nvats, "A.3")
 	t.NecessaryNonValueAdding = total(nnvats, "A.3")
 	if t.ProcessTime.Known && t.IdleTime.Known {
-		t.LeadTime = Value{Value: LeadTime([]float64{t.ProcessTime.Value}, []float64{t.IdleTime.Value}), Known: true, Source: "A.4"}
+		t.LeadTime = knownValue(LeadTime(values(pts), values(its)), "A.4")
 	} else {
 		var missing []string
 		for _, c := range e.procs {
@@ -638,12 +666,6 @@ func (e *evaluator) result() Result {
 		}
 		e.add(SeverityNote, "stream", "A.4", "lead time is unknown; missing: %s", strings.Join(missing, ", "))
 	}
-	if t.LeadTime.Known && t.ValueAdding.Known && t.NonValueAdding.Known && t.NecessaryNonValueAdding.Known {
-		shares := LeadTimeFromValueShares(t.ValueAdding.Value, t.NonValueAdding.Value, t.NecessaryNonValueAdding.Value)
-		if !near(shares, t.LeadTime.Value) {
-			e.add(SeverityWarning, "stream", "A.3", "value adding + non-value adding + necessary non-value adding time is %g, but lead time is %g", shares, t.LeadTime.Value)
-		}
-	}
 
 	k := &r.KPIs
 	k.CustomerTakt = e.takt.value()
@@ -651,16 +673,16 @@ func (e *evaluator) result() Result {
 		lt := t.LeadTime.Value
 		if t.ValueAdding.Known {
 			v, _ := ValueAddedRatio(t.ValueAdding.Value, lt)
-			k.ValueAddedRatio = Value{Value: v, Known: true, Source: "A.16"}
+			k.ValueAddedRatio = knownValue(v, "A.16")
 		}
 		va, _ := ValueAddingShare(t.ProcessTime.Value, lt)
 		nva, _ := NonValueAddingShare(t.IdleTime.Value, lt)
-		k.ValueAddingShare = Value{Value: va, Known: true, Source: "4.5.2"}
-		k.NonValueAddingShare = Value{Value: nva, Known: true, Source: "4.5.2"}
+		k.ValueAddingShare = knownValue(va, "4.5.2")
+		k.NonValueAddingShare = knownValue(nva, "4.5.2")
 	}
 	if d := vs.Deliveries; d != nil {
 		if v, err := OnTimeInFull(d.CompleteOnTime, d.Total); err == nil && d.CompleteOnTime >= 0 {
-			k.OnTimeInFull = Value{Value: v, Known: true, Source: "A.14"}
+			k.OnTimeInFull = knownValue(v, "A.14")
 		} else {
 			e.add(SeverityError, "deliveries", "A.14", "need 0 ≤ complete_on_time ≤ total and total > 0")
 		}
@@ -668,8 +690,8 @@ func (e *evaluator) result() Result {
 	if q := vs.Quality; q != nil {
 		if q.Total > 0 && q.Defective >= 0 && q.Defective <= q.Total {
 			sr := q.Defective / q.Total
-			k.ScrapRate = Value{Value: sr, Known: true, Source: "A.3.3 scrap rate"}
-			k.YieldFactor = Value{Value: YieldFactor(sr), Known: true, Source: "A.17"}
+			k.ScrapRate = knownValue(sr, "A.3.3 scrap rate")
+			k.YieldFactor = knownValue(YieldFactor(sr), "A.17")
 		} else {
 			e.add(SeverityError, "quality", "A.17", "need 0 ≤ defective ≤ total and total > 0")
 		}
@@ -677,28 +699,14 @@ func (e *evaluator) result() Result {
 	if inv := vs.Inventory; inv != nil {
 		if inv.AverageStock > 0 && inv.Usage >= 0 {
 			v, _ := InventoryTurns(inv.Usage, inv.AverageStock)
-			k.InventoryTurns = Value{Value: v, Known: true, Source: "A.13"}
+			k.InventoryTurns = knownValue(v, "A.13")
 		} else {
 			e.add(SeverityError, "inventory_turnover", "A.13", "need usage ≥ 0 and average_stock > 0")
 		}
 	}
 
-	for _, c := range e.procs {
-		n := 0.0
-		if c.p.BatchSize != nil {
-			n = *c.p.BatchSize
-		} else if c.rep.known {
-			n = c.rep.v
-		}
-		if n > 1 && c.pt.known {
-			e.add(SeverityNote, c.subject, "Table A.2", "process time %g is the dwell time of one piece, which stays for its whole batch of %g", c.pt.v, n)
-		}
-	}
 	r.Bottleneck = e.bottleneck()
-	r.Issues = e.issues
-	if r.Issues == nil {
-		r.Issues = []Issue{}
-	}
+	r.Issues = e.list()
 	return r
 }
 
@@ -725,14 +733,18 @@ func (e *evaluator) bottleneck() string {
 }
 
 func total(cells []*cell, rule string) Value {
-	sum := 0.0
-	for _, c := range cells {
-		if !c.known {
-			return Value{}
-		}
-		sum += c.v
+	if len(unknownOnly(cells)) > 0 {
+		return Value{}
 	}
-	return Value{Value: sum, Known: true, Source: rule}
+	return knownValue(sum(values(cells)), rule)
+}
+
+func values(cells []*cell) []float64 {
+	v := make([]float64, len(cells))
+	for i, c := range cells {
+		v[i] = c.v
+	}
+	return v
 }
 
 func near(a, b float64) bool {
@@ -765,22 +777,4 @@ func knownOnly(cells []*cell) []*cell {
 		}
 	}
 	return out
-}
-
-func isWaste(w Waste) bool {
-	for _, x := range Wastes {
-		if x == w {
-			return true
-		}
-	}
-	return false
-}
-
-func isGuideline(g Guideline) bool {
-	for _, x := range Guidelines {
-		if x == g {
-			return true
-		}
-	}
-	return false
 }

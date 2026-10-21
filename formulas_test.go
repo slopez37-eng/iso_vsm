@@ -90,15 +90,12 @@ func TestFormulas(t *testing.T) {
 // ω_LT = S_VA,ACT × ω_PT + S_NVA,ACT × ω_IT.
 func TestComparisonIdentity(t *testing.T) {
 	apt, ait, tpt, tit := 30.0, 970.0, 25.0, 300.0
-	c, err := Compare(apt, ait, tpt, tit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	approx(t, "ω_PT", c.ProcessTime, 25.0/30)
-	approx(t, "ω_IT", c.IdleTime, 300.0/970)
+	c := Compare(apt, ait, tpt, tit)
+	approx(t, "ω_PT", c.ProcessTime.Value, 25.0/30)
+	approx(t, "ω_IT", c.IdleTime.Value, 300.0/970)
 	sva, _ := ValueAddingShare(apt, apt+ait)
 	snva, _ := NonValueAddingShare(ait, apt+ait)
-	approx(t, "ω_LT", c.LeadTime, sva*c.ProcessTime+snva*c.IdleTime)
+	approx(t, "ω_LT", c.LeadTime.Value, sva*c.ProcessTime.Value+snva*c.IdleTime.Value)
 }
 
 func TestConvert(t *testing.T) {

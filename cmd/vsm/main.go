@@ -43,19 +43,6 @@ func main() {
 	os.Exit(code)
 }
 
-// isProject reports whether a decoded JSON object is a project rather than a
-// single value stream. A file with any key that only a value stream has is a
-// value stream; anything else is a project.
-func isProject(probe map[string]json.RawMessage) bool {
-	for k := range probe {
-		if k != "schema_version" && k != "name" &&
-			k != "current" && k != "ideal" && k != "future" && k != "measures" && k != "workshop" {
-			return false
-		}
-	}
-	return true
-}
-
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: vsm check [-json] FILE | vsm symbols | vsm template")
 	os.Exit(2)
@@ -78,39 +65,27 @@ func check(args []string, w io.Writer) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(data, &probe); err != nil {
+	isProject, err := vsm.IsProjectJSON(data)
+	if err != nil {
 		return 0, fmt.Errorf("%s: %w", file, err)
 	}
 	var report any
-	var issues []vsm.Issue
-	if isProject(probe) {
+	var hasErrors bool
+	var show func()
+	if isProject {
 		p, err := vsm.ReadProject(bytes.NewReader(data))
 		if err != nil {
 			return 0, err
 		}
 		r := vsm.EvaluateProject(p)
-		report = r
-		issues = r.Issues
-		for _, s := range []*vsm.Result{r.Current, r.Ideal, r.Future} {
-			if s != nil {
-				issues = append(issues, s.Issues...)
-			}
-		}
-		if !*asJSON {
-			printProject(w, r)
-		}
+		report, hasErrors, show = r, r.HasErrors(), func() { printProject(w, r) }
 	} else {
 		vs, err := vsm.ReadValueStream(bytes.NewReader(data))
 		if err != nil {
 			return 0, err
 		}
 		r := vsm.Evaluate(vs)
-		report = r
-		issues = r.Issues
-		if !*asJSON {
-			printResult(w, r)
-		}
+		report, hasErrors, show = r, r.HasErrors(), func() { printResult(w, r) }
 	}
 	if *asJSON {
 		enc := json.NewEncoder(w)
@@ -118,11 +93,11 @@ func check(args []string, w io.Writer) (int, error) {
 		if err := enc.Encode(report); err != nil {
 			return 0, err
 		}
+	} else {
+		show()
 	}
-	for _, i := range issues {
-		if i.Severity == vsm.SeverityError {
-			return 1, nil
-		}
+	if hasErrors {
+		return 1, nil
 	}
 	return 0, nil
 }
@@ -222,11 +197,9 @@ func symbols(w io.Writer) error {
 
 func template(w io.Writer) error {
 	p := vsm.Project{
-		SchemaVersion: vsm.SchemaVersion,
-		Name:          "my product family",
+		Name: "my product family",
 		Current: &vsm.ValueStream{
-			SchemaVersion: vsm.SchemaVersion,
-			Name:          "current state", State: vsm.StateCurrent, TimeUnit: vsm.Minute,
+			Name: "current state", State: vsm.StateCurrent, TimeUnit: vsm.Minute,
 			ProductFamily: &vsm.ProductFamily{Name: "family A", Rationale: "similar process steps, stable demand"},
 			Customer:      vsm.Customer{Name: "end customer", Period: "day", Demand: vsm.F(400), OperatingTime: vsm.F(900), PeriodLength: vsm.F(1440)},
 			Suppliers:     []vsm.Supplier{{ID: "S1", Name: "supplier", DeliveryFrequency: "daily"}},
@@ -247,7 +220,5 @@ func template(w io.Writer) error {
 			Metric: "range between P1 and P2 (min)", Target: vsm.F(240), Responsible: "logistics lead", Deadline: "2027-01-31",
 			Status: vsm.StatusPlanned, Flashes: []int{1}, Cost: vsm.F(2000), Benefit: vsm.F(9000)}},
 	}
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(p)
+	return vsm.Write(w, &p)
 }
