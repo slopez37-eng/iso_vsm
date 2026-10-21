@@ -71,6 +71,11 @@ type MeasureReview struct {
 	Number           int      `json:"number"`
 	SMARTGaps        []string `json:"smart_gaps,omitempty"`
 	BenefitCostRatio Value    `json:"benefit_cost_ratio"`
+	// Difference is benefit − cost. Payback is Cost ÷ Benefit, counted in
+	// BenefitPeriod; it is derived, not a figure of the standard.
+	Difference    Value  `json:"difference"`
+	BenefitPeriod Period `json:"benefit_period,omitempty"`
+	Payback       Value  `json:"payback"`
 	// Target is the measure's target, as entered.
 	Target *float64 `json:"target,omitempty"`
 	// Measured is the KPI of the latest snapshot that has it.
@@ -185,7 +190,13 @@ func EvaluateProject(p *Project) ProjectReport {
 		if (m.Cost != nil && *m.Cost < 0) || (m.Benefit != nil && *m.Benefit < 0) {
 			add(SeverityError, subject, "4.5.2", "cost and benefit cannot be negative")
 		}
-		mr := MeasureReview{Number: m.Number, SMARTGaps: m.SMARTGaps(), BenefitCostRatio: m.BenefitCostRatio(), Target: m.Target}
+		if m.BenefitPeriod != "" {
+			checkEnum(&issues, subject, "4.5.2", "benefit_period", m.BenefitPeriod, Periods)
+		}
+		mr := MeasureReview{
+			Number: m.Number, SMARTGaps: m.SMARTGaps(), BenefitCostRatio: m.BenefitCostRatio(), Target: m.Target,
+			Difference: m.Difference(), BenefitPeriod: m.BenefitPeriod, Payback: m.Payback(),
+		}
 		if m.KPI != "" {
 			checkEnum(&issues, subject, "4.4.2", "kpi", m.KPI, KPINames)
 			mr.Measured = latestKPI(rep.Monitoring, m.KPI, rep.Current)

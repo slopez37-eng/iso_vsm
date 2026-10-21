@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `vsm import` and `ReadCSV` build a value stream from a CSV file, one row per process, idle or inventory. The reader is strict: unknown columns and misplaced or malformed values are errors that name the line and column.
+- Measures take a `benefit_period` (day, week, month or year). `Difference` (benefit − cost) and `Payback` (cost ÷ benefit, counted in those periods) are derived, and `vsm check` prints the payback.
+
 ## v1.0.0
 
 First release of the rewritten SDK. It replaces the earlier fork entirely; nothing of its API is kept.

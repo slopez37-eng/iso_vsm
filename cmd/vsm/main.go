@@ -1,11 +1,14 @@
 // Command vsm evaluates value stream maps by ISO 22468:2020.
 //
-//	vsm check [-json] FILE   evaluate a value stream or project JSON file
-//	vsm symbols              list the value stream symbols of Table A.1
-//	vsm template             print a starter project JSON
-//	vsm version              print the module version and the commit it was built from
+//	vsm check [-json] FILE                              evaluate a value stream or project JSON file
+//	vsm import [-base FILE] [-name NAME] [-unit UNIT] FILE.csv   write a value stream JSON from a CSV file
+//	vsm symbols                                         list the value stream symbols of Table A.1
+//	vsm template                                        print a starter project JSON
+//	vsm version                                         print the module version and the commit it was built from
 //
-// check exits with status 1 when the file has errors.
+// check exits with status 1 when the file has errors. import writes the value
+// stream to standard output without evaluating it, and exits with status 2 on
+// errors.
 package main
 
 import (
@@ -31,6 +34,8 @@ func main() {
 	switch os.Args[1] {
 	case "check":
 		code, err = check(os.Args[2:], os.Stdout)
+	case "import":
+		err = importCSV(os.Args[2:], os.Stdout)
 	case "symbols":
 		err = symbols(os.Stdout)
 	case "template":
@@ -48,7 +53,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: vsm check [-json] FILE | vsm symbols | vsm template | vsm version")
+	fmt.Fprintln(os.Stderr, "usage: vsm check [-json] FILE | vsm import [-base FILE] [-name NAME] [-unit UNIT] FILE.csv | vsm symbols | vsm template | vsm version")
 	os.Exit(2)
 }
 
@@ -106,6 +111,53 @@ func check(args []string, w io.Writer) (int, error) {
 	return 0, nil
 }
 
+// importCSV writes a value stream built from a CSV file as JSON. It starts from
+// the value stream in -base, or from an empty current state, and -name and
+// -unit replace its name and time unit. The result is not evaluated.
+func importCSV(args []string, w io.Writer) error {
+	fs := flag.NewFlagSet("import", flag.ExitOnError)
+	base := fs.String("base", "", "start from this value stream JSON file")
+	name := fs.String("name", "", "name of the value stream")
+	unit := fs.String("unit", "", "time unit of the CSV times: s, min, h or d")
+	fs.Parse(args)
+	// Flags may also follow the file name.
+	if fs.NArg() == 0 {
+		usage()
+	}
+	file := fs.Arg(0)
+	fs.Parse(fs.Args()[1:])
+	if fs.NArg() != 0 {
+		usage()
+	}
+
+	vs := &vsm.ValueStream{State: vsm.StateCurrent}
+	if *base != "" {
+		b, err := vsm.LoadValueStream(*base)
+		if err != nil {
+			return err
+		}
+		vs = b
+	}
+	if *name != "" {
+		vs.Name = *name
+	}
+	if *unit != "" {
+		if !vsm.TimeUnit(*unit).Valid() {
+			return fmt.Errorf("-unit %q is not one of s, min, h, d", *unit)
+		}
+		vs.TimeUnit = vsm.TimeUnit(*unit)
+	}
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := vsm.ReadCSV(f, vs); err != nil {
+		return fmt.Errorf("%s: %w", file, err)
+	}
+	return vsm.Write(w, vs)
+}
+
 func printProject(w io.Writer, r vsm.ProjectReport) {
 	fmt.Fprintf(w, "Project %s\n", r.Name)
 	for _, s := range []struct {
@@ -146,6 +198,9 @@ func printProject(w io.Writer, r vsm.ProjectReport) {
 					line += ", " + verdict
 				}
 				fmt.Fprintln(w, line)
+			}
+			if m.Payback.Known {
+				fmt.Fprintf(w, "measure %d: payback %s %s\n", m.Number, val(m.Payback), periodUnit(m.Payback.Value, m.BenefitPeriod))
 			}
 		}
 	}
@@ -208,6 +263,14 @@ func val(v vsm.Value) string {
 		return "?"
 	}
 	return num(v.Value)
+}
+
+// periodUnit names a benefit period for a count, such as "month" or "months".
+func periodUnit(n float64, p vsm.Period) string {
+	if n == 1 {
+		return string(p)
+	}
+	return string(p) + "s"
 }
 
 func pctVal(v vsm.Value) string {

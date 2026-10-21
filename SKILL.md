@@ -26,6 +26,8 @@ They do not draw maps and do not design a future state.
 
 `vsm symbols` lists the value stream symbols of Table A.1.
 
+`vsm import [-base FILE] [-name NAME] [-unit UNIT] FILE.csv` turns a CSV file into value stream JSON, one row per process, idle or inventory. The `element` column says which, and the other columns are JSON field names (`inventory_` prefix for inventories). It does not evaluate, so run `vsm check` on the output. An error names the line and column, and exit status is 2.
+
 A file is checked as a project if it has a top-level `current` key. Otherwise, a key that only a value stream has (such as `time_unit` or `processes`) makes it one value stream. Otherwise it is checked as a project if it has a key that only a project has (`phase`, `ideal`, `future`, `monitoring`, `measures` or `workshop`), or if all its top-level keys are project fields (`schema_version`, `name`). Any other file is checked as one value stream.
 
 Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ignored). 2 means a usage error, or the file could not be read or decoded. Unknown JSON field names count as unreadable, so a misspelt field gives exit 2. Warnings and notes never change the exit code.
@@ -43,6 +45,7 @@ Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ig
 - `cycle_time` is the observed interval at which the whole process completes products, losses included.
 - For a batch process, enter `process_time` as the dwell time of one piece, which stays for the whole batch (Table A.2).
 - Measure `status` is one of `problem_detected`, `responsibilities_clarified`, `measure_checked`, `implementing`, `implemented` or `cancelled`. A measure's `kpi` is one of `lead_time`, `process_time`, `idle_time`, `value_adding_share`, `non_value_adding_share`, `value_added_ratio`, `on_time_in_full`, `yield_factor`, `scrap_rate` or `inventory_turns`.
+- Measure `cost` is a one-off amount and `benefit` is earned once per `benefit_period` (`day`, `week`, `month` or `year`). Leave `benefit_period` out when `benefit` is a total. Use one currency for all measures. Prioritisation ignores `benefit_period`. Difference and payback are derived from these figures; ISO 22468 defines no payback period.
 - Product family `criteria` are `similar_process_steps`, `representative` and `balanced_volume`, each with `met`. Project `phase` is `analysis`, `design`, `planning`, `implementation`, `assessment` or `adjustment`.
 - Each `monitoring` entry is a `date` (YYYY-MM-DD) and a `state` holding the value stream as measured then.
 - A.5 is shown in notes but never applied. When a note says what A.5 would give, enter `process_time` yourself if you accept it.
@@ -64,3 +67,5 @@ Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ig
 - `Result` has `Issues` and `HasErrors()`. `ProjectReport` has `AllIssues()` and `HasErrors()`.
 - Optional numbers are pointers: `vsm.F(x)` is an entered value, and `nil` is not entered.
 - `LoadValueStream`, `LoadProject`, `Save` and `Write` read and write the JSON format. Reads reject unknown fields.
+- `ReadCSV(r, vs)` appends processes, idles and inventories from CSV to a value stream, with the rules of `vsm import`.
+- `Measure.Difference()` (benefit − cost) and `Measure.Payback()` (cost ÷ benefit, in `benefit_period`) each return a `Value`.

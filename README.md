@@ -30,11 +30,14 @@ go install github.com/slopez37-eng/iso_vsm/cmd/vsm@latest
 vsm template > project.json   # a starter project to edit
 vsm check project.json        # evaluate a project or a single value stream
 vsm check -json project.json  # the same report as JSON
+vsm import [-base FILE] [-name NAME] [-unit UNIT] FILE.csv   # a value stream JSON from a CSV file
 vsm symbols                   # the value stream symbols of Table A.1
 vsm version                   # the version and commit it was built from; +dirty if the tree had local changes
 ```
 
 A file is read as a project if it has a top-level `current` key. Otherwise a key that only a value stream has (such as `time_unit` or `processes`) makes it one value stream. Otherwise it is read as a project if it has a key that only a project has (`phase`, `ideal`, `future`, `monitoring`, `measures` or `workshop`), or if all its top-level keys are project fields; any other file is read as one value stream. `vsm check` exits with status 1 when the file has errors (invalid input that was ignored), 2 when it cannot read the file, and 0 otherwise.
+
+`vsm import` reads a CSV file with one row per process, idle or inventory, and writes the value stream as JSON to standard output. It does not evaluate the result, so run `vsm check` on the output. The `element` column says what each row is. Other column names are JSON field names, with `inventory_` in front for inventory fields. Lists use `|` between values, and numbers use a point as the decimal separator. An idle row takes its `from` and `to` from the neighbouring process rows when they are left empty. An error names the line and column and writes nothing; the exit status is 2. `-base` starts from an existing value stream, and `-name` and `-unit` set its name and time unit.
 
 ## Library
 
@@ -60,7 +63,7 @@ for _, issue := range r.Issues {
 }
 ```
 
-For a whole VSM run, with current, ideal and future states, monitoring snapshots, the catalogue of measures and the workshop, use `vsm.Project` and `vsm.EvaluateProject`. `LoadProject`, `LoadValueStream`, `Save` and `Write` read and write the JSON format, and `IsProjectJSON` tells a project file from a single value stream. `HasErrors` on a result or project report says whether any input was invalid. Unknown JSON fields are rejected, so a misspelt field is never silently dropped.
+For a whole VSM run, with current, ideal and future states, monitoring snapshots, the catalogue of measures and the workshop, use `vsm.Project` and `vsm.EvaluateProject`. `LoadProject`, `LoadValueStream`, `Save` and `Write` read and write the JSON format, and `IsProjectJSON` tells a project file from a single value stream. `HasErrors` on a result or project report says whether any input was invalid. Unknown JSON fields are rejected, so a misspelt field is never silently dropped. `ReadCSV(r, vs)` appends processes, idles and inventories from CSV to a value stream, with the same rules as `vsm import`.
 
 Each formula is also a plain function. Use these when you only need one calculation:
 
@@ -122,7 +125,9 @@ The standard leaves some points open, and a few of its formulas read oddly. This
 
 **Rework rate** is stored as entered (Table A.2 defines it as a share). The A.15 form, the change of yield between iterations, is available as `ReworkRate`. The stream's scrap rate and yield factor come from the `quality` counts. The process yield factor and scrap rate are linked by A.17.
 
-**Prioritisation** of measures (clause 4.5.2) sorts by benefit ÷ cost, then by net benefit. Measures without both figures come last, and implemented or cancelled measures are left out.
+**Prioritisation** of measures (clause 4.5.2) sorts by benefit ÷ cost, then by net benefit. Measures without both figures come last, and implemented or cancelled measures are left out. Benefit is used as entered, whatever its `benefit_period`.
+
+**Net benefit and payback.** `Difference` is benefit − cost. ISO 22468 defines no payback period, so payback is derived from the catalogue. `Payback` is cost ÷ benefit, counted in the periods of `benefit_period` (`day`, `week`, `month` or `year`): how many periods the benefit takes to repay the cost. Cost is a one-off amount and benefit is earned once per period. Payback is unknown when `benefit_period` is missing or not one of those values. It is 0 at zero cost and +Inf at zero benefit.
 
 **Measure status** uses the five stages of the catalogue key in Annex B.2.4 (`problem_detected`, `responsibilities_clarified`, `measure_checked`, `implementing`, `implemented`), plus `cancelled`. Clause 4.4.2 asks for the status to be noted but names no stages, so the library takes them from the standard's own example.
 

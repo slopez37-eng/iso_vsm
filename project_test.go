@@ -424,6 +424,57 @@ func TestProjectPhaseIsChecked(t *testing.T) {
 	}
 }
 
+func TestDifferenceAndPayback(t *testing.T) {
+	tests := []struct {
+		name        string
+		m           Measure
+		difference  Value
+		payback     Value
+		paybackWant float64
+	}{
+		{"monthly benefit", Measure{Cost: F(120), Benefit: F(30), BenefitPeriod: PeriodMonth}, knownValue(-90, "4.5.2"), knownValue(4, paybackSource), 4},
+		{"yearly benefit", Measure{Cost: F(120), Benefit: F(60), BenefitPeriod: PeriodYear}, knownValue(-60, "4.5.2"), knownValue(2, paybackSource), 2},
+		{"zero benefit", Measure{Cost: F(100), Benefit: F(0), BenefitPeriod: PeriodWeek}, knownValue(-100, "4.5.2"), knownValue(math.Inf(1), paybackSource), math.Inf(1)},
+		{"zero cost", Measure{Cost: F(0), Benefit: F(50), BenefitPeriod: PeriodDay}, knownValue(50, "4.5.2"), knownValue(0, paybackSource), 0},
+		{"no period", Measure{Cost: F(100), Benefit: F(50)}, knownValue(-50, "4.5.2"), Value{}, 0},
+		{"no benefit", Measure{Cost: F(100), BenefitPeriod: PeriodMonth}, Value{}, Value{}, 0},
+		{"negative cost", Measure{Cost: F(-1), Benefit: F(50), BenefitPeriod: PeriodMonth}, Value{}, Value{}, 0},
+	}
+	for _, c := range tests {
+		if got := c.m.Difference(); got != c.difference {
+			t.Errorf("%s: difference = %+v, want %+v", c.name, got, c.difference)
+		}
+		got := c.m.Payback()
+		if got.Known != c.payback.Known || got.Source != c.payback.Source {
+			t.Errorf("%s: payback = %+v, want %+v", c.name, got, c.payback)
+		} else if got.Known && got.Value != c.paybackWant {
+			t.Errorf("%s: payback value = %v, want %v", c.name, got.Value, c.paybackWant)
+		}
+	}
+}
+
+func TestMeasurePeriodIsChecked(t *testing.T) {
+	p := exampleProject()
+	p.Measures[0].BenefitPeriod = "fortnight"
+	rep := EvaluateProject(p)
+	if !slices.ContainsFunc(rep.Issues, func(i Issue) bool {
+		return i.Rule == "4.5.2" && i.Severity == SeverityError
+	}) {
+		t.Error("unknown benefit period not reported")
+	}
+	if rep.Measures[0].Payback.Known {
+		t.Error("payback known for an unknown benefit period")
+	}
+	p.Measures[0].BenefitPeriod = PeriodYear
+	rep = EvaluateProject(p)
+	if rep.Measures[0].Payback.Value != 100.0/300 {
+		t.Errorf("payback = %v, want 100/300 years", rep.Measures[0].Payback.Value)
+	}
+	if slices.ContainsFunc(rep.Issues, func(i Issue) bool { return i.Rule == "4.5.2" }) {
+		t.Errorf("valid benefit period reported: %v", rep.Issues)
+	}
+}
+
 func TestReadRejectsTrailingData(t *testing.T) {
 	for _, in := range []string{`{"name":"x"}}`, `{"name":"x"}]`, `{"name":"x"} {}`} {
 		if _, err := ReadValueStream(strings.NewReader(in)); err == nil {

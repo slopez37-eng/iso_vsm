@@ -24,6 +24,19 @@ const (
 var MeasureStatuses = []MeasureStatus{StatusProblemDetected, StatusResponsibilitiesClarified, StatusMeasureChecked,
 	StatusImplementing, StatusImplemented, StatusCancelled}
 
+// Period is a length of time that a measure's benefit is counted in.
+type Period string
+
+const (
+	PeriodDay   Period = "day"
+	PeriodWeek  Period = "week"
+	PeriodMonth Period = "month"
+	PeriodYear  Period = "year"
+)
+
+// Periods lists every Period.
+var Periods = []Period{PeriodDay, PeriodWeek, PeriodMonth, PeriodYear}
+
 // Measure is one entry of the catalogue of measures for improvement (clause
 // 4.4.2), defined by the SMART method.
 type Measure struct {
@@ -47,9 +60,12 @@ type Measure struct {
 	// Flashes lists the numbers of the improvement flashes this measure acts on.
 	Flashes []int `json:"flashes,omitempty"`
 	// Cost and Benefit feed the cost-benefit prioritisation of clause 4.5.2.
-	// Use one currency and period for every measure.
-	Cost    *float64 `json:"cost,omitempty"`
-	Benefit *float64 `json:"benefit,omitempty"`
+	// Use one currency for every measure. Cost is a one-off amount. Benefit is
+	// earned once per BenefitPeriod; when BenefitPeriod is empty, Benefit is a
+	// total.
+	Cost          *float64 `json:"cost,omitempty"`
+	Benefit       *float64 `json:"benefit,omitempty"`
+	BenefitPeriod Period   `json:"benefit_period,omitempty"`
 }
 
 // SMARTGaps lists the SMART criteria the measure's fields do not yet show.
@@ -86,6 +102,37 @@ func (m Measure) BenefitCostRatio() Value {
 		return knownValue(math.Inf(1), "4.5.2")
 	}
 	return knownValue(*m.Benefit / *m.Cost, "4.5.2")
+}
+
+// Difference returns benefit − cost, the net benefit. It is unknown unless
+// both are entered and not negative.
+func (m Measure) Difference() Value {
+	if m.Cost == nil || m.Benefit == nil || *m.Cost < 0 || *m.Benefit < 0 {
+		return Value{}
+	}
+	return knownValue(*m.Benefit-*m.Cost, "4.5.2")
+}
+
+// paybackSource marks payback as derived from the catalogue. ISO 22468 defines
+// no payback period.
+const paybackSource = "payback (Cost ÷ Benefit per period)"
+
+// Payback returns Cost ÷ Benefit, counted in BenefitPeriod: the number of
+// periods the benefit takes to repay the cost. It is unknown unless
+// BenefitPeriod is a valid period and both figures are entered and not
+// negative. It is 0 at zero cost and +Inf at zero benefit. ISO 22468 defines
+// no payback period, so this is derived from the entered figures.
+func (m Measure) Payback() Value {
+	if !slices.Contains(Periods, m.BenefitPeriod) || m.Cost == nil || m.Benefit == nil || *m.Cost < 0 || *m.Benefit < 0 {
+		return Value{}
+	}
+	if *m.Cost == 0 {
+		return knownValue(0, paybackSource)
+	}
+	if *m.Benefit == 0 {
+		return knownValue(math.Inf(1), paybackSource)
+	}
+	return knownValue(*m.Cost / *m.Benefit, paybackSource)
 }
 
 // Prioritize returns the measure numbers ordered by the cost-benefit analysis
