@@ -345,8 +345,106 @@ func TestEvaluateZeroDemandWithoutOperatingTime(t *testing.T) {
 }
 
 func TestEvaluateNotesBatchDwellTime(t *testing.T) {
-	r := Evaluate(exampleStream())
-	if n := len(issuesWith(r, SeverityNote, "Table A.2")); n != 1 {
-		t.Errorf("want one batch note, got %v", r.Issues)
+	// Repetitions alone are not a batch.
+	if n := len(issuesWith(Evaluate(exampleStream()), SeverityNote, "Table A.2")); n != 0 {
+		t.Errorf("repetitions gave %d batch notes, want none", n)
+	}
+	vs := exampleStream()
+	vs.Processes[0].BatchSize = F(2)
+	if n := len(issuesWith(Evaluate(vs), SeverityNote, "Table A.2")); n != 1 {
+		t.Errorf("want one batch note for batch size 2, got %d", n)
+	}
+}
+
+func TestEvaluateBottleneckByLoad(t *testing.T) {
+	vs := &ValueStream{
+		Name: "cell", TimeUnit: Minute,
+		Customer: Customer{Demand: F(100), OperatingTime: F(480)}, // per day, and minutes of operating time per day
+		Processes: []Process{
+			{ID: "A", CycleTime: F(1), AvailableTime: F(60)},
+			{ID: "B", CycleTime: F(2), AvailableTime: F(480)},
+		},
+	}
+	r := Evaluate(vs)
+	wantValue(t, "A load", r.Processes[0].Load, 100.0/60, "3.2")
+	wantValue(t, "B load", r.Processes[1].Load, 100.0*2/480, "3.2")
+	wantValue(t, "B takt load", r.Processes[1].TaktLoad, 100.0*2/480, "A.12")
+	if r.Bottleneck != "A" {
+		t.Errorf("bottleneck = %q, want A (load 167%% beats 42%%)", r.Bottleneck)
+	}
+	if e := issuesWith(r, SeverityError, ""); len(e) > 0 {
+		t.Errorf("unexpected errors: %v", e)
+	}
+}
+
+func TestEvaluateBottleneckWithoutLoad(t *testing.T) {
+	vs := &ValueStream{
+		Name: "cell", TimeUnit: Minute,
+		Processes: []Process{
+			{ID: "A", CycleTime: F(1), AvailableTime: F(60)},
+			{ID: "B", CycleTime: F(2)},
+		},
+	}
+	r := Evaluate(vs)
+	if r.Processes[0].Load.Known || r.Processes[1].Load.Known {
+		t.Error("load is known without demand or operating time")
+	}
+	if r.Bottleneck != "B" {
+		t.Errorf("bottleneck = %q, want B, the longest cycle time", r.Bottleneck)
+	}
+	if n := len(issuesWith(r, SeverityNote, "3.2")); n != 0 {
+		t.Errorf("want no 3.2 note when no load is known, got %v", r.Issues)
+	}
+}
+
+func TestEvaluateBottleneckPartialLoad(t *testing.T) {
+	vs := &ValueStream{
+		Name: "cell", TimeUnit: Minute, Customer: Customer{Demand: F(100)},
+		Processes: []Process{
+			{ID: "A", CycleTime: F(1), AvailableTime: F(60)},
+			{ID: "B", CycleTime: F(2)}, // no time available, and no customer operating time
+		},
+	}
+	r := Evaluate(vs)
+	if r.Bottleneck != "B" {
+		t.Errorf("bottleneck = %q, want B, the longest cycle time", r.Bottleneck)
+	}
+	if n := len(issuesWith(r, SeverityNote, "3.2")); n != 1 {
+		t.Errorf("want one 3.2 note for the unknown load, got %v", r.Issues)
+	}
+}
+
+func TestEvaluateRejectsZeroAvailableTime(t *testing.T) {
+	vs := &ValueStream{
+		Name: "cell", TimeUnit: Minute, Customer: Customer{Demand: F(100), OperatingTime: F(480)},
+		Processes: []Process{{ID: "A", CycleTime: F(1), AvailableTime: F(0)}},
+	}
+	r := Evaluate(vs)
+	if e := issuesWith(r, SeverityError, ""); len(e) != 1 || !strings.Contains(e[0].Message, "available_time is 0") {
+		t.Errorf("want one available_time error, got %v", r.Issues)
+	}
+	// The zero is ignored, so the load falls back to the customer's operating time.
+	wantValue(t, "A load", r.Processes[0].Load, 100.0/480, "3.2")
+}
+
+func TestEvaluateReportsReworkRate(t *testing.T) {
+	vs := exampleStream()
+	vs.Processes[0].ReworkRate = F(0.05)
+	wantValue(t, "rework rate", Evaluate(vs).Processes[0].ReworkRate, 0.05, "entered")
+}
+
+func TestFamilyBalancedVolumeIsANote(t *testing.T) {
+	vs := exampleStream()
+	vs.ProductFamily = &ProductFamily{Name: "A", Criteria: []CriterionStatus{
+		{Criterion: FamilySimilarSteps, Met: true},
+		{Criterion: FamilyRepresentative, Met: true},
+		{Criterion: FamilyBalancedVolume, Met: false},
+	}}
+	r := Evaluate(vs)
+	if w := issuesWith(r, SeverityWarning, "4.2.2"); len(w) > 0 {
+		t.Errorf("unmet balanced volume gave warnings: %v", w)
+	}
+	if n := issuesWith(r, SeverityNote, "4.2.2"); len(n) != 1 {
+		t.Errorf("want one 4.2.2 note, got %v", n)
 	}
 }

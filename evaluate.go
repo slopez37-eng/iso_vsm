@@ -136,10 +136,16 @@ type ProcessResult struct {
 	NecessaryNonValueAdding Value  `json:"necessary_non_value_adding_time"`
 	ScrapRate               Value  `json:"scrap_rate"`
 	YieldFactor             Value  `json:"yield_factor"`
+	ReworkRate              Value  `json:"rework_rate"`
 	// TaktLoad is cycle time ÷ customer takt: the share of the process's
 	// capacity that customer demand takes up. Above 1 the process cannot meet
 	// demand. It says nothing about how busy each resource is.
 	TaktLoad Value `json:"takt_load"`
+	// Load is demand × cycle time ÷ the time available to the process (3.2),
+	// which is its own available time or else the customer's operating time.
+	// It equals TaktLoad when the process has no available time of its own.
+	// Above 1 the process cannot meet demand.
+	Load Value `json:"load"`
 }
 
 // IdleResult holds the resolved times of one idle segment.
@@ -259,6 +265,7 @@ type processCells struct {
 	pt, ct, st, prt, ht, wt, dt, rt, rep, pq *cell
 	res, ttr, batch                          *cell
 	vat, nvat, nnvat, sr, yf                 *cell
+	avail, rr                                *cell
 	// a8 are the parts of process time in A.8 for this process type.
 	a8 []*cell
 }
@@ -274,13 +281,14 @@ type idleCells struct {
 
 type evaluator struct {
 	issueList
-	vs       *ValueStream
-	checking bool
-	takt     *cell
-	demand   *cell
-	period   *cell
-	procs    []*processCells
-	idles    []*idleCells
+	vs        *ValueStream
+	checking  bool
+	takt      *cell
+	demand    *cell
+	operating *cell
+	period    *cell
+	procs     []*processCells
+	idles     []*idleCells
 }
 
 // Evaluate resolves a value stream: it takes the entered values, derives
@@ -453,6 +461,8 @@ func (e *evaluator) validate() {
 				e.add(SeverityError, "product family", "4.2.2", "%q is not one of the three family characteristics", c.Criterion)
 			} else if assessed[c.Criterion] {
 				e.add(SeverityError, "product family", "4.2.2", "%q is listed twice", c.Criterion)
+			} else if !c.Met && c.Criterion == FamilyBalancedVolume {
+				e.add(SeverityNote, "product family", "4.2.2", "the product family does not have the characteristic %q; the standard prefers it but does not require it", c.Criterion)
 			} else if !c.Met {
 				e.add(SeverityWarning, "product family", "4.2.2", "the product family does not have the characteristic %q", c.Criterion)
 			}
@@ -496,6 +506,7 @@ func (e *evaluator) customer() {
 	c := e.vs.Customer
 	e.demand = e.entered("customer", "demand", c.Demand, false)
 	ot := e.entered("customer", "operating_time", c.OperatingTime, false)
+	e.operating = ot
 	e.period = e.entered("customer", "period_length", c.PeriodLength, false)
 	for _, c := range []*cell{ot, e.period} {
 		if c.known && c.v == 0 {
@@ -535,7 +546,12 @@ func (e *evaluator) processCells(p *Process) *processCells {
 	c.nnvat = e.entered(s, "necessary_non_value_adding_time", p.NecessaryNonValueAdding, false)
 	c.sr = e.entered(s, "scrap_rate", p.ScrapRate, true)
 	c.yf = e.entered(s, "yield_factor", p.YieldFactor, true)
-	e.entered(s, "rework_rate", p.ReworkRate, true)
+	c.rr = e.entered(s, "rework_rate", p.ReworkRate, true)
+	c.avail = e.entered(s, "available_time", p.AvailableTime, false)
+	if c.avail.known && c.avail.v == 0 {
+		e.add(SeverityError, s, "", "available_time is 0; it must be positive, so it is ignored")
+		c.avail.known = false
+	}
 	c.batch = e.entered(s, "batch_size", p.BatchSize, false)
 	c.a8 = c.a8Parts()
 	for _, f := range []struct {
@@ -654,12 +670,8 @@ func (e *evaluator) notes() {
 				"A.5 as printed would give a process time of %g (cycle time × process quantity × resources), but it holds only if process quantity is the work in process per resource, so it is not applied; enter process_time",
 				ProcessTimeFromCycleTime(c.ct.v, c.pq.v, c.res.v))
 		}
-		n := c.batch
-		if !n.known {
-			n = c.rep
-		}
-		if n.known && n.v > 1 && c.pt.known {
-			e.add(SeverityNote, c.subject, "Table A.2", "process time %g is the dwell time of one piece, which stays for its whole batch of %g", c.pt.v, n.v)
+		if c.batch.known && c.batch.v > 1 && c.pt.known {
+			e.add(SeverityNote, c.subject, "Table A.2", "process time %g is the dwell time of one piece, which stays for its whole batch of %g", c.pt.v, c.batch.v)
 		}
 	}
 }
@@ -749,9 +761,13 @@ func (e *evaluator) result() Result {
 			ProcessingTime: c.prt.value(), HandlingTime: c.ht.value(), WaitingTime: c.wt.value(),
 			Downtime: c.dt.value(), ValueAdding: c.vat.value(), NonValueAdding: c.nvat.value(),
 			NecessaryNonValueAdding: c.nnvat.value(), ScrapRate: c.sr.value(), YieldFactor: c.yf.value(),
+			ReworkRate: c.rr.value(),
 		}
 		if c.ct.known && e.takt.known {
 			pr.TaktLoad = knownValue(c.ct.v/e.takt.v, "A.12")
+		}
+		if v, ok := e.load(c); ok {
+			pr.Load = knownValue(v, "3.2")
 		}
 		r.Processes = append(r.Processes, pr)
 		pts = append(pts, c.pt)
@@ -847,24 +863,62 @@ func (e *evaluator) result() Result {
 	return r
 }
 
-// bottleneck returns the most heavily loaded process (definition 3.2). Cycle
-// time is the interval at which the whole process completes products, and all
-// processes share the stream's operating time and product family, so the
-// longest cycle time carries the highest load. Processes without a cycle time
-// are skipped.
+// load returns the load of a process (definition 3.2): demand × cycle time ÷
+// the time available to the process, its own available time or else the
+// customer's operating time. Both are per period, so the load has no unit. It
+// reports false when any of these is unknown.
+func (e *evaluator) load(c *processCells) (float64, bool) {
+	avail := c.avail
+	if !avail.known {
+		avail = e.operating
+	}
+	if !c.ct.known || !e.demand.known || !avail.known {
+		return 0, false
+	}
+	return e.demand.v * c.ct.v / avail.v, true
+}
+
+// bottleneck returns the most heavily loaded process (definition 3.2), the one
+// with the highest load. Processes without a cycle time are skipped. When the
+// load of no process can be computed, or only some of them can, it returns the
+// process with the longest cycle time instead; a note says so when only some
+// loads are missing. The two rules agree when every process has the same time
+// available.
 func (e *evaluator) bottleneck() string {
-	best, bestCT, skipped := "", -1.0, 0
+	var withCT []*processCells
 	for _, c := range e.procs {
-		if !c.ct.known {
-			skipped++
+		if c.ct.known {
+			withCT = append(withCT, c)
+		}
+	}
+	if len(withCT) == 0 {
+		return ""
+	}
+	if skipped := len(e.procs) - len(withCT); skipped > 0 {
+		e.add(SeverityNote, "stream", "3.2", "bottleneck ignores %d process(es) without a cycle time", skipped)
+	}
+	best, bestLoad, unknown := "", -1.0, 0
+	for _, c := range withCT {
+		v, ok := e.load(c)
+		if !ok {
+			unknown++
 			continue
 		}
+		if v > bestLoad {
+			best, bestLoad = c.p.ID, v
+		}
+	}
+	if unknown == 0 {
+		return best
+	}
+	if unknown < len(withCT) {
+		e.add(SeverityNote, "stream", "3.2", "load is unknown for %d process(es), so the bottleneck is the longest cycle time", unknown)
+	}
+	best, bestCT := "", -1.0
+	for _, c := range withCT {
 		if c.ct.v > bestCT {
 			best, bestCT = c.p.ID, c.ct.v
 		}
-	}
-	if best != "" && skipped > 0 {
-		e.add(SeverityNote, "stream", "3.2", "bottleneck ignores %d process(es) without a cycle time", skipped)
 	}
 	return best
 }

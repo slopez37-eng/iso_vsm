@@ -4,7 +4,7 @@
 
 You describe a value stream as JSON or Go structs: its customer, processes, idle segments and inventories. The library then:
 
-- derives every value the standard's formulas allow (A.1–A.17), and records which formula produced each one;
+- derives the values that the Annex A formulas give from your entered numbers, within the limits under How evaluation works, and records which formula produced each one;
 - reports any contradictions between your numbers and those formulas, without changing what you entered;
 - computes lead time, customer takt, value added ratio, OTIF, yield, inventory turns and the bottleneck;
 - compares a current and a future state with the relative indicators of clause 4.5.2;
@@ -95,6 +95,8 @@ Every number in the model is optional. `nil` means "not entered" and a pointer t
 
 `Evaluate` repeatedly applies the formulas and records the formula behind each derived value as its `Source`. For the sums (A.1, A.2, A.3, A.6, A.8, A.9 and A.17), whenever all terms but one are known it derives the missing one. For the products and quotients (A.7, A.10, A.11 and A.12), it derives only the result, never a missing factor. Once nothing more can be derived, it checks every formula whose terms are all known. A mismatch becomes a **warning** that names the formula; your entered value is kept. Invalid input becomes an **error**, and that value is ignored. Examples are negative times, rates above 1, duplicate ids and references to unknown processes. A **note** explains a gap, for example which segments still lack a time so that the lead time is unknown.
 
+Derivation has limits. A.7 is not inverted, so a stock quantity is not derived from a range. A.11 applies to the waiting orders of idle segments, not to processes, and A.5 is never applied (see Interpretation choices). So the worked example A.3.4 cannot be rebuilt from its original inputs alone.
+
 All times in one value stream use its `time_unit` (`s`, `min`, `h` or `d`, where a day is 24 hours). Rates are fractions: 25 % is `0.25`.
 
 The test suite reproduces the standard's worked example (A.3.4) step by step with the formula functions, evaluates the same process as a value stream, and checks the customer takt of application example B.2.
@@ -115,15 +117,15 @@ The standard leaves some points open, and a few of its formulas read oddly. This
 
 **Process types** follow the cases of Figure A.1. Downtime is part of process time only for an automated process, and handling time is not part of it for a data-related process. A.8 leaves these parts out for those types even when you enter them, so a gap in A.8 shows up as a warning instead of being booked as downtime. An automated process, or one with no type set, uses all five parts.
 
-**Batch processes.** Process time is the dwell time of a piece in the process (Table A.2). A piece in a batch stays until the whole batch is done, so the time for the whole batch counts toward lead time, as in the worked example of A.3.4. A note says so for each process with a batch size or more than one repetition.
+**Batch processes.** Process time is the dwell time of a piece in the process (Table A.2). A piece in a batch stays until the whole batch is done, so the time for the whole batch counts toward lead time, as in the worked example of A.3.4. A note says so for each process with a batch size above 1.
 
 **Comparison figures (4.5.2)** divide each future time by the current one. A figure whose current time is 0, such as ω_IT when the current state has no idle time, is left unknown, and the other figures and shares are still given.
 
 **Idle segments** add no value from the customer's view (clause 4.5.2). They therefore carry only non-value-adding and necessary non-value-adding time. For a process, process lead time equals process time (Table A.2), so VAT + NVAT + NNVAT of a process must equal its process time.
 
-**Takt load** is cycle time ÷ customer takt: how much of a process's capacity customer demand takes up, as on a leveling chart. Above 100 % the process cannot keep up. It is not equipment utilization, which would need each resource's busy time. **Bottleneck** (definition 3.2) is the process with the longest cycle time. That identifies the most heavily loaded process because every process in one value stream shares the stream's operating time and product family.
+**Takt load** is cycle time ÷ customer takt: how much of a process's capacity customer demand takes up, as on a leveling chart. Above 100 % the process cannot keep up. It is not equipment utilization, which would need each resource's busy time. **Load** (definition 3.2) is demand × cycle time ÷ the time available to the process: its `available_time` when entered, otherwise the customer's `operating_time`. Takt load equals load when the process has no `available_time` of its own. **Bottleneck** (definition 3.2) is the process with the highest load. Processes without a cycle time are left out. If no load can be computed, the bottleneck is the process with the longest cycle time. If only some loads can be computed, it is also the longest cycle time, and a note says so.
 
-**Rework rate** is stored as entered (Table A.2 defines it as a share). The A.15 form, the change of yield between iterations, is available as `ReworkRate`. The stream's scrap rate and yield factor come from the `quality` counts. The process yield factor and scrap rate are linked by A.17.
+**Rework rate** is stored as entered (Table A.2 defines it as a share) and reported per process in the JSON results, next to scrap rate and yield factor. The A.15 form, the change of yield between iterations, is available as `ReworkRate`. The stream's scrap rate and yield factor come from the `quality` counts. The process yield factor and scrap rate are linked by A.17.
 
 **Prioritisation** of measures (clause 4.5.2) sorts by benefit ÷ cost, then by net benefit. Measures without both figures come last, and implemented or cancelled measures are left out. Benefit is used as entered, whatever its `benefit_period`.
 
@@ -131,7 +133,7 @@ The standard leaves some points open, and a few of its formulas read oddly. This
 
 **Measure status** uses the five stages of the catalogue key in Annex B.2.4 (`problem_detected`, `responsibilities_clarified`, `measure_checked`, `implementing`, `implemented`), plus `cancelled`. Clause 4.4.2 asks for the status to be noted but names no stages, so the library takes them from the standard's own example.
 
-**Product family (4.2.2).** The family shall have similar process steps, be representative and have a balanced volume. Record each as a `criteria` entry with `met`. A characteristic marked not met gives a warning, and once any is recorded, a note lists the ones not yet assessed.
+**Product family (4.2.2).** The family shall have similar process steps and be representative; it preferably has a balanced volume. Record each as a `criteria` entry with `met`. A not-met similar process steps or representative characteristic gives a warning. A not-met balanced volume gives a note, because the standard prefers it rather than requiring it. Once any is recorded, a note lists the ones not yet assessed.
 
 **Monitoring (4.5.1, 4.5.2).** The standard asks for the changed value stream to be monitored over time. Each `monitoring` snapshot is a date and the value stream as measured then. It is evaluated like any state and compared with the current state by the figures of 4.5.2. A measure whose `kpi` names a stream total or KPI (for example `lead_time` or `scrap_rate`) is checked against its `target` in the snapshot with the latest date that has that figure. A time target is in the current state's time unit, and the measured time is converted to it. Times, the non-value adding share and the scrap rate meet the target at or below it; the other KPIs meet it at or above it.
 

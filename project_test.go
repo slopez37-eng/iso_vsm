@@ -381,6 +381,14 @@ func TestSymbols(t *testing.T) {
 	if s, ok := SymbolByID("improvement_flash"); !ok || s.Category != CategoryGeneral {
 		t.Errorf("improvement flash: %+v", s)
 	}
+	// Table A.1: the customer symbol is the end customer; a customer plant
+	// uses the external source symbol.
+	if s, ok := SymbolByID("customer"); !ok || !strings.HasPrefix(s.Information, "end customer;") {
+		t.Errorf("customer symbol describes the end customer only: %+v", s)
+	}
+	if s, ok := SymbolByID("supplier"); !ok || !strings.Contains(s.Information, "customer plant") {
+		t.Errorf("external source symbol covers customer plants: %+v", s)
+	}
 }
 
 func TestInfiniteRatioMarshals(t *testing.T) {

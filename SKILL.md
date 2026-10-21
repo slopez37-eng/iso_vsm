@@ -11,7 +11,7 @@ The `vsm` command and the `iso_vsm` Go library (module `github.com/slopez37-eng/
 
 - derive missing times from the Annex A formulas and record which formula gave each value;
 - check the numbers you entered against those formulas and report contradictions;
-- compute totals (process, idle and lead time), KPIs (customer takt, value added ratio, value adding share, OTIF, yield, inventory turns) and the bottleneck;
+- compute totals (process, idle and lead time), KPIs (customer takt, value added ratio, value adding share, OTIF, yield, inventory turns), process loads and the bottleneck (the highest load);
 - compare a current and a future state (clause 4.5.2) and check the catalogue of measures for SMART gaps;
 - evaluate dated monitoring snapshots against the current state, and check each measure's target (`kpi` plus `target`, times in the current state's unit) in the latest-dated snapshot.
 
@@ -43,10 +43,11 @@ Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ig
 - `quality` and `deliveries` are counts (defective of total, complete on time of total), not rates.
 - Process `type` follows the cases of Figure A.1: `manual` (case A), `automated` (case B) or `data` (case C). Downtime counts in process time only for `automated`. Handling time does not count for `data`. With no type, all parts count.
 - `cycle_time` is the observed interval at which the whole process completes products, losses included.
-- For a batch process, enter `process_time` as the dwell time of one piece, which stays for the whole batch (Table A.2).
+- `available_time` is the time per period the process can work, in the stream's time unit. Its load is demand × `cycle_time` ÷ `available_time`. Without it, the customer's `operating_time` is used.
+- For a batch process, set `batch_size` and enter `process_time` as the dwell time of one piece, which stays for the whole batch (Table A.2).
 - Measure `status` is one of `problem_detected`, `responsibilities_clarified`, `measure_checked`, `implementing`, `implemented` or `cancelled`. A measure's `kpi` is one of `lead_time`, `process_time`, `idle_time`, `value_adding_share`, `non_value_adding_share`, `value_added_ratio`, `on_time_in_full`, `yield_factor`, `scrap_rate` or `inventory_turns`.
 - Measure `cost` is a one-off amount and `benefit` is earned once per `benefit_period` (`day`, `week`, `month` or `year`). Leave `benefit_period` out when `benefit` is a total. Use one currency for all measures. Prioritisation ignores `benefit_period`. Difference and payback are derived from these figures; ISO 22468 defines no payback period.
-- Product family `criteria` are `similar_process_steps`, `representative` and `balanced_volume`, each with `met`. Project `phase` is `analysis`, `design`, `planning`, `implementation`, `assessment` or `adjustment`.
+- Product family `criteria` are `similar_process_steps`, `representative` and `balanced_volume`, each with `met`. Only the first two are required; an unmet `balanced_volume` gives a note. Project `phase` is `analysis`, `design`, `planning`, `implementation`, `assessment` or `adjustment`.
 - Each `monitoring` entry is a `date` (YYYY-MM-DD) and a `state` holding the value stream as measured then.
 - A.5 is shown in notes but never applied. When a note says what A.5 would give, enter `process_time` yourself if you accept it.
 

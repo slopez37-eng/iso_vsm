@@ -22,8 +22,8 @@ type Symbol struct {
 // Symbols is the catalogue of Table A.1, in the table's order.
 var Symbols = []Symbol{
 	{"process", CategoryProcesses, "process", "material-, energy- or data-driven process"},
-	{"customer", CategoryProcesses, "customer process", "end customer or customer plant; top right of the map"},
-	{"supplier", CategoryProcesses, "supplier process / external source", "top left of the map; a supplier that is also a customer uses the customer symbol"},
+	{"customer", CategoryProcesses, "customer process", "end customer; top right of the map. A customer plant uses the external source symbol"},
+	{"supplier", CategoryProcesses, "supplier process / external source", "supplier or customer plant; top left of the map. A supplier that is also a customer uses the customer symbol"},
 	{"business_process", CategoryProcesses, "business process, indirect area", "details communication means such as telephone, mail or IT system; optionally number of operators"},
 	{"shared_process", CategoryProcesses, "shared process / shared resources", "process symbol with double frame"},
 	{"operators", CategoryProcesses, "operators", "number of operators or FTE, inside the process symbol"},

@@ -131,6 +131,7 @@ type Process struct {
 
 	ProcessTime    *float64  `json:"process_time,omitempty"`    // PT
 	CycleTime      *float64  `json:"cycle_time,omitempty"`      // CT, observed interval between products leaving the whole process
+	AvailableTime  *float64  `json:"available_time,omitempty"`  // operating time available to this process per period, in the stream's time unit; its load (3.2) uses it, else the customer's operating time
 	SetupTime      *float64  `json:"setup_time,omitempty"`      // ST
 	ProcessingTime *float64  `json:"processing_time,omitempty"` // PRT
 	HandlingTime   *float64  `json:"handling_time,omitempty"`   // HT

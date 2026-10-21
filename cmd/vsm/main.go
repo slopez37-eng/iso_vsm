@@ -224,9 +224,9 @@ func printComparison(w io.Writer, label string, c *vsm.StateComparison) {
 func printResult(w io.Writer, r vsm.Result) {
 	fmt.Fprintf(w, "%s (times in %s)\n", r.Name, r.TimeUnit)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "process\tPT\tCT\ttakt load")
+	fmt.Fprintln(tw, "process\tPT\tCT\ttakt load\tload")
 	for _, p := range r.Processes {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.ID, val(p.ProcessTime), val(p.CycleTime), pctVal(p.TaktLoad))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", p.ID, val(p.ProcessTime), val(p.CycleTime), pctVal(p.TaktLoad), pctVal(p.Load))
 	}
 	tw.Flush()
 	if len(r.Idles) > 0 {
