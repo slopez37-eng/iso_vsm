@@ -11,4 +11,4 @@ First release of the rewritten SDK. It replaces the earlier fork entirely; nothi
 - Product family characteristics (4.2.2) and project phase (4.1) as recorded checklists.
 - Monitoring snapshots compared with the current state (4.5.1, 4.5.2), and measure targets checked against the latest snapshot.
 - `SKILL.md` for AI agents and a runnable `ExampleEvaluate`.
-- `vsm` command-line tool: `check`, `symbols`, `template`.
+- `vsm` command-line tool: `check`, `symbols`, `template`, `version`.

@@ -3,6 +3,7 @@
 //	vsm check [-json] FILE   evaluate a value stream or project JSON file
 //	vsm symbols              list the value stream symbols of Table A.1
 //	vsm template             print a starter project JSON
+//	vsm version              print the module version and the commit it was built from
 //
 // check exits with status 1 when the file has errors.
 package main
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"strings"
 	"text/tabwriter"
 
@@ -33,6 +35,8 @@ func main() {
 		err = symbols(os.Stdout)
 	case "template":
 		err = template(os.Stdout)
+	case "version":
+		fmt.Println(version())
 	default:
 		usage()
 	}
@@ -44,7 +48,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: vsm check [-json] FILE | vsm symbols | vsm template")
+	fmt.Fprintln(os.Stderr, "usage: vsm check [-json] FILE | vsm symbols | vsm template | vsm version")
 	os.Exit(2)
 }
 
@@ -211,6 +215,15 @@ func pctVal(v vsm.Value) string {
 		return "?"
 	}
 	return pct(v.Value)
+}
+
+// version names the module version. A build from a git checkout gets a
+// pseudo-version that names the commit, with "+dirty" for uncommitted changes.
+func version() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		return "iso_vsm " + info.Main.Version
+	}
+	return "iso_vsm (unknown version)"
 }
 
 func symbols(w io.Writer) error {
