@@ -12,7 +12,8 @@ The `vsm` command and the `iso_vsm` Go library (module `github.com/slopez37-eng/
 - derive missing times from the Annex A formulas and record which formula gave each value;
 - check the numbers you entered against those formulas and report contradictions;
 - compute totals (process, idle and lead time), KPIs (customer takt, value added ratio, value adding share, OTIF, yield, inventory turns) and the bottleneck;
-- compare a current and a future state (clause 4.5.2) and check the catalogue of measures for SMART gaps.
+- compare a current and a future state (clause 4.5.2) and check the catalogue of measures for SMART gaps;
+- evaluate dated monitoring snapshots against the current state, and check each measure's target (`kpi` plus `target`) in the latest snapshot.
 
 They do not draw maps and do not design a future state.
 
@@ -25,7 +26,7 @@ They do not draw maps and do not design a future state.
 
 `vsm symbols` lists the value stream symbols of Table A.1.
 
-A file whose top-level keys are all project fields (`name`, `current`, `ideal`, `future`, `measures`, `workshop`) is checked as a project. Any other file is checked as one value stream.
+A file whose top-level keys are all project fields (`schema_version`, `name`, `phase`, `current`, `ideal`, `future`, `monitoring`, `measures`, `workshop`) is checked as a project. Any other file is checked as one value stream.
 
 Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ignored). 2 means a usage error, or the file could not be read or decoded. Unknown JSON field names count as unreadable, so a misspelt field gives exit 2. Warnings and notes never change the exit code.
 
@@ -40,6 +41,9 @@ Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ig
 - Process `type` follows the cases of Figure A.1: `manual` (case A), `automated` (case B) or `data` (case C). Downtime counts in process time only for `automated`. Handling time does not count for `data`. With no type, all parts count.
 - `cycle_time` is the observed interval at which the whole process completes products, losses included.
 - For a batch process, enter `process_time` as the dwell time of one piece, which stays for the whole batch (Table A.2).
+- Measure `status` is one of `problem_detected`, `responsibilities_clarified`, `measure_checked`, `implementing`, `implemented` or `cancelled`. A measure's `kpi` is one of `lead_time`, `process_time`, `idle_time`, `value_adding_share`, `non_value_adding_share`, `value_added_ratio`, `on_time_in_full`, `yield_factor`, `scrap_rate` or `inventory_turns`.
+- Product family `criteria` are `similar_process_steps`, `representative` and `balanced_volume`, each with `met`. Project `phase` is `analysis`, `design`, `planning`, `implementation`, `assessment` or `adjustment`.
+- Each `monitoring` entry is a `date` (YYYY-MM-DD) and a `state` holding the value stream as measured then.
 - A.5 is shown in notes but never applied. When a note says what A.5 would give, enter `process_time` yourself if you accept it.
 
 ## Reading the output
@@ -50,7 +54,7 @@ Exit codes: 0 means no errors. 1 means the data has errors (invalid input was ig
 - Each issue is printed as `severity: subject: message [rule]`. The subject is such as `process P2`, and the rule is the clause or formula it rests on, such as `A.6`.
 - In `-json`, each derived or entered value is an object with `value` and `source` (`entered` or the formula). An unknown value is `null`.
 - In text output, an unknown value shows as `?`.
-- A project report has one section per state. The comparison appears only when the current and future lead times are both known and not zero; otherwise a note says why.
+- A project report has one section per state and per monitoring snapshot. The comparison appears only when the current and future lead times are both known and not zero; otherwise a note says why.
 - Errors in any state, or in the project itself, make the exit status 1.
 
 ## Library use

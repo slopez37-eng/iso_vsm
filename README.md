@@ -8,9 +8,10 @@ You describe a value stream as JSON or Go structs: its customer, processes, idle
 - reports any contradictions between your numbers and those formulas, without changing what you entered;
 - computes lead time, customer takt, value added ratio, OTIF, yield, inventory turns and the bottleneck;
 - compares a current and a future state with the relative indicators of clause 4.5.2;
-- keeps the catalogue of measures, checks each measure for SMART gaps, and ranks the measures by cost-benefit.
+- keeps the catalogue of measures, checks each measure for SMART gaps, and ranks the measures by cost-benefit;
+- follows the changed value stream over time with dated snapshots, and checks each measure's target against the latest one.
 
-It does not draw maps. It does not invent scores or recommendations the standard does not define. Judgements such as choosing the product family or deciding whether a design guideline is met are recorded as your input, not calculated.
+It does not draw maps. It does not invent scores or recommendations the standard does not define. Judgements such as whether the product family has the characteristics of clause 4.2.2, or whether a design guideline is met, are recorded as your input, not calculated.
 
 The standard itself is copyrighted and is not part of this repository. Clause and formula numbers below refer to ISO 22468:2020(E).
 
@@ -32,7 +33,7 @@ vsm check -json project.json  # the same report as JSON
 vsm symbols                   # the value stream symbols of Table A.1
 ```
 
-A file with a top-level `processes` list is read as one value stream; any other file is read as a project. `vsm check` exits with status 1 when the file has errors (invalid input that was ignored), 2 when it cannot read the file, and 0 otherwise.
+A file whose top-level keys are all project fields is read as a project; any other file is read as one value stream. `vsm check` exits with status 1 when the file has errors (invalid input that was ignored), 2 when it cannot read the file, and 0 otherwise.
 
 ## Library
 
@@ -58,7 +59,7 @@ for _, issue := range r.Issues {
 }
 ```
 
-For a whole VSM run, with current, ideal and future states plus the catalogue of measures, use `vsm.Project` and `vsm.EvaluateProject`. `LoadProject`, `LoadValueStream`, `Save` and `Write` read and write the JSON format, and `IsProjectJSON` tells a project file from a single value stream. `HasErrors` on a result or project report says whether any input was invalid. Unknown JSON fields are rejected, so a misspelt field is never silently dropped.
+For a whole VSM run, with current, ideal and future states, monitoring snapshots, the catalogue of measures and the workshop, use `vsm.Project` and `vsm.EvaluateProject`. `LoadProject`, `LoadValueStream`, `Save` and `Write` read and write the JSON format, and `IsProjectJSON` tells a project file from a single value stream. `HasErrors` on a result or project report says whether any input was invalid. Unknown JSON fields are rejected, so a misspelt field is never silently dropped.
 
 Each formula is also a plain function. Use these when you only need one calculation:
 
@@ -120,7 +121,15 @@ The standard leaves some points open, and a few of its formulas read oddly. This
 
 **Rework rate** is stored as entered (Table A.2 defines it as a share). The A.15 form, the change of yield between iterations, is available as `ReworkRate`. The stream's scrap rate and yield factor come from the `quality` counts. The process yield factor and scrap rate are linked by A.17.
 
-**Prioritisation** of measures (clause 4.5.2) sorts by benefit ÷ cost, then by net benefit. Measures without both figures come last, and done or cancelled measures are left out.
+**Prioritisation** of measures (clause 4.5.2) sorts by benefit ÷ cost, then by net benefit. Measures without both figures come last, and implemented or cancelled measures are left out.
+
+**Measure status** uses the five stages of the catalogue key in Annex B.2.4 (`problem_detected`, `responsibilities_clarified`, `measure_checked`, `implementing`, `implemented`), plus `cancelled`. Clause 4.4.2 asks for the status to be noted but names no stages, so the library takes them from the standard's own example.
+
+**Product family (4.2.2).** The family shall have similar process steps, be representative and have a balanced volume. Record each as a `criteria` entry with `met`. A characteristic marked not met gives a warning, and once any is recorded, a note lists the ones not yet assessed.
+
+**Monitoring (4.5.1, 4.5.2).** The standard asks for the changed value stream to be monitored over time. Each `monitoring` snapshot is a date and the value stream as measured then. It is evaluated like any state and compared with the current state by the figures of 4.5.2. A measure whose `kpi` names a stream total or KPI (for example `lead_time` or `scrap_rate`) is checked against its `target` in the latest snapshot that has that figure. Times, the non-value adding share and the scrap rate meet the target at or below it; the other KPIs meet it at or above it.
+
+**Project phase (4.1)** records where the project stands: `analysis`, `design`, `planning`, `implementation`, `assessment` (check) or `adjustment` (act).
 
 **Typos in the worked example (A.3.4).** It labels customer demand as a time and calls the number of transport repetitions a time. The library reads these as the quantities the parameter table defines.
 
@@ -128,9 +137,9 @@ The standard leaves some points open, and a few of its formulas read oddly. This
 
 ## Scope
 
-**Covered (normative):** the parameters of Table A.2, formulas A.1–A.17, the symbols of Table A.1 (`vsm.Symbols`), the shares and comparison figures of clause 4.5.2, the seven wastes and improvement flashes (4.3.2), the eight design guidelines as a checklist you fill in (4.3.4), the SMART catalogue of measures with status (4.4.2), and the workshop record (4.4.3).
+**Covered (normative):** the parameters of Table A.2, formulas A.1–A.17, the symbols of Table A.1 (`vsm.Symbols`), the shares and comparison figures of clause 4.5.2, the seven wastes and improvement flashes (4.3.2), the eight design guidelines as a checklist you fill in (4.3.4), the product family characteristics (4.2.2), the SMART catalogue of measures with status (4.4.2), the workshop record (4.4.3), monitoring of the changed value stream (4.5.1, 4.5.2) and the project phase (4.1).
 
-**Not covered:** drawing value stream maps; the informative data boxes and examples of Annex B, beyond their use in tests; multi-criteria assessment by space, resources or cost (4.5.2 mentions it without defining it); and any automatic future-state design.
+**Not covered:** drawing value stream maps; the informative data boxes and examples of Annex B, beyond the measure status stages and their use in tests; multi-criteria assessment by space, resources or cost (4.5.2 mentions it without defining it); and any automatic future-state design.
 
 ## License
 
